@@ -36,7 +36,7 @@ public class ModBuildWindow : EditorWindow
     bool _allowPatchAssetBundle = true;
     bool _copyToCommunityFolder = true;
 
-    [MenuItem("Tools/Build And Deploy Mod")]
+    [MenuItem("Tools/Build And Deploy Mod", false, 1)]
     static void Open() => GetWindow<ModBuildWindow>("Build Mod");
 
     void OnEnable() => Locate();

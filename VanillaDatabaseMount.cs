@@ -52,6 +52,11 @@ public static class VanillaDatabaseMount
                 if (provider.Name == ProviderName) { s_provider = provider; break; }
             }
             if (s_provider != null) return true;
+            // Already mounted (e.g. from a prior session, before a domain reload cleared
+            // s_provider) but not found in AllProviders yet — mounting again here would
+            // double-mount the same bundle. Bail instead of retrying.
+            error = s_lastError = $"Vanilla databases bundle '{ProviderName}' is already mounted but its provider couldn't be found.";
+            return false;
         }
 
         string mercuryFolder = ModuleEditor.MercuryFolderPath;
@@ -136,7 +141,58 @@ public static class VanillaDatabaseMount
     public static bool IsVanillaAsset(UnityEngine.Object o)
         => o != null && s_provider != null && s_provider.TryGetAssetGuid(o, out _);
 
-    [UnityEditor.MenuItem("Tools/Tech Tree/Debug Vanilla Mount")]
+    /// <summary>
+    /// Lifts a vanilla element (a sub-asset of a *Collection in the mounted bundle) into an
+    /// editable override, using the same Amplitude.Framework.Utility.DatatableElementCollectionUtility
+    /// calls the Mod Editor's own "Override from Archives" importer uses: get-or-create the
+    /// destination collection at vanilla's own FilePath, then duplicate the element by name
+    /// (ensureUniqueName: false, so it overrides by name at load instead of becoming a copy).
+    /// </summary>
+    public static UnityEngine.Object OverrideVanillaElement(UnityEngine.Object refAsset)
+    {
+        if (!TryGetOwnerDescriptor(refAsset, out var ownerDescriptor))
+        {
+            Debug.LogError($"[VanillaMount] {refAsset.name}: not a vanilla element with a known owner (mount may have been invalidated).");
+            return null;
+        }
+        if (refAsset is not Amplitude.Framework.IDatatableElement genuineElement)
+        {
+            Debug.LogError($"[VanillaMount] {refAsset.name} does not implement IDatatableElement; can't be overridden this way.");
+            return null;
+        }
+
+        var collectionType = ownerDescriptor.GetAssetType();
+        if (collectionType == null)
+        {
+            Debug.LogError($"[VanillaMount] {refAsset.name}: couldn't resolve the owning collection's type.");
+            return null;
+        }
+        string directory = Path.GetDirectoryName(ownerDescriptor.FilePath)?.Replace('\\', '/');
+        string collectionName = Path.GetFileNameWithoutExtension(ownerDescriptor.FileName);
+
+        var collection = Amplitude.Framework.Utility.DatatableElementCollectionUtility
+            .GetOrCreateDatatableElementCollection(collectionType, directory, collectionName, startNameEditing: false);
+        if (collection == null)
+        {
+            Debug.LogError($"[VanillaMount] Failed to get-or-create override collection '{directory}/{collectionName}'.");
+            return null;
+        }
+
+        Amplitude.Framework.IDatatableElement[] duplicates = null;
+        bool ok = Amplitude.Framework.Utility.DatatableElementCollectionUtility.TryDuplicateDatatableElements(
+            new[] { genuineElement }, ref collection, ref duplicates,
+            showWarningDialogThresholdCount: false, ensureUniqueName: false, reimport: false);
+        if (!ok || duplicates == null || duplicates.Length == 0)
+        {
+            Debug.LogError($"[VanillaMount] TryDuplicateDatatableElements failed for {refAsset.name}.");
+            return null;
+        }
+
+        duplicates[0].SetEditable(true);
+        return duplicates[0] as UnityEngine.Object;
+    }
+
+    [UnityEditor.MenuItem("Tools/Debug/Tech Tree/Vanilla Mount", false, 102)]
     static void DebugMount()
     {
         if (!TryMount(out var error)) { Debug.LogError($"[VanillaMount] {error}"); return; }

@@ -27,7 +27,7 @@ public class AnimationContentPopulator : EditorWindow
     UnityEngine.Object _content;                 // the AnimationManagerContent asset
     string _scanFolder = "Assets/Resources/New Additions";
 
-    [MenuItem("Tools/Pawn Fragment/Animation Content Populator")]
+    [MenuItem("Tools/Pawn Fragment/Animation Content Populator", false, 6)]
     static void Open()
     {
         var w = GetWindow<AnimationContentPopulator>("Anim Content");

@@ -15,7 +15,7 @@ public static class FormulaProbe2
         t?.GetField(name, ALL);
 
     // Run with a descriptor CONTAINER asset selected (any sub-asset works).
-    [MenuItem("Tools/Probe/Resolve Types + Test ToString")]
+    [MenuItem("Tools/Debug/Formula Probe/Resolve Types + Test ToString", false, 140)]
     static void Run()
     {
         var path = AssetDatabase.GetAssetPath(Selection.activeObject);

@@ -203,56 +203,7 @@ public static class TechTreeData
             return null;
         }
         if (Under(active, DatabasesRoot)) return active;     // edit in place
-        return OverrideVanillaElement(active);                // lift vanilla element -> mirrored Databases path
-    }
-
-    // Lifts a vanilla element (a sub-asset of a *Collection in the mounted bundle) into an
-    // editable override, using the same Amplitude.Framework.Utility.DatatableElementCollectionUtility
-    // calls the Mod Editor's own "Override from Archives" importer uses: get-or-create the
-    // destination collection at vanilla's own FilePath, then duplicate the element by name
-    // (ensureUniqueName: false, so it overrides by name at load instead of becoming a copy).
-    static UnityEngine.Object OverrideVanillaElement(UnityEngine.Object refAsset)
-    {
-        if (!VanillaDatabaseMount.TryGetOwnerDescriptor(refAsset, out var ownerDescriptor))
-        {
-            Debug.LogError($"[TechTree] {refAsset.name}: not a vanilla element with a known owner (mount may have been invalidated).");
-            return null;
-        }
-        if (refAsset is not Amplitude.Framework.IDatatableElement genuineElement)
-        {
-            Debug.LogError($"[TechTree] {refAsset.name} does not implement IDatatableElement; can't be overridden this way.");
-            return null;
-        }
-
-        var collectionType = ownerDescriptor.GetAssetType();
-        if (collectionType == null)
-        {
-            Debug.LogError($"[TechTree] {refAsset.name}: couldn't resolve the owning collection's type.");
-            return null;
-        }
-        string directory = System.IO.Path.GetDirectoryName(ownerDescriptor.FilePath)?.Replace('\\', '/');
-        string collectionName = System.IO.Path.GetFileNameWithoutExtension(ownerDescriptor.FileName);
-
-        var collection = Amplitude.Framework.Utility.DatatableElementCollectionUtility
-            .GetOrCreateDatatableElementCollection(collectionType, directory, collectionName, startNameEditing: false);
-        if (collection == null)
-        {
-            Debug.LogError($"[TechTree] Failed to get-or-create override collection '{directory}/{collectionName}'.");
-            return null;
-        }
-
-        Amplitude.Framework.IDatatableElement[] duplicates = null;
-        bool ok = Amplitude.Framework.Utility.DatatableElementCollectionUtility.TryDuplicateDatatableElements(
-            new[] { genuineElement }, ref collection, ref duplicates,
-            showWarningDialogThresholdCount: false, ensureUniqueName: false, reimport: false);
-        if (!ok || duplicates == null || duplicates.Length == 0)
-        {
-            Debug.LogError($"[TechTree] TryDuplicateDatatableElements failed for {refAsset.name}.");
-            return null;
-        }
-
-        duplicates[0].SetEditable(true);
-        return duplicates[0] as UnityEngine.Object;
+        return VanillaDatabaseMount.OverrideVanillaElement(active);  // lift vanilla element -> mirrored Databases path
     }
 
     public static void WritePosition(UnityEngine.Object mapper, int x, int y)
@@ -277,7 +228,7 @@ public static class TechTreeData
     }
 
     // ── Verification dump ─────────────────────────────────────────────────────
-    [MenuItem("Tools/Tech Tree/Diagnose Mod Split")]
+    [MenuItem("Tools/Debug/Tech Tree/Diagnose Mod Split", false, 100)]
     static void DiagnoseModSplit()
     {
         DiagnoseModSplit(DefaultModPath);
@@ -324,7 +275,7 @@ public static class TechTreeData
         Debug.Log(sb.ToString());
     }
 
-    [MenuItem("Tools/Tech Tree/Dump Data")]
+    [MenuItem("Tools/Debug/Tech Tree/Dump Data", false, 101)]
     static void DumpData()
     {
         var nodes = Build();

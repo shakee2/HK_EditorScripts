@@ -33,7 +33,7 @@ public class PawnFragmentAuthor : EditorWindow
     int _kind;                      // 0 = SkinnedMesh, 1 = Mesh
     string _createFolder = "Assets/Resources/New Additions/Fragments";   // must be under an INCLUDED bundle root (Resources/ or Databases/), not bare Assets/
 
-    [MenuItem("Tools/Pawn Fragment/Author Window")]
+    [MenuItem("Tools/Pawn Fragment/Author Window", false, 5)]
     static void Open()
     {
         var w = GetWindow<PawnFragmentAuthor>("Pawn Fragment");

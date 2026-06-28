@@ -13,6 +13,7 @@ public class DatabaseBrowser : EditorWindow
         public string name;
         public string typeName;
         public string scope;   // "Vanilla" | "Mod"
+        public bool isContent; // implements IDatatableElement — a real moddable data row, not build/plugin/config plumbing
     }
 
     // Flattened display item: a type header (group mode) or an entry row
@@ -40,6 +41,8 @@ public class DatabaseBrowser : EditorWindow
     enum ScopeFilter { All, MyMod, Vanilla }
     static readonly string[] SCOPE_LABELS = { "All", "My Mod", "Vanilla" };
     ScopeFilter _scope = ScopeFilter.All;
+    bool _contentOnly = true;   // hide build/plugin/config ScriptableObjects; show only actual data rows
+    string ContentOnlyKey => "DatabaseBrowser.ContentOnly";
 
     enum ViewMode { Window, ListOnly }
     static readonly string[] MODE_LABELS = { "Window", "Only List" };
@@ -66,13 +69,14 @@ public class DatabaseBrowser : EditorWindow
 
     GUIStyle _typeColStyle, _headerStyle;
 
-    [MenuItem("Tools/Database Browser")]
+    [MenuItem("Tools/Database Browser", false, 2)]
     static void Open() => GetWindow<DatabaseBrowser>("Database Browser");
 
     void OnEnable()
     {
         wantsMouseMove = true;
         _mode = (ViewMode)EditorPrefs.GetInt(ModeKey, 0);
+        _contentOnly = EditorPrefs.GetBool(ContentOnlyKey, true);
         Refresh();
     }
 
@@ -86,7 +90,8 @@ public class DatabaseBrowser : EditorWindow
         if (_typeColStyle == null)
         {
             _typeColStyle = new GUIStyle(EditorStyles.miniLabel)
-            { alignment = TextAnchor.MiddleRight, normal = { textColor = new Color(0.6f, 0.6f, 0.6f) } };
+            { alignment = TextAnchor.MiddleRight, normal = { textColor = EditorGUIUtility.isProSkin
+                ? new Color(0.75f, 0.75f, 0.75f) : new Color(0.3f, 0.3f, 0.3f) } };
         }
         if (_headerStyle == null)
             _headerStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 11 };
@@ -108,25 +113,31 @@ public class DatabaseBrowser : EditorWindow
                 foreach (var obj in AssetDatabase.LoadAllAssetsAtPath(path))
                 {
                     if (obj == null || obj is not ScriptableObject) continue;
-                    list.Add(new Entry { obj = obj, name = obj.name, typeName = obj.GetType().Name, scope = "Mod" });
+                    list.Add(new Entry { obj = obj, name = obj.name, typeName = obj.GetType().Name, scope = "Mod",
+                        isContent = obj is Amplitude.Framework.IDatatableElement });
                 }
             }
 
             EditorUtility.DisplayProgressBar("Database Browser", "Loading vanilla databases…", 1f);
             foreach (var obj in VanillaDatabaseMount.LoadAllOfType(typeof(ScriptableObject)))
-                list.Add(new Entry { obj = obj, name = obj.name, typeName = obj.GetType().Name, scope = "Vanilla" });
+                list.Add(new Entry { obj = obj, name = obj.name, typeName = obj.GetType().Name, scope = "Vanilla",
+                    isContent = obj is Amplitude.Framework.IDatatableElement });
         }
         finally { EditorUtility.ClearProgressBar(); }
 
         _all = list.OrderBy(e => e.typeName).ThenBy(e => e.name).ToList();
-        _types = _all.Select(e => e.typeName).Distinct().OrderBy(s => s).ToList();
         ApplyFilters();
     }
 
     void ApplyFilters()
     {
+        _types = _all.Where(e => !_contentOnly || e.isContent)
+            .Select(e => e.typeName).Distinct().OrderBy(s => s).ToList();
+        if (_typeFilter.Length > 0 && !_types.Contains(_typeFilter)) _typeFilter = "";
+
         string s = _search.Trim().ToLowerInvariant();
         _view = _all.Where(e =>
+            (!_contentOnly || e.isContent) &&
             (_typeFilter.Length == 0 || e.typeName == _typeFilter) &&
             (_scope == ScopeFilter.All ||
              (_scope == ScopeFilter.MyMod && e.scope == "Mod") ||
@@ -216,6 +227,14 @@ public class DatabaseBrowser : EditorWindow
         EditorGUILayout.EndHorizontal();
 
         EditorGUI.BeginChangeCheck();
+        _contentOnly = GUILayout.Toggle(_contentOnly, "Content Only", EditorStyles.miniButton);
+        if (EditorGUI.EndChangeCheck())
+        {
+            EditorPrefs.SetBool(ContentOnlyKey, _contentOnly);
+            ApplyFilters();
+        }
+
+        EditorGUI.BeginChangeCheck();
         _scope = (ScopeFilter)GUILayout.Toolbar((int)_scope, SCOPE_LABELS);
         if (EditorGUI.EndChangeCheck()) ApplyFilters();
 
@@ -249,6 +268,20 @@ public class DatabaseBrowser : EditorWindow
             }
 
             var e = di.entry;
+
+            // Handled before the GUI.Button below so a right-click anywhere on the row
+            // (name or type column) reaches us — GUI.Button swallows MouseDown over its
+            // rect regardless of button, which would otherwise eat right-clicks on the name.
+            if (e.scope == "Vanilla" && Event.current.type == EventType.MouseDown
+                && Event.current.button == 1 && row.Contains(mouse))
+            {
+                Event.current.Use();
+                var entry = e;
+                var menu = new GenericMenu();
+                menu.AddItem(new GUIContent("Import (Override from Archives)"), false, () => ImportVanilla(entry));
+                menu.ShowAsContext();
+            }
+
             bool selected = e.obj == _selected;
             bool hover = row.Contains(mouse);
             if (selected)          EditorGUI.DrawRect(row, ROW_SEL);
@@ -281,6 +314,14 @@ public class DatabaseBrowser : EditorWindow
         }
 
         GUILayout.EndArea();
+    }
+
+    void ImportVanilla(Entry e)
+    {
+        var imported = VanillaDatabaseMount.OverrideVanillaElement(e.obj);
+        if (imported == null) return;
+        Refresh();
+        Select(imported);
     }
 
     void Select(UnityEngine.Object obj)

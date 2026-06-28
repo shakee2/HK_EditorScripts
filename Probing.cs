@@ -31,7 +31,7 @@ public static class PawnFragmentProbe
     // Small explicit type so element names survive the LINQ chain.
     struct Hit { public string Type; public string Path; }
 
-    [MenuItem("Tools/Pawn Probe/1. Find Presentation Assets")]
+    [MenuItem("Tools/Debug/Pawn Probe/1. Find Presentation Assets", false, 120)]
     static void FindPresentationAssets()
     {
         var sb = new StringBuilder();
@@ -69,7 +69,7 @@ public static class PawnFragmentProbe
     // holds the mesh (and which hold the material/texture references we must NOT
     // touch). Select a fragment asset in the Project window, then run this.
     // ──────────────────────────────────────────────────────────────────────────
-    [MenuItem("Tools/Pawn Probe/2. Dump Selected Fragment Fields")]
+    [MenuItem("Tools/Debug/Pawn Probe/2. Dump Selected Fragment Fields", false, 121)]
     static void DumpFragmentFields()
     {
         var obj = Selection.activeObject;
@@ -171,7 +171,7 @@ public static class PawnFragmentProbe
     // copy is editable + savable. If this works, clone-and-swap is buildable.
     // Select a fragment asset, then run.
     // ──────────────────────────────────────────────────────────────────────────
-    [MenuItem("Tools/Pawn Probe/3. Try Clone Selected Fragment")]
+    [MenuItem("Tools/Debug/Pawn Probe/3. Try Clone Selected Fragment", false, 122)]
     static void TryCloneFragment()
     {
         var obj = Selection.activeObject;

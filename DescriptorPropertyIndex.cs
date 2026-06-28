@@ -76,7 +76,7 @@ public class DescriptorPropertyIndex : EditorWindow
     static readonly Color ROW_LINE  = new Color(0f, 0f, 0f, 0.25f);
     enum Col { Descriptor, Scope, Definition, Starting, Path, Target, Property, Op, Formula }
 
-    [MenuItem("Tools/Descriptor Property Browser")]
+    [MenuItem("Tools/Descriptor Property Browser", false, 3)]
     static void Open() => GetWindow<DescriptorPropertyIndex>("Descriptor Browser");
 
     void OnEnable()
@@ -295,6 +295,18 @@ public class DescriptorPropertyIndex : EditorWindow
             var r = _view[i];
             Rect rowRect = new Rect(0, i * ROW_H, totalW, ROW_H);
 
+            // Checked before the cell buttons below so a right-click anywhere on the row
+            // reaches us — GUI.Button over the Descriptor cell would otherwise swallow it.
+            if (r.scope == "Vanilla" && Event.current.type == EventType.MouseDown
+                && Event.current.button == 1 && rowRect.Contains(mouse))
+            {
+                Event.current.Use();
+                var row = r;
+                var menu = new GenericMenu();
+                menu.AddItem(new GUIContent("Import (Override from Archives)"), false, () => ImportVanilla(row));
+                menu.ShowAsContext();
+            }
+
             // Background: hover takes priority, else zebra striping
             bool hover = rowRect.Contains(mouse);
             if (hover)             EditorGUI.DrawRect(rowRect, ROW_HOVER);
@@ -327,6 +339,24 @@ public class DescriptorPropertyIndex : EditorWindow
         bool asc = _header.IsSortedAscending(col);
         Func<Row, string> key = r => Cell(r, (Col)col) ?? "";
         _view = (asc ? _view.OrderBy(key) : _view.OrderByDescending(key)).ToList();
+    }
+
+    void ImportVanilla(Row r)
+    {
+        UnityEngine.Object obj = null;
+        foreach (var a in VanillaDatabaseMount.LoadAllOfType(s_descriptorType))
+            if (a != null && a.name == r.assetName) { obj = a; break; }
+        if (obj == null)
+        {
+            Debug.LogWarning($"[DescriptorIndex] '{r.assetName}' not found in the mounted vanilla bundle.");
+            return;
+        }
+        var imported = VanillaDatabaseMount.OverrideVanillaElement(obj);
+        if (imported == null) return;
+        ScanModScope();
+        RebuildDerived();
+        EditorGUIUtility.PingObject(imported);
+        Selection.activeObject = imported;
     }
 
     void Ping(Row r)

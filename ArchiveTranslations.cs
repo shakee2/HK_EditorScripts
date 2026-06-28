@@ -40,6 +40,11 @@ public static class ArchiveTranslations
             foreach (var provider in AssetDatabase.AllProviders)
                 if (provider.Name == ProviderName) { s_provider = provider; break; }
             if (s_provider != null) return true;
+            // Already mounted (by us in a prior session, or by the Mod Editor's own
+            // Localization Window) but not in AllProviders yet — mounting again here
+            // would double-mount the same bundle. Bail instead of retrying.
+            error = s_lastError = $"Translations bundle '{ProviderName}' is already mounted but its provider couldn't be found.";
+            return false;
         }
 
         string bundlePath = BundlePath;
