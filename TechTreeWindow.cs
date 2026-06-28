@@ -31,9 +31,6 @@ public class TechTreeWindow : EditorWindow
     string _modPath = TechTreeData.DefaultModPath;
     string ModPathKey => "TechTree.ModPath";
 
-    // reference path mirror (lives in the shared Index EditorPrefs key); set in OnEnable
-    string _refPath = "";
-
     bool _editMode;
 
     // position-drag state (edit mode)
@@ -67,7 +64,6 @@ public class TechTreeWindow : EditorWindow
     void OnEnable()
     {
         _modPath = EditorPrefs.GetString(ModPathKey, TechTreeData.DefaultModPath);
-        _refPath = TechTreeData.ReferenceFolder;   // pick up whatever the Index set
         Undo.undoRedoPerformed += OnUndoRedo;
         try { Reload(); }
         catch (Exception e) { Debug.LogError($"[TechTree] Build failed on open: {e}"); _nodes = new(); _byName = new(); }
@@ -149,23 +145,17 @@ public class TechTreeWindow : EditorWindow
 
         GUILayout.FlexibleSpace();
 
-        // reference (read-only archive) path — shared with the Index tool
-        bool refMissing = !AssetDatabase.IsValidFolder(_refPath);
-        EditorGUILayout.LabelField("Ref", GUILayout.Width(26));
-        GUI.color = refMissing ? new Color(1f, 0.6f, 0.6f) : Color.white;
-        string newRef = EditorGUILayout.TextField(_refPath, GUILayout.Width(170));
+        // vanilla bundle mount status (mounted automatically from the Mod Editor's Humankind folder)
+        bool vanillaMounted = VanillaDatabaseMount.IsMounted || VanillaDatabaseMount.TryMount(out _);
+        EditorGUILayout.LabelField("Vanilla", GUILayout.Width(46));
+        GUI.color = vanillaMounted ? Color.white : new Color(1f, 0.6f, 0.6f);
+        GUILayout.Label(vanillaMounted ? "mounted" : "not mounted", EditorStyles.toolbarButton, GUILayout.Width(80));
         GUI.color = Color.white;
-        if (newRef != _refPath) { _refPath = newRef; TechTreeData.ReferenceFolder = _refPath; }
-        if (GUILayout.Button("…", EditorStyles.toolbarButton, GUILayout.Width(24)))
+        if (GUILayout.Button("Remount", EditorStyles.toolbarButton, GUILayout.Width(64)))
         {
-            string picked = EditorUtility.OpenFolderPanel("Reference (vanilla) folder", _refPath, "");
-            if (!string.IsNullOrEmpty(picked))
-            {
-                // store as a project-relative path if inside the project
-                string dataDir = Application.dataPath;
-                if (picked.StartsWith(dataDir)) picked = "Assets" + picked.Substring(dataDir.Length);
-                _refPath = picked; TechTreeData.ReferenceFolder = _refPath; Reload(keepView: true);
-            }
+            VanillaDatabaseMount.Invalidate();
+            if (!VanillaDatabaseMount.TryMount(out var error)) Debug.LogWarning($"[TechTree] {error}");
+            Reload(keepView: true);
         }
 
         EditorGUILayout.LabelField("Mod path", GUILayout.Width(55));
@@ -174,8 +164,8 @@ public class TechTreeWindow : EditorWindow
         if (GUILayout.Button("Apply", EditorStyles.toolbarButton, GUILayout.Width(50))) Reload(keepView: true);
         EditorGUILayout.EndHorizontal();
 
-        if (refMissing)
-            EditorGUILayout.HelpBox("Reference folder not found — showing Databases content only (no vanilla fallback).", MessageType.Info);
+        if (!vanillaMounted)
+            EditorGUILayout.HelpBox($"Vanilla databases bundle not mounted ({VanillaDatabaseMount.LastError}) — showing Databases content only (no vanilla fallback).", MessageType.Info);
 
         float top = EditorStyles.toolbar.fixedHeight > 0 ? EditorStyles.toolbar.fixedHeight : 21f;
         Rect canvas = new Rect(0, top, position.width - SIDE_W, position.height - top);
@@ -357,6 +347,11 @@ public class TechTreeWindow : EditorWindow
             EditorGUILayout.LabelField($"{n.Era} · {n.Tier} · ({EffX(n)},{EffY(n)})", EditorStyles.miniLabel);
 
             EditorGUILayout.Space(6);
+            EditorGUILayout.LabelField("Localization", EditorStyles.boldLabel);
+            UIKeyField("Title", n.TitleKey);
+            UIKeyField("Description", n.DescriptionKey);
+
+            EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("Prerequisites (OR):", EditorStyles.boldLabel);
             var prereqs = EffPrereqs(n);
             if (prereqs.Count == 0)
@@ -385,6 +380,19 @@ public class TechTreeWindow : EditorWindow
 
         EditorGUILayout.EndScrollView();
         GUILayout.EndArea();
+    }
+
+    // Selectable %key + copy button, so it's easy to find/paste into the Localization Window.
+    static void UIKeyField(string label, string key)
+    {
+        EditorGUILayout.BeginHorizontal();
+        EditorGUILayout.LabelField(label, GUILayout.Width(70));
+        EditorGUILayout.SelectableLabel(string.IsNullOrEmpty(key) ? "(none)" : key,
+            EditorStyles.miniLabel, GUILayout.Height(EditorGUIUtility.singleLineHeight));
+        using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(key)))
+            if (GUILayout.Button("Copy", EditorStyles.miniButton, GUILayout.Width(44)))
+                EditorGUIUtility.systemCopyBuffer = key;
+        EditorGUILayout.EndHorizontal();
     }
 
     // ── Edit operations (staging into the overlay; disk write is at Save) ──────

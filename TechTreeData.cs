@@ -1,5 +1,4 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -28,11 +27,13 @@ public static class TechTreeData
     {
         public string Name;        // asset name, e.g. "Technology_Era1_01"
         public string TitleKey;    // raw "%...Title"
+        public string DescriptionKey;  // raw "%...Description"
         public string Label;       // resolved display text (falls back to key/name)
         public string Era;         // EraReference name, for grouping/tinting
         public string Tier;        // TechnologyTier enum
 
-        // Per-asset references. "Vanilla*" = read-only reference-folder copy (fallback);
+        // Per-asset references. "Vanilla*" = read-only copy loaded straight from the
+        // mounted MercuryDatabases asset bundle (fallback);
         // "Mod*" = the editable copy under Databases/ (null if not yet imported there).
         public UnityEngine.Object VanillaDef,    ModDef;     // TechnologyDefinition
         public UnityEngine.Object VanillaMapper, ModMapper;  // TechnologyUIMapper
@@ -59,15 +60,6 @@ public static class TechTreeData
     public const string DefaultModPath = "Assets/Databases/New Additions";
     public const string DatabasesRoot  = "Assets/Databases";
 
-    // Reference (read-only archive) path — shares the Index tool's EditorPrefs key,
-    // so editing it in either tool stays in sync.
-    static string ReferenceKey => "DescIndex.VanillaFolder." + Application.dataPath.GetHashCode();
-    public static string ReferenceFolder
-    {
-        get => EditorPrefs.GetString(ReferenceKey, "Assets/VanillaReference");
-        set => EditorPrefs.SetString(ReferenceKey, value);
-    }
-
     static bool Under(UnityEngine.Object o, string root)
     {
         var p = AssetDatabase.GetAssetPath(o);
@@ -85,24 +77,21 @@ public static class TechTreeData
         if (techType == null || mapperType == null)
         { Debug.LogError("[TechTree] Tech/Mapper type not found."); return new(); }
 
-        string refRoot = ReferenceFolder;
-
-        // Classify each asset: under Databases = shippable/editable; under reference = read-only archive.
-        // Active = Databases copy if present, else reference copy.
+        // Mod copies: project assets under Databases/ (shippable/editable).
+        // Vanilla copies: loaded straight from the mounted MercuryDatabases asset bundle.
         var dbDef = new Dictionary<string, UnityEngine.Object>();
-        var refDef = new Dictionary<string, UnityEngine.Object>();
         foreach (var o in LoadAllOfType(techType))
-        {
             if (Under(o, DatabasesRoot)) dbDef[o.name] = o;
-            else if (Under(o, refRoot))  refDef[o.name] = o;
-        }
+        var refDef = new Dictionary<string, UnityEngine.Object>();
+        foreach (var o in VanillaDatabaseMount.LoadAllOfType(techType))
+            refDef[o.name] = o;
+
         var dbMap = new Dictionary<string, UnityEngine.Object>();
-        var refMap = new Dictionary<string, UnityEngine.Object>();
         foreach (var o in LoadAllOfType(mapperType))
-        {
             if (Under(o, DatabasesRoot)) dbMap[o.name] = o;
-            else if (Under(o, refRoot))  refMap[o.name] = o;
-        }
+        var refMap = new Dictionary<string, UnityEngine.Object>();
+        foreach (var o in VanillaDatabaseMount.LoadAllOfType(mapperType))
+            refMap[o.name] = o;
 
         var f_era  = techType.GetField("EraReference", ALL);
         var f_tier = techType.GetField("TechnologyTier", ALL);
@@ -128,6 +117,7 @@ public static class TechTreeData
                 node.BaseX    = GetInt(mapper, "TechTreeX");
                 node.BaseY    = GetInt(mapper, "TechTreeY");
                 node.TitleKey = GetString(mapper, "Title");
+                node.DescriptionKey = GetString(mapper, "Description");
             }
             node.Label = !string.IsNullOrEmpty(node.TitleKey) && loc.TryGetValue(node.TitleKey, out var t)
                 ? t : (string.IsNullOrEmpty(node.TitleKey) ? name : node.TitleKey);
@@ -149,40 +139,15 @@ public static class TechTreeData
     }
 
     // ── Resolver 2: build the %key -> text dictionary once ────────────────────
+    // Sourced from the Mod Editor's own archive translations bundle (the same one the
+    // Localization Window mounts) — NOT from a Databases-folder scan; the %key strings are
+    // LocalizedStringTranslation rows (LocalizationLine.Id -> LocalizationLine.Body), not
+    // anything under Assets/Databases.
     static Dictionary<string, string> BuildLocalizationDict()
     {
-        var dict = new Dictionary<string, string>(48000);
-
-        // The processed/shipped collection: LocalizedStringElementCollection with
-        // lineCollection : List<LocalizedStringElement>{ LineId, CompactedNodes[].TextValue }
-        var collType = FindType("Amplitude.Framework.Localization.LocalizedStringElementCollection");
-        if (collType == null) { Debug.LogWarning("[TechTree] Localization collection type not found; labels will fall back to keys."); return dict; }
-
-        foreach (var coll in LoadAllOfType(collType))
-        {
-            // prefer en-US if multiple languages are present
-            string lang = GetString(coll, "LanguageId");
-            if (!string.IsNullOrEmpty(lang) && !lang.StartsWith("en", StringComparison.OrdinalIgnoreCase) && dict.Count > 0)
-                continue;
-
-            var lines = collType.GetField("lineCollection", ALL)?.GetValue(coll) as IEnumerable;
-            if (lines == null) continue;
-
-            foreach (var line in lines)
-            {
-                if (line == null) continue;
-                var lt = line.GetType();
-                string id = lt.GetField("LineId", ALL)?.GetValue(line) as string;
-                if (string.IsNullOrEmpty(id)) continue;
-
-                if (lt.GetField("CompactedNodes", ALL)?.GetValue(line) is IList nodesArr && nodesArr.Count > 0)
-                {
-                    var first = nodesArr[0];
-                    string text = first?.GetType().GetField("TextValue", ALL)?.GetValue(first) as string;
-                    if (text != null) dict[id] = text;   // last-wins; en-US preferred above
-                }
-            }
-        }
+        var dict = new Dictionary<string, string>(ArchiveTranslations.BuildKeyToTextDict());
+        if (dict.Count == 0)
+            Debug.LogWarning($"[TechTree] No archive translations loaded ({ArchiveTranslations.LastError}); labels will fall back to keys.");
         return dict;
     }
 
@@ -226,8 +191,9 @@ public static class TechTreeData
 
     // ── Write path: ensure a writable asset, then field writers ───────────────
     // Returns the asset to write into. Active asset already under Databases/ -> edit
-    // in place. Reference-only -> copy into modPath (New Additions) and return the
-    // copy. Null if nothing to write (new-tech creation is v2).
+    // in place. Reference-only -> lift the vanilla element into an override collection at
+    // vanilla's own mirrored path (exactly what the Mod Editor's "Override from Archives"
+    // does) and return the writable duplicate. Null if nothing to write.
     public static UnityEngine.Object EnsureWritable(Node node, bool isMapper, string modPath)
     {
         var active = isMapper ? node.ActiveMapper : node.ActiveDef;
@@ -236,76 +202,57 @@ public static class TechTreeData
             Debug.LogWarning($"[TechTree] {node.Name}: no {(isMapper ? "mapper" : "def")} to write — new-tech creation is v2.");
             return null;
         }
-        if (Under(active, DatabasesRoot)) return active;             // edit in place
-        return CopyReferenceIntoMod(active, modPath, isMapper);      // lift reference -> New Additions
+        if (Under(active, DatabasesRoot)) return active;     // edit in place
+        return OverrideVanillaElement(active);                // lift vanilla element -> mirrored Databases path
     }
 
-    // Collection types that host the elements. Defs have a dedicated collection;
-    // mappers live in the universal UIMappersCollection (mixed types, membership by
-    // sub-asset type), so we locate it by PATH under modPath, not by type alone.
-    const string DefCollectionType    = "Amplitude.Mercury.Data.Simulation.TechnologyDefinitionCollection";
-    const string MapperCollectionType = "Amplitude.UI.UIMappersCollection";
-
-    static UnityEngine.Object CopyReferenceIntoMod(UnityEngine.Object refAsset, string modPath, bool isMapper)
+    // Lifts a vanilla element (a sub-asset of a *Collection in the mounted bundle) into an
+    // editable override, using the same Amplitude.Framework.Utility.DatatableElementCollectionUtility
+    // calls the Mod Editor's own "Override from Archives" importer uses: get-or-create the
+    // destination collection at vanilla's own FilePath, then duplicate the element by name
+    // (ensureUniqueName: false, so it overrides by name at load instead of becoming a copy).
+    static UnityEngine.Object OverrideVanillaElement(UnityEngine.Object refAsset)
     {
-        // Standalone (non-sub) reference asset: simple file copy into modPath.
-        if (!AssetDatabase.IsSubAsset(refAsset))
+        if (!VanillaDatabaseMount.TryGetOwnerDescriptor(refAsset, out var ownerDescriptor))
         {
-            EnsureFolder(modPath);
-            string src = AssetDatabase.GetAssetPath(refAsset);
-            string dst = $"{modPath}/{refAsset.name}.asset";
-            if (!AssetDatabase.CopyAsset(src, dst))
-            { Debug.LogError($"[TechTree] CopyAsset failed: {src} -> {dst}"); return null; }
-            AssetDatabase.ImportAsset(dst);
-            return AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(dst);
+            Debug.LogError($"[TechTree] {refAsset.name}: not a vanilla element with a known owner (mount may have been invalidated).");
+            return null;
         }
-
-        // Sub-asset: lift it into the New Additions collection of the matching type.
-        string wantType = isMapper ? MapperCollectionType : DefCollectionType;
-        var host = FindCollectionUnder(modPath, wantType);
-        if (host == null)
+        if (refAsset is not Amplitude.Framework.IDatatableElement genuineElement)
         {
-            string shortName = wantType.Substring(wantType.LastIndexOf('.') + 1);
-            Debug.LogWarning($"[TechTree] No '{shortName}' found under \"{modPath}\". " +
-                             $"Create it via the DatatableElement Collection Editor first, then re-save. " +
-                             $"({refAsset.name} not lifted.)");
+            Debug.LogError($"[TechTree] {refAsset.name} does not implement IDatatableElement; can't be overridden this way.");
             return null;
         }
 
-        // Type-preserving duplicate, same name (so it overrides by name at load).
-        var copy = UnityEngine.Object.Instantiate(refAsset);
-        copy.name = refAsset.name;
-        AssetDatabase.AddObjectToAsset(copy, host);
-        EditorUtility.SetDirty(host);
-        AssetDatabase.SaveAssets();
-        AssetDatabase.ImportAsset(AssetDatabase.GetAssetPath(host));
-        return copy;
-    }
-
-    // Finds the main collection asset of the given type whose path is under modPath.
-    static UnityEngine.Object FindCollectionUnder(string modPath, string fullTypeName)
-    {
-        foreach (var guid in AssetDatabase.FindAssets("t:ScriptableObject"))
+        var collectionType = ownerDescriptor.GetAssetType();
+        if (collectionType == null)
         {
-            var path = AssetDatabase.GUIDToAssetPath(guid);
-            if (path != modPath && !path.StartsWith(modPath + "/", StringComparison.Ordinal)) continue;
-            var main = AssetDatabase.LoadMainAssetAtPath(path);
-            if (main != null && main.GetType().FullName == fullTypeName) return main;
+            Debug.LogError($"[TechTree] {refAsset.name}: couldn't resolve the owning collection's type.");
+            return null;
         }
-        return null;
-    }
+        string directory = System.IO.Path.GetDirectoryName(ownerDescriptor.FilePath)?.Replace('\\', '/');
+        string collectionName = System.IO.Path.GetFileNameWithoutExtension(ownerDescriptor.FileName);
 
-    static void EnsureFolder(string path)
-    {
-        if (AssetDatabase.IsValidFolder(path)) return;
-        var parts = path.Split('/');
-        string cur = parts[0];               // "Assets"
-        for (int i = 1; i < parts.Length; i++)
+        var collection = Amplitude.Framework.Utility.DatatableElementCollectionUtility
+            .GetOrCreateDatatableElementCollection(collectionType, directory, collectionName, startNameEditing: false);
+        if (collection == null)
         {
-            string next = cur + "/" + parts[i];
-            if (!AssetDatabase.IsValidFolder(next)) AssetDatabase.CreateFolder(cur, parts[i]);
-            cur = next;
+            Debug.LogError($"[TechTree] Failed to get-or-create override collection '{directory}/{collectionName}'.");
+            return null;
         }
+
+        Amplitude.Framework.IDatatableElement[] duplicates = null;
+        bool ok = Amplitude.Framework.Utility.DatatableElementCollectionUtility.TryDuplicateDatatableElements(
+            new[] { genuineElement }, ref collection, ref duplicates,
+            showWarningDialogThresholdCount: false, ensureUniqueName: false, reimport: false);
+        if (!ok || duplicates == null || duplicates.Length == 0)
+        {
+            Debug.LogError($"[TechTree] TryDuplicateDatatableElements failed for {refAsset.name}.");
+            return null;
+        }
+
+        duplicates[0].SetEditable(true);
+        return duplicates[0] as UnityEngine.Object;
     }
 
     public static void WritePosition(UnityEngine.Object mapper, int x, int y)
@@ -340,17 +287,17 @@ public static class TechTreeData
     {
         var techType   = FindType("Amplitude.Mercury.Data.Simulation.TechnologyDefinition");
         var mapperType = FindType("Amplitude.Mercury.UI.TechnologyUIMapper");
-        string refRoot = ReferenceFolder;
         var sb = new StringBuilder();
         sb.AppendLine("=== Mod-split diagnostic ===");
-        sb.AppendLine($"reference (read-only) = \"{refRoot}\"");
-        sb.AppendLine($"databases (shippable) = \"{DatabasesRoot}\"");
-        sb.AppendLine($"copy-on-write target  = \"{modPath}\"\n");
+        VanillaDatabaseMount.TryMount(out var mountError);
+        sb.AppendLine($"vanilla bundle         = \"{VanillaDatabaseMount.BundlePath}\" ({(VanillaDatabaseMount.IsMounted ? "mounted" : "NOT MOUNTED: " + mountError)})");
+        sb.AppendLine($"databases (shippable)  = \"{DatabasesRoot}\"");
+        sb.AppendLine($"copy-on-write target   = \"{modPath}\"\n");
 
         void Report(string label, Type t)
         {
             if (t == null) { sb.AppendLine($"{label}: TYPE NOT FOUND\n"); return; }
-            int inDb = 0, inRef = 0, elsewhere = 0;
+            int inDb = 0, elsewhere = 0;
             var dbFolders = new Dictionary<string, int>();
             foreach (var o in LoadAllOfType(t))
             {
@@ -361,10 +308,10 @@ public static class TechTreeData
                     var dir = System.IO.Path.GetDirectoryName(p)?.Replace('\\', '/') ?? "";
                     dbFolders[dir] = dbFolders.TryGetValue(dir, out var c) ? c + 1 : 1;
                 }
-                else if (Under(o, refRoot)) inRef++;
                 else elsewhere++;
             }
-            sb.AppendLine($"{label}: {inDb} in Databases, {inRef} reference-only, {elsewhere} elsewhere(ignored)");
+            int inVanilla = VanillaDatabaseMount.LoadAllOfType(t).Count();
+            sb.AppendLine($"{label}: {inDb} in Databases, {inVanilla} vanilla (mounted bundle), {elsewhere} elsewhere(ignored)");
             foreach (var kv in dbFolders.OrderByDescending(k => k.Value).Take(12))
                 sb.AppendLine($"      [{kv.Value,4}]  {kv.Key}");
             if (inDb == 0)

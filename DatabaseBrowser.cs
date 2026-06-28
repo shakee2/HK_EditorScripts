@@ -29,8 +29,6 @@ public class DatabaseBrowser : EditorWindow
     List<Entry> _all = new();
     List<Entry> _view = new();
     List<DI>    _display = new();
-    string _vanillaFolder = "Assets/VanillaReference";
-    string VanillaFolderKey => "DescIndex.VanillaFolder." + Application.dataPath.GetHashCode();
 
     // filters
     string _search = "";
@@ -74,7 +72,6 @@ public class DatabaseBrowser : EditorWindow
     void OnEnable()
     {
         wantsMouseMove = true;
-        _vanillaFolder = EditorPrefs.GetString(VanillaFolderKey, "Assets/VanillaReference");
         _mode = (ViewMode)EditorPrefs.GetInt(ModeKey, 0);
         Refresh();
     }
@@ -95,10 +92,6 @@ public class DatabaseBrowser : EditorWindow
             _headerStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 11 };
     }
 
-    bool UnderVanilla(string p) =>
-        !string.IsNullOrEmpty(_vanillaFolder) &&
-        (p == _vanillaFolder || p.StartsWith(_vanillaFolder + "/", StringComparison.Ordinal));
-
     // ── Scan ──────────────────────────────────────────────────────────────────
     void Refresh()
     {
@@ -110,15 +103,18 @@ public class DatabaseBrowser : EditorWindow
             foreach (var guid in guids)
             {
                 if (++i % 64 == 0)
-                    EditorUtility.DisplayProgressBar("Database Browser", "Loading assets…", i / (float)n);
+                    EditorUtility.DisplayProgressBar("Database Browser", "Loading project assets…", i / (float)n);
                 var path = AssetDatabase.GUIDToAssetPath(guid);
-                string scope = UnderVanilla(path) ? "Vanilla" : "Mod";
                 foreach (var obj in AssetDatabase.LoadAllAssetsAtPath(path))
                 {
                     if (obj == null || obj is not ScriptableObject) continue;
-                    list.Add(new Entry { obj = obj, name = obj.name, typeName = obj.GetType().Name, scope = scope });
+                    list.Add(new Entry { obj = obj, name = obj.name, typeName = obj.GetType().Name, scope = "Mod" });
                 }
             }
+
+            EditorUtility.DisplayProgressBar("Database Browser", "Loading vanilla databases…", 1f);
+            foreach (var obj in VanillaDatabaseMount.LoadAllOfType(typeof(ScriptableObject)))
+                list.Add(new Entry { obj = obj, name = obj.name, typeName = obj.GetType().Name, scope = "Vanilla" });
         }
         finally { EditorUtility.ClearProgressBar(); }
 

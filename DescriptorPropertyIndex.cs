@@ -33,7 +33,6 @@ public class DescriptorPropertyIndex : EditorWindow
 
     static string CachePath =>
         Path.Combine(Directory.GetParent(Application.dataPath).FullName, "DescriptorIndexCache.json");
-    string VanillaFolderKey => "DescIndex.VanillaFolder." + Application.dataPath.GetHashCode();
 
     // ── Reflection cache ──────────────────────────────────────────────────────
     static Type      s_descriptorType;
@@ -56,7 +55,6 @@ public class DescriptorPropertyIndex : EditorWindow
     List<Row> _view = new();
     Dictionary<string, List<string>> _vanillaDefs = new();
     string _builtUtc = "";
-    string _vanillaFolder = "Assets/VanillaReference";
 
     enum ScopeFilter { All, MyMod, Vanilla, ModdedOriginals, DatabaseDuplicates }
     static readonly string[] SCOPE_LABELS = { "All", "My Mod", "Vanilla", "Modded *", "Dupes !" };
@@ -84,7 +82,6 @@ public class DescriptorPropertyIndex : EditorWindow
     void OnEnable()
     {
         wantsMouseMove = true;   // needed for live hover tracking
-        _vanillaFolder = EditorPrefs.GetString(VanillaFolderKey, "Assets/VanillaReference");
         BuildHeader();
         TryResolveFields();
         LoadCache();
@@ -128,20 +125,14 @@ public class DescriptorPropertyIndex : EditorWindow
         if (Event.current.type == EventType.MouseMove) Repaint();
         EditorGUILayout.Space(6);
 
-        // Vanilla folder config
+        // Vanilla bundle mount status (mounted automatically from the Mod Editor's Humankind folder)
         EditorGUILayout.BeginHorizontal();
-        EditorGUILayout.LabelField("Vanilla folder", GUILayout.Width(90));
-        string newFolder = EditorGUILayout.TextField(_vanillaFolder);
-        if (newFolder != _vanillaFolder) { _vanillaFolder = newFolder; EditorPrefs.SetString(VanillaFolderKey, _vanillaFolder); }
-        if (GUILayout.Button("Pick", GUILayout.Width(50)))
-        {
-            string abs = EditorUtility.OpenFolderPanel("Vanilla reference folder", Application.dataPath, "");
-            if (!string.IsNullOrEmpty(abs) && abs.StartsWith(Application.dataPath))
-            {
-                _vanillaFolder = "Assets" + abs.Substring(Application.dataPath.Length);
-                EditorPrefs.SetString(VanillaFolderKey, _vanillaFolder);
-            }
-        }
+        bool vanillaMounted = VanillaDatabaseMount.IsMounted || VanillaDatabaseMount.TryMount(out _);
+        EditorGUILayout.LabelField("Vanilla bundle", GUILayout.Width(90));
+        GUI.color = vanillaMounted ? Color.white : new Color(1f, 0.6f, 0.6f);
+        EditorGUILayout.LabelField(vanillaMounted ? VanillaDatabaseMount.BundlePath : VanillaDatabaseMount.LastError);
+        GUI.color = Color.white;
+        if (GUILayout.Button("Remount", GUILayout.Width(70))) VanillaDatabaseMount.Invalidate();
         EditorGUILayout.EndHorizontal();
 
         // Build controls
@@ -340,6 +331,14 @@ public class DescriptorPropertyIndex : EditorWindow
 
     void Ping(Row r)
     {
+        if (r.scope == "Vanilla")
+        {
+            foreach (var a in VanillaDatabaseMount.LoadAllOfType(s_descriptorType))
+                if (a != null && a.name == r.assetName)
+                { Selection.activeObject = a; return; }
+            Debug.LogWarning($"[DescriptorIndex] '{r.assetName}' not found in the mounted vanilla bundle.");
+            return;
+        }
         if (string.IsNullOrEmpty(r.guid)) return;
         var path = AssetDatabase.GUIDToAssetPath(r.guid);
         if (string.IsNullOrEmpty(path)) return;
@@ -349,39 +348,28 @@ public class DescriptorPropertyIndex : EditorWindow
         foreach (var a in AssetDatabase.LoadAllAssetsAtPath(path))
             if (a != null && a.name == r.assetName)
             { EditorGUIUtility.PingObject(a); Selection.activeObject = a; return; }
-        Debug.LogWarning($"[DescriptorIndex] '{r.assetName}' not in project (vanilla may be unloaded).");
+        Debug.LogWarning($"[DescriptorIndex] '{r.assetName}' not in project.");
     }
 
     // ── Scans ─────────────────────────────────────────────────────────────────
     Dictionary<string, List<string>> _liveModDefs = new();
 
-    bool UnderVanilla(string assetPath) =>
-        !string.IsNullOrEmpty(_vanillaFolder) &&
-        (assetPath == _vanillaFolder || assetPath.StartsWith(_vanillaFolder + "/", StringComparison.Ordinal));
-
     void RebuildVanillaCache()
     {
         if (!s_fieldsResolved && !TryResolveFields()) { Debug.LogError("[DescriptorIndex] Field resolution failed."); return; }
+        if (!VanillaDatabaseMount.TryMount(out var mountError))
+        { Debug.LogError($"[DescriptorIndex] {mountError}"); return; }
 
         var rows = new List<Row>();
         var defMap = new Dictionary<string, List<string>>();
         try
         {
-            var guids = AssetDatabase.FindAssets("t:ScriptableObject");
-            int n = guids.Length, i = 0;
-            foreach (var guid in guids)
+            EditorUtility.DisplayProgressBar("Vanilla Cache", "Scanning mounted vanilla bundle…", 0f);
+            foreach (var obj in VanillaDatabaseMount.LoadAllOfType(typeof(UnityEngine.Object)))
             {
-                if (++i % 64 == 0) EditorUtility.DisplayProgressBar("Vanilla Cache", "Scanning…", i / (float)n);
-                var path = AssetDatabase.GUIDToAssetPath(guid);
-                if (!UnderVanilla(path)) continue;                 // vanilla only
-                var all = AssetDatabase.LoadAllAssetsAtPath(path);
-                if (all == null) continue;
-                foreach (var obj in all)
-                {
-                    if (obj == null) continue;
-                    if (s_descriptorType.IsInstanceOfType(obj)) rows.AddRange(ExtractRows(obj, "Vanilla"));
-                    else HarvestReferences(obj, defMap);
-                }
+                if (obj == null) continue;
+                if (s_descriptorType.IsInstanceOfType(obj)) rows.AddRange(ExtractRows(obj, "Vanilla"));
+                else HarvestReferences(obj, defMap);
             }
         }
         finally { EditorUtility.ClearProgressBar(); }
@@ -403,7 +391,6 @@ public class DescriptorPropertyIndex : EditorWindow
         foreach (var guid in AssetDatabase.FindAssets("t:ScriptableObject"))
         {
             var path = AssetDatabase.GUIDToAssetPath(guid);
-            if (UnderVanilla(path)) continue;                      // everything except vanilla
             var all = AssetDatabase.LoadAllAssetsAtPath(path);
             if (all == null) continue;
             foreach (var obj in all)
