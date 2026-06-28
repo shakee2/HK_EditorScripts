@@ -19,9 +19,26 @@ public class TechTreeWindow : EditorWindow
     {
         public int? X, Y;                // staged position (null = unchanged)
         public List<string> Prereqs;     // staged prereq list (null = unchanged)
-        public bool IsEmpty => X == null && Y == null && Prereqs == null;
+        public string TitleText, DescriptionText;  // staged localization text (null = unchanged)
+        public bool IsEmpty => X == null && Y == null && Prereqs == null && TitleText == null && DescriptionText == null;
     }
     readonly Dictionary<string, Pending> _pending = new();
+
+    // Cache of "is this loc key imported into a project override row?" per key. The
+    // underlying ArchiveTranslations.HasOverride walks every LocalizedStringTranslationCollection
+    // in the project on every call, so calling it per repaint (twice per selected node) was
+    // what made the window slow after the editable-loc feature landed. The override state
+    // only changes on import / save / revert, so a memo keyed by loc key is enough; invalidate
+    // it (InvalidateImportedCache) on those three events.
+    readonly Dictionary<string, bool> _importedCache = new();
+    void InvalidateImportedCache() => _importedCache.Clear();
+    bool IsImported(string key)
+    {
+        if (string.IsNullOrEmpty(key)) return false;
+        if (!_importedCache.TryGetValue(key, out var v))
+            _importedCache[key] = v = ArchiveTranslations.HasOverride(key);
+        return v;
+    }
 
     List<TechTreeData.Node> _nodes;
     Dictionary<string, TechTreeData.Node> _byName;
@@ -46,7 +63,12 @@ public class TechTreeWindow : EditorWindow
     const float CELL = 26f;
     const float NODE_W = 150f, NODE_H = 34f;
     const float LABEL_MIN_ZOOM = 0.45f;
-    const float SIDE_W = 300f;
+
+    // sidebar width — draggable via the splitter handle, persisted across sessions
+    const float SIDE_W_MIN = 220f, SIDE_W_MAX = 600f;
+    float _sideW = 300f;
+    bool _resizingSide;
+    string SideWKey => "TechTree.SideW";
 
     static readonly Color EDIT_DOT = new Color(1f, 0.65f, 0.1f);     // amber: unsaved
     static readonly Color MOD_BADGE = new Color(0.4f, 0.7f, 1f);     // blue: modded on disk
@@ -64,9 +86,30 @@ public class TechTreeWindow : EditorWindow
     void OnEnable()
     {
         _modPath = EditorPrefs.GetString(ModPathKey, TechTreeData.DefaultModPath);
+        _sideW = Mathf.Clamp(EditorPrefs.GetFloat(SideWKey, _sideW), SIDE_W_MIN, SIDE_W_MAX);
         Undo.undoRedoPerformed += OnUndoRedo;
         try { Reload(); }
         catch (Exception e) { Debug.LogError($"[TechTree] Build failed on open: {e}"); _nodes = new(); _byName = new(); }
+
+        // After a script recompile, the Mod Editor's translations bundle may still be
+        // loaded at the native level while Amplitude's provider registry hasn't
+        // re-registered it yet — so the first Reload() above may have produced an empty
+        // translation dict (labels fallen back to keys). Give ModTools a frame to finish
+        // repopulating, then retry once. Subsequent calls won't re-trigger this because
+        // BuildVanillaCache only retries when its cache is empty.
+        if (!ArchiveTranslations.IsMounted)
+            EditorApplication.update += DelayedRetryMount;
+    }
+
+    static void DelayedRetryMount()
+    {
+        // One-shot: unsubscribe first so this only runs once per subscription.
+        EditorApplication.update -= DelayedRetryMount;
+        // Re-mount attempt + reload every open Tech Tree window so labels recover without
+        // a manual Reload click after a recompile.
+        ArchiveTranslations.TryMount(out _);
+        foreach (var w in Resources.FindObjectsOfTypeAll<TechTreeWindow>())
+            w.Reload(keepView: true);
     }
 
     void OnDisable()
@@ -87,6 +130,10 @@ public class TechTreeWindow : EditorWindow
         _byName = _nodes.GroupBy(n => n.Name).ToDictionary(g => g.Key, g => g.First());
         // keep pending across reload only for names that still exist
         foreach (var k in _pending.Keys.Where(k => !_byName.ContainsKey(k)).ToList()) _pending.Remove(k);
+        // Re-check imported state: override rows may have been added or removed externally
+        // (e.g. via the Mod Editor's Localization Window) since the last reload, so the
+        // _importedCache memo is stale. Drop it so IsImported re-queries the collection.
+        InvalidateImportedCache();
         if (!keepView) _framed = false;   // re-frame only on first load / explicit Frame All
         Repaint();
     }
@@ -96,6 +143,10 @@ public class TechTreeWindow : EditorWindow
     int EffY(TechTreeData.Node n) => _pending.TryGetValue(n.Name, out var p) && p.Y.HasValue ? p.Y.Value : n.BaseY;
     IReadOnlyList<string> EffPrereqs(TechTreeData.Node n) =>
         _pending.TryGetValue(n.Name, out var p) && p.Prereqs != null ? p.Prereqs : (IReadOnlyList<string>)n.BasePrereqs;
+    string EffTitleText(TechTreeData.Node n) =>
+        _pending.TryGetValue(n.Name, out var p) && p.TitleText != null ? p.TitleText : n.TitleText;
+    string EffDescriptionText(TechTreeData.Node n) =>
+        _pending.TryGetValue(n.Name, out var p) && p.DescriptionText != null ? p.DescriptionText : n.DescriptionText;
 
     bool IsEdited(TechTreeData.Node n) => _pending.ContainsKey(n.Name);
     bool Dirty => _pending.Count > 0;
@@ -168,13 +219,32 @@ public class TechTreeWindow : EditorWindow
             EditorGUILayout.HelpBox($"Vanilla databases bundle not mounted ({VanillaDatabaseMount.LastError}) — showing Databases content only (no vanilla fallback).", MessageType.Info);
 
         float top = EditorStyles.toolbar.fixedHeight > 0 ? EditorStyles.toolbar.fixedHeight : 21f;
-        Rect canvas = new Rect(0, top, position.width - SIDE_W, position.height - top);
-        Rect side   = new Rect(canvas.xMax, top, SIDE_W, position.height - top);
+        _sideW = Mathf.Clamp(_sideW, SIDE_W_MIN, Mathf.Max(SIDE_W_MIN, position.width - 200f));
+        Rect canvas   = new Rect(0, top, position.width - _sideW, position.height - top);
+        Rect side     = new Rect(canvas.xMax, top, _sideW, position.height - top);
+        Rect splitter = new Rect(canvas.xMax - 2f, top, 4f, position.height - top);
 
+        HandleSplitter(splitter);
         if (!_framed) FrameAll(canvas);
         HandleInput(canvas);
         DrawCanvas(canvas);
         DrawSide(side);
+    }
+
+    void HandleSplitter(Rect splitter)
+    {
+        EditorGUIUtility.AddCursorRect(splitter, MouseCursor.ResizeHorizontal);
+        var e = Event.current;
+        if (e.type == EventType.MouseDown && splitter.Contains(e.mousePosition))
+        { _resizingSide = true; e.Use(); }
+        else if (e.type == EventType.MouseDrag && _resizingSide)
+        {
+            _sideW = Mathf.Clamp(_sideW - e.delta.x, SIDE_W_MIN, Mathf.Max(SIDE_W_MIN, position.width - 200f));
+            EditorPrefs.SetFloat(SideWKey, _sideW);
+            e.Use(); Repaint();
+        }
+        else if (e.type == EventType.MouseUp && _resizingSide)
+        { _resizingSide = false; e.Use(); }
     }
 
     // ── Input ─────────────────────────────────────────────────────────────────
@@ -326,10 +396,20 @@ public class TechTreeWindow : EditorWindow
 
     // ── Side strip ────────────────────────────────────────────────────────────
     Vector2 _sideScroll;
+    float _sideContentW;   // width of the pinned vertical group inside the side scroll view
     void DrawSide(Rect side)
     {
         GUILayout.BeginArea(side, EditorStyles.helpBox);
-        _sideScroll = EditorGUILayout.BeginScrollView(_sideScroll);
+        // Pin the scroll view's vertical content to the visible width so multi-line
+        // controls (notably the loc TextArea in DrawLocField) can't grow the content
+        // wider than the sidebar to fit their text on one line — which was preventing
+        // word-wrap and pushing a horizontal scrollbar in. We subtract a small margin
+        // for the scrollbar + box padding.
+        const float SIDE_PADDING = 18f;
+        float contentW = Mathf.Max(40f, side.width - SIDE_PADDING);
+        _sideScroll = EditorGUILayout.BeginScrollView(_sideScroll, GUILayout.Width(side.width), GUILayout.ExpandHeight(true));
+        EditorGUILayout.BeginVertical(GUILayout.Width(contentW));
+        _sideContentW = contentW;
 
         if (_selected == null)
             EditorGUILayout.LabelField("Click a node to inspect.", EditorStyles.wordWrappedMiniLabel);
@@ -348,8 +428,8 @@ public class TechTreeWindow : EditorWindow
 
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("Localization", EditorStyles.boldLabel);
-            UIKeyField("Title", n.TitleKey);
-            UIKeyField("Description", n.DescriptionKey);
+            DrawLocField(n, "Title", n.TitleKey, EffTitleText(n), isDescription: false);
+            DrawLocField(n, "Description", n.DescriptionKey, EffDescriptionText(n), isDescription: true);
 
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("Prerequisites (OR):", EditorStyles.boldLabel);
@@ -378,12 +458,16 @@ public class TechTreeWindow : EditorWindow
             { Selection.activeObject = n.Asset; EditorGUIUtility.PingObject(n.Asset); }
         }
 
+        EditorGUILayout.EndVertical();
         EditorGUILayout.EndScrollView();
         GUILayout.EndArea();
     }
 
-    // Selectable %key + copy button, so it's easy to find/paste into the Localization Window.
-    static void UIKeyField(string label, string key)
+    // %key + copy button, plus the resolved text — editable once imported into a project
+    // override row (ArchiveTranslations.EnsureOverride); locked (with an Import button)
+    // until then, since editing text that's still only in the vanilla archive would have
+    // nowhere to be saved.
+    void DrawLocField(TechTreeData.Node n, string label, string key, string currentText, bool isDescription)
     {
         EditorGUILayout.BeginHorizontal();
         EditorGUILayout.LabelField(label, GUILayout.Width(70));
@@ -393,6 +477,43 @@ public class TechTreeWindow : EditorWindow
             if (GUILayout.Button("Copy", EditorStyles.miniButton, GUILayout.Width(44)))
                 EditorGUIUtility.systemCopyBuffer = key;
         EditorGUILayout.EndHorizontal();
+
+        bool imported = IsImported(key);
+        using (new EditorGUI.DisabledScope(!imported))
+        {
+            // Word-wrap fix: the textarea is inside a vertical group whose width is pinned
+            // to the visible sidebar width (see DrawSide), so the style's wordWrap actually
+            // engages now. Compute the wrapped height from that available width so the field
+            // hugs its content instead of being a MinHeight the layout can inflate, and pass
+            // an explicit Width so it can't grow wider than the content column.
+            var taStyle = EditorStyles.textArea;   // wordWrap == true by default
+            float availW = Mathf.Max(40f, _sideContentW);
+            float h = taStyle.CalcHeight(new GUIContent(currentText ?? ""), availW);
+            h = Mathf.Max(h, isDescription ? 50f : 18f);
+            EditorGUI.BeginChangeCheck();
+            string edited = EditorGUILayout.TextArea(currentText, taStyle,
+                GUILayout.Width(availW), GUILayout.Height(h), GUILayout.ExpandWidth(false));
+            if (imported && EditorGUI.EndChangeCheck())
+                StageLocText(n, isDescription, edited);
+        }
+        if (!imported)
+            using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(key)))
+                if (GUILayout.Button("Import for editing", EditorStyles.miniButton))
+                {
+                    if (ArchiveTranslations.EnsureOverride(key, currentText) != null)
+                    { InvalidateImportedCache(); Repaint(); }
+                }
+        EditorGUILayout.Space(4);
+    }
+
+    void StageLocText(TechTreeData.Node n, bool isDescription, string text)
+    {
+        var p = Stage(n);
+        string baseText = isDescription ? n.DescriptionText : n.TitleText;
+        if (isDescription) p.DescriptionText = text != baseText ? text : null;
+        else                p.TitleText      = text != baseText ? text : null;
+        DropIfClean(n);
+        Repaint();
     }
 
     // ── Edit operations (staging into the overlay; disk write is at Save) ──────
@@ -455,7 +576,11 @@ public class TechTreeWindow : EditorWindow
     void CommitChanges()
     {
         if (_pending.Count == 0) return;
-        int pos = 0, pre = 0, skipped = 0;
+        int pos = 0, pre = 0, loc = 0, skipped = 0;
+
+        // Pass 1 — mapper/def edits (plain ScriptableObjects under Databases/). These are safe
+        // to persist via a global SaveAssets() because they aren't Amplitude datatable
+        // collections, so Amplitude's save handler won't prompt for them.
         foreach (var kv in _pending)
         {
             if (!_byName.TryGetValue(kv.Key, out var node)) continue;
@@ -486,11 +611,32 @@ public class TechTreeWindow : EditorWindow
                 else skipped++;
             }
         }
-        AssetDatabase.SaveAssets();
-        AssetDatabase.Refresh();
-        Debug.Log($"[TechTree] Saved: {pos} position, {pre} prerequisite change(s)"
-                + (skipped > 0 ? $" · {skipped} skipped (no writable target — see step 5)" : "") + ".");
+        // Save ONLY the mapper/def ScriptableObjects now. This must happen BEFORE the loc
+        // edits below, because AssetDatabase.SaveAssets() is global: if the Translations.asset
+        // datatable collection were dirty at this point, Amplitude's save handler would pop a
+        // "Couldn't create asset file!" dialog for it. The mapper/def are plain SOs, so this
+        // save is prompt-free.
+        if (pos > 0 || pre > 0)
+            AssetDatabase.SaveAssets();
+
+        // Pass 2 — loc edits. SetOverrideText mutates the row in memory and marks the
+        // collection dirty. We deliberately do NOT call SaveAssets() after this: the
+        // Translations.asset is a DatatableElementCollection, and forcing its save via
+        // SaveAssets() triggers Amplitude's prompt. Mirror VanillaDatabaseMount.OverrideVanillaElement,
+        // which marks dirty and leaves persistence to Unity's normal save flow (the
+        // in-memory mutation is what Reload reads back, so the edit shows immediately).
+        foreach (var kv in _pending)
+        {
+            if (!_byName.TryGetValue(kv.Key, out var node)) continue;
+            var p = kv.Value;
+            if (p.TitleText != null) { ArchiveTranslations.SetOverrideText(node.TitleKey, p.TitleText); loc++; }
+            if (p.DescriptionText != null) { ArchiveTranslations.SetOverrideText(node.DescriptionKey, p.DescriptionText); loc++; }
+        }
+
+        Debug.Log($"[TechTree] Saved: {pos} position, {pre} prerequisite, {loc} localization change(s)"
+                + (skipped > 0 ? $" Â· {skipped} skipped (no writable target â€” see step 5)" : "") + ".");
         _pending.Clear();
+        InvalidateImportedCache();   // commits may have written new override rows
         Reload(keepView: true);
     }
 
@@ -498,7 +644,7 @@ public class TechTreeWindow : EditorWindow
     {
         if (_pending.Count == 0) return;
         if (EditorUtility.DisplayDialog("Revert", $"Discard {_pending.Count} unsaved change(s)?", "Discard", "Cancel"))
-        { _pending.Clear(); Reload(keepView: true); }
+        { _pending.Clear(); InvalidateImportedCache(); Reload(keepView: true); }
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

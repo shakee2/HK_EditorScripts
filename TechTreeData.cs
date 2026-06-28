@@ -29,6 +29,8 @@ public static class TechTreeData
         public string TitleKey;    // raw "%...Title"
         public string DescriptionKey;  // raw "%...Description"
         public string Label;       // resolved display text (falls back to key/name)
+        public string TitleText;       // resolved Title text, "" if unresolved (no key/name fallback)
+        public string DescriptionText; // resolved Description text, "" if unresolved
         public string Era;         // EraReference name, for grouping/tinting
         public string Tier;        // TechnologyTier enum
 
@@ -119,8 +121,9 @@ public static class TechTreeData
                 node.TitleKey = GetString(mapper, "Title");
                 node.DescriptionKey = GetString(mapper, "Description");
             }
-            node.Label = !string.IsNullOrEmpty(node.TitleKey) && loc.TryGetValue(node.TitleKey, out var t)
-                ? t : (string.IsNullOrEmpty(node.TitleKey) ? name : node.TitleKey);
+            node.TitleText = !string.IsNullOrEmpty(node.TitleKey) && loc.TryGetValue(node.TitleKey, out var t) ? t : "";
+            node.DescriptionText = !string.IsNullOrEmpty(node.DescriptionKey) && loc.TryGetValue(node.DescriptionKey, out var d) ? d : "";
+            node.Label = node.TitleText.Length > 0 ? node.TitleText : (string.IsNullOrEmpty(node.TitleKey) ? name : node.TitleKey);
 
             var def = node.ActiveDef;
             node.BasePrereqs = Array.Empty<string>();
