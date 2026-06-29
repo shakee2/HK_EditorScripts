@@ -4,9 +4,9 @@ using UnityEditor;
 using UnityEngine;
 
 /// <summary>
-/// One-shot exporter for the six interconnected tech-tree / browser editor scripts as a
+/// One-shot exporter for the seven interconnected tech-tree / browser editor scripts as a
 /// Unity package. Run via "Tools/Export Mod Editor Scripts Package". The package contains
-/// ONLY these six files (cs + meta), not the unrelated tools (FormulaProbe, Probing,
+/// ONLY these seven files (cs + meta), not the unrelated tools (FormulaProbe, Probing,
 /// AnimationManagerContent, PawnFragmentAuthor, ModBuildWindow):
 ///   - VanillaDatabaseMount.cs   (shared vanilla-bundle mount — foundation for the other four)
 ///   - ArchiveTranslations.cs    (translations-bundle mount + project-override read/write)
@@ -14,6 +14,7 @@ using UnityEngine;
 ///   - TechTreeWindow.cs         (tech-tree viewer/editor window)
 ///   - DatabaseBrowser.cs        (generic database browser window)
 ///   - DescriptorPropertyIndex.cs (descriptor property browser window)
+///   - AssetExplorer.cs          (browse + import any vanilla asset bundle)
 /// The translations bundle itself (Assets/Editor/Resources/Translations/...) ships with
 /// ModTools and is NOT included.
 /// </summary>
@@ -29,6 +30,7 @@ public static class ExportModEditorScriptsPackage
         "Assets/Scripts/Editor/TechTreeWindow.cs",
         "Assets/Scripts/Editor/DatabaseBrowser.cs",
         "Assets/Scripts/Editor/DescriptorPropertyIndex.cs",
+        "Assets/Scripts/Editor/AssetExplorer.cs",
     };
 
     [MenuItem(MENU, false, 200)]

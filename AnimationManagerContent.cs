@@ -11,9 +11,18 @@ using UnityEngine;
 /// Populates an AnimationManagerContent (the hand-maintained registry) from the baked
 /// collection assets in your mod folder, and validates the GUID joins the runtime relies on.
 ///
-/// The game does NOT auto-discover collections. AnimationManager loads exactly the GUIDs
-/// listed in one AnimationManagerContent's three arrays; anything a pawn references but
-/// isn't listed logs "not registered ... please add it to AnimationManagerContent".
+/// CORRECTION (confirmed by an actual build+in-game test, not just decompiled inference): the
+/// "game does NOT auto-discover collections, you must manually register here" premise below was
+/// speculative and turned out to be FALSE for at least the skinned-mesh-fragment case — a unit
+/// rendered correctly in-game without ever running this tool's Populate step. The Mod Editor's
+/// build pipeline appears to auto-discover/register a fragment's MeshCollection the same way it
+/// auto-scans fragmentDirectories for fragments. Treat this tool as a diagnostic/manual-override
+/// aid (useful for validating joins or fixing a case the auto-discovery misses), not a required
+/// step in the normal workflow.
+///
+/// (Original, unverified rationale kept for context: AnimationManager loads exactly the GUIDs
+/// listed in one AnimationManagerContent's three arrays; anything a pawn references but isn't
+/// listed logs "not registered ... please add it to AnimationManagerContent".)
 ///
 /// This tool: scan mod folder -> collect Amplitude GUIDs of MeshCollection/Skeleton/
 /// ClipCollection/OverrideController -> write into the content's arrays -> validate joins

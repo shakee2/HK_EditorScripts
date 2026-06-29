@@ -99,6 +99,20 @@ public class ModBuildWindow : EditorWindow
         EditorGUILayout.Space(4);
         if (GUILayout.Button("Build For Publish (Workshop / mod.io)", GUILayout.Height(30)))
             DoPublishBuild();
+
+        EditorGUILayout.Space(8);
+        EditorGUILayout.LabelField("Troubleshooting", EditorStyles.boldLabel);
+        EditorGUILayout.HelpBox(
+            "If vanilla references show as missing right after a build, the build's domain " +
+            "reload likely orphaned the mounted vanilla database provider. This re-mounts it " +
+            "without doing a full rebuild.", MessageType.Info);
+        if (GUILayout.Button("Force Re-mount Vanilla References"))
+        {
+            if (VanillaDatabaseMount.ForceRemount(out var error))
+                Debug.Log("[ModBuild] Vanilla references re-mounted.");
+            else
+                Debug.LogError($"[ModBuild] Re-mount failed: {error}");
+        }
     }
 
     void ApplyVersion()

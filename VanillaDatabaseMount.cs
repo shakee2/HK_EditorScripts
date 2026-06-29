@@ -52,11 +52,12 @@ public static class VanillaDatabaseMount
                 if (provider.Name == ProviderName) { s_provider = provider; break; }
             }
             if (s_provider != null) return true;
-            // Already mounted (e.g. from a prior session, before a domain reload cleared
-            // s_provider) but not found in AllProviders yet — mounting again here would
-            // double-mount the same bundle. Bail instead of retrying.
-            error = s_lastError = $"Vanilla databases bundle '{ProviderName}' is already mounted but its provider couldn't be found.";
-            return false;
+            // Already mounted per AssetDatabase.IsMounted (e.g. a domain reload cleared our
+            // static s_provider without the native bundle handle going with it) but not found
+            // in AllProviders — this is the "vanilla references show as missing after a build"
+            // state. Self-heal: force-unmount the phantom registration and mount fresh, rather
+            // than bailing and requiring a full mod rebuild to clear it.
+            return ForceRemount(out error);
         }
 
         string mercuryFolder = ModuleEditor.MercuryFolderPath;
@@ -99,6 +100,51 @@ public static class VanillaDatabaseMount
     }
 
     /// <summary>
+    /// Drops whatever AssetDatabase thinks is mounted under <see cref="ProviderName"/> (even if
+    /// our own bookkeeping already lost track of it) and mounts the bundle fresh. This is the fix
+    /// for "vanilla references show as missing" after a mod build — the build's domain reload can
+    /// clear <see cref="s_provider"/> while AssetDatabase still reports the provider as mounted,
+    /// so plain <see cref="TryMount"/> would otherwise bail forever until a full rebuild happened
+    /// to clear that phantom state incidentally.
+    /// </summary>
+    public static bool ForceRemount(out string error)
+    {
+        try { AssetDatabase.UnmountAssetBundle(ProviderName); } catch { /* phantom handle — nothing to unmount */ }
+        Invalidate();
+
+        string mercuryFolder = ModuleEditor.MercuryFolderPath;
+        if (string.IsNullOrEmpty(mercuryFolder))
+        {
+            error = s_lastError = "Humankind folder is not configured (set it in Mercury/Mod Editor).";
+            return false;
+        }
+
+        string bundlePath = BundlePath;
+        if (!File.Exists(bundlePath))
+        {
+            error = s_lastError = $"Vanilla databases bundle not found at: {bundlePath}";
+            return false;
+        }
+
+        try
+        {
+            bool ok = AssetDatabase.TryMountAssetBundle(ProviderName, bundlePath, uint.MaxValue, out s_provider, Amplitude.Framework.Asset.AssetBundle.Options.None);
+            if (!ok)
+            {
+                error = s_lastError = $"Force re-mount failed: {bundlePath}";
+                return false;
+            }
+            error = s_lastError = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = s_lastError = $"Exception during force re-mount: {ex.Message}";
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Every vanilla asset assignable to <paramref name="t"/>, loaded straight from the mounted
     /// bundle. The bundle's top-level assets are all *Collection containers (e.g.
     /// TechnologyDefinitionCollection); the actual rows live as sub-assets inside them — same
@@ -109,7 +155,22 @@ public static class VanillaDatabaseMount
         if (!TryMount(out _)) yield break;
 
         var descriptors = new List<AssetDescriptor>();
-        s_provider.AddAllAssetDescriptors(descriptors, AssetProviderOption.AskForType);
+        try
+        {
+            s_provider.AddAllAssetDescriptors(descriptors, AssetProviderOption.AskForType);
+        }
+        catch (Exception ex)
+        {
+            // s_provider can go stale (its native bundle handle invalidated without the static
+            // field being cleared) without IsMounted/AllProviders reflecting it, which otherwise
+            // crashes every GUI repaint that calls this. Self-heal: drop the cached provider so
+            // the next TryMount re-resolves or re-mounts it, and surface one error instead of a
+            // recurring NRE.
+            s_lastError = $"Vanilla databases provider was stale, dropped it: {ex.Message}";
+            Debug.LogError($"[VanillaMount] {s_lastError}");
+            Invalidate();
+            yield break;
+        }
         foreach (var descriptor in descriptors)
         {
             var assetType = descriptor.GetAssetType();
@@ -190,6 +251,13 @@ public static class VanillaDatabaseMount
 
         duplicates[0].SetEditable(true);
         return duplicates[0] as UnityEngine.Object;
+    }
+
+    [UnityEditor.MenuItem("Tools/Debug/Tech Tree/Force Re-mount Vanilla Database", false, 101)]
+    static void DebugForceRemount()
+    {
+        if (ForceRemount(out var error)) Debug.Log("[VanillaMount] Force re-mount succeeded.");
+        else Debug.LogError($"[VanillaMount] {error}");
     }
 
     [UnityEditor.MenuItem("Tools/Debug/Tech Tree/Vanilla Mount", false, 102)]
