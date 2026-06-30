@@ -7,79 +7,40 @@ using UnityEditor;
 using UnityEngine;
 
 /// <summary>
-/// Validates a baked Tier 1 model end-to-end against the requirements confirmed by decompiling
-/// Amplitude.Mercury.Animation.dll / Amplitude.Graphics.dll (see Assets/Docs/Workflow.md and
-/// Assets/Docs/ENCAccessProof-master/docs/). Tangents/normals are checked but are NOT crash
-/// causes — missing ones are silently defaulted by FxMeshContent.InitFrom and only logged
-/// (Amplitude.Graphics.Fx.FxMeshContent.EncodingIssueEnum.NoNormal/NoTangent). The checks that
-/// DO cause a fragment to fail at runtime are the join/registration ones below, mirrored from:
+/// Validates a baked fragment end-to-end against the requirements confirmed by decompiling
+/// Amplitude.Mercury.Animation.dll / Amplitude.Graphics.dll (see Docs/Workflow.md and
+/// Docs/ENCAccessProof-master/docs/). Used by the Unit Visual Workflow wizard's "Validate" step
+/// (Tools/Unit Visual Workflow). Tangents/normals are checked but are NOT crash causes — missing
+/// ones are silently defaulted by FxMeshContent.InitFrom and only logged
+/// (Amplitude.Graphics.Fx.FxMeshContent.EncodingIssueEnum.NoNormal/NoTangent). The checks that DO
+/// cause a fragment to fail at runtime are the join/registration ones below, mirrored from:
 ///   - AnimationManagerContent.OutputLayerFromMaterialGuid (AnimationManagerContent.cs:101)
 ///   - ShaderReplacementAsset.IsSupported (ShaderReplacementAsset.cs:104)
 ///   - PresentationPawnFragmentSkinnedMesh.RuntimeMaterial (PresentationPawnFragmentSkinnedMesh.cs:41)
 ///   - MeshCollection.SourcePrefab / GetFxMeshIndex (MeshCollection.cs)
 /// </summary>
-public class ModelRequirementsChecker : EditorWindow
+internal static class FragmentValidator
 {
-    PresentationPawnFragmentSkinnedMesh _fragment;
-    AnimationManagerContent _content;
-    MeshCollection _meshCollection;
+    internal enum Severity { Info, Warning, Error }
+    internal class Finding { public Severity severity; public string message; }
 
-    enum Severity { Info, Warning, Error }
-    class Finding { public Severity severity; public string message; }
-    List<Finding> _findings = new();
-
-    [MenuItem("Tools/Pawn Fragment/Model Requirements Checker", false, 9)]
-    static void Open()
+    internal static List<Finding> Validate(PresentationPawnFragmentSkinnedMesh fragment, AnimationManagerContent content)
     {
-        var w = GetWindow<ModelRequirementsChecker>("Model Requirements Checker");
-        w.minSize = new Vector2(480, 320);
-    }
-
-    void OnGUI()
-    {
-        EditorGUILayout.HelpBox(
-            "Checks a baked PresentationPawnFragmentSkinnedMesh against the requirements confirmed " +
-            "by decompiling Amplitude.Mercury.Animation.dll / Amplitude.Graphics.dll — the join keys, " +
-            "shader support, and OutputLayer registration that actually fail a unit at runtime. " +
-            "Tangent/normal presence is checked too, but flagged as cosmetic, not crash-causing.",
-            MessageType.Info);
-
-        _fragment = (PresentationPawnFragmentSkinnedMesh)EditorGUILayout.ObjectField(
-            "Fragment", _fragment, typeof(PresentationPawnFragmentSkinnedMesh), false);
-        _content = (AnimationManagerContent)EditorGUILayout.ObjectField(
-            "AnimationManagerContent", _content, typeof(AnimationManagerContent), false);
-
-        EditorGUILayout.Space(6);
-        using (new EditorGUI.DisabledScope(_fragment == null || _content == null))
-            if (GUILayout.Button("Run Checks")) RunChecks();
-
-        EditorGUILayout.Space(6);
-        foreach (var f in _findings)
-        {
-            var type = f.severity == Severity.Error ? MessageType.Error
-                      : f.severity == Severity.Warning ? MessageType.Warning
-                      : MessageType.Info;
-            EditorGUILayout.HelpBox(f.message, type);
-        }
-    }
-
-    void RunChecks()
-    {
-        _findings = new List<Finding>();
-        _meshCollection = null;
+        var findings = new List<Finding>();
+        void Add(Severity s, string msg) => findings.Add(new Finding { severity = s, message = msg });
 
         // 1. Material assigned at all.
-        if (_fragment.MaterialRef.IsNull)
+        if (fragment.MaterialRef.IsNull)
         {
             Add(Severity.Error, "Fragment.MaterialRef is null — PresentationPawnFragmentSkinnedMesh.RuntimeMaterial will log " +
                 "\"no Material is defined\" and return null.");
         }
         else
         {
-            var mat = Amplitude.Framework.Asset.AssetDatabase.LoadAsset<Material>(_fragment.MaterialRef);
+            var mat = Amplitude.Framework.Asset.AssetDatabase.LoadAsset<Material>(fragment.MaterialRef);
             if (mat == null)
             {
-                Add(Severity.Error, $"MaterialRef {_fragment.MaterialRef} does not resolve to a loadable Material asset.");
+                Add(Severity.Error, $"MaterialRef {fragment.MaterialRef} does not resolve to a loadable Material asset.");
             }
             else
             {
@@ -109,10 +70,10 @@ public class ModelRequirementsChecker : EditorWindow
             // Only checks the SELECTED content asset — if MaterialRef points at a vanilla material, its
             // OutputLayerEntry lives in the VANILLA AnimationManagerContent instead, so a miss here is
             // expected/fine for that case, not necessarily a bug.
-            var entries = _content.OutputLayerEntries ?? new OutputLayerEntry[0];
-            bool hasEntry = entries.Any(e => e.Material == _fragment.MaterialRef);
+            var entries = content.OutputLayerEntries ?? new OutputLayerEntry[0];
+            bool hasEntry = entries.Any(e => e.Material == fragment.MaterialRef);
             if (!hasEntry)
-                Add(Severity.Warning, $"No OutputLayerEntry in '{_content.name}' matches MaterialRef {_fragment.MaterialRef}. " +
+                Add(Severity.Warning, $"No OutputLayerEntry in '{content.name}' matches MaterialRef {fragment.MaterialRef}. " +
                     "If this material is one you authored, AnimationManagerContent.OutputLayerFromMaterialGuid will log " +
                     "\"missing output layer for material...\" and return null — fix via materialDirectories + \"Reimport " +
                     "OutputLayers\" (needs a supported shader, check #2). If this MaterialRef points at a REUSED VANILLA " +
@@ -123,16 +84,16 @@ public class ModelRequirementsChecker : EditorWindow
         }
 
         // 4. SourcePrefab join: MeshCollection.SourcePrefab must equal Fragment.Prefab.Guid.
-        _meshCollection = FindMeshCollectionByPrefab(_fragment.Prefab.Guid);
-        if (_meshCollection == null)
+        var meshCollection = FindMeshCollectionByPrefab(fragment.Prefab.Guid);
+        if (meshCollection == null)
         {
             Add(Severity.Error, $"No MeshCollection project asset has SourcePrefab == Fragment.Prefab.Guid " +
-                $"({_fragment.Prefab.Guid}). AnimationManager.GetMeshCollection(Prefab.Guid) is the runtime join key " +
+                $"({fragment.Prefab.Guid}). AnimationManager.GetMeshCollection(Prefab.Guid) is the runtime join key " +
                 "(PresentationPawnDefinitionAddOn.cs) — without a match, AddOn.Load gets a null MeshCollection.");
         }
         else
         {
-            Add(Severity.Info, $"MeshCollection '{_meshCollection.name}' SourcePrefab matches Fragment.Prefab.");
+            Add(Severity.Info, $"MeshCollection '{meshCollection.name}' SourcePrefab matches Fragment.Prefab.");
 
             // 4b. SkeletonInstance must be non-null for an animated pawn. AnimationManagerContent.FillFragments
             // (AnimationManagerContent.cs:141) does:
@@ -140,57 +101,57 @@ public class ModelRequirementsChecker : EditorWindow
             // so a null SkeletonInstance NEVER equals the pawn's real (non-null) skeleton — the fragment is
             // silently dropped from the render list. This is the #1 cause of "baked fine, invisible in-game"
             // for a Tier 1 swap onto an existing animated unit, NOT a material/shader/output-layer problem.
-            if (_meshCollection.SkeletonInstance == null)
-                Add(Severity.Error, $"MeshCollection '{_meshCollection.name}'.SkeletonInstance is NULL. " +
+            if (meshCollection.SkeletonInstance == null)
+                Add(Severity.Error, $"MeshCollection '{meshCollection.name}'.SkeletonInstance is NULL. " +
                     "AnimationManagerContent.FillFragments excludes any fragment whose MeshCollection.SkeletonInstance " +
                     "doesn't match the pawn's real (non-null) skeleton — null never matches, so this fragment is " +
-                    "silently dropped before rendering. Fix: in Tier1MeshBaker, set 'Skeleton override' to the target " +
-                    "unit's actual Skeleton asset (find it via Asset Explorer on the unit's original Body MeshCollection) " +
-                    "and re-bake — this writes a non-null SkeletonInstance into the asset.");
+                    "silently dropped before rendering. Fix: set a Skeleton override (the target unit's actual " +
+                    "Skeleton asset) and re-bake — this writes a non-null SkeletonInstance into the asset.");
             else
-                Add(Severity.Info, $"MeshCollection has a SkeletonInstance ('{_meshCollection.SkeletonInstance.name}').");
+                Add(Severity.Info, $"MeshCollection has a SkeletonInstance ('{meshCollection.SkeletonInstance.name}').");
 
             // 5. Registered in AnimationManagerContent.MeshCollections[] — confirm via its own asset GUID.
-            string mcGuidPath = AssetDatabase.GetAssetPath(_meshCollection);
+            string mcGuidPath = AssetDatabase.GetAssetPath(meshCollection);
             string mcGuidHex = AssetDatabase.AssetPathToGUID(mcGuidPath);
-            var registered = _content.MeshCollections ?? new Amplitude.Framework.Guid[0];
+            var registered = content.MeshCollections ?? new Amplitude.Framework.Guid[0];
             var asAmplitudeGuid = new Amplitude.Framework.Guid(mcGuidHex);
             bool isRegistered = registered.Any(g => g == asAmplitudeGuid);
             if (!isRegistered)
-                Add(Severity.Error, $"MeshCollection '{_meshCollection.name}' (GUID {asAmplitudeGuid}) is not listed in " +
-                    $"'{_content.name}'.MeshCollections[] ({registered.Length} entries). Run \"Reimport mesh collections\" " +
+                Add(Severity.Error, $"MeshCollection '{meshCollection.name}' (GUID {asAmplitudeGuid}) is not listed in " +
+                    $"'{content.name}'.MeshCollections[] ({registered.Length} entries). Run \"Populate\" " +
                     "or add it via fragmentDirectories auto-discovery.");
             else
                 Add(Severity.Info, "MeshCollection is registered in AnimationManagerContent.MeshCollections[].");
 
             // 6. SkinnedMeshPath must match a MeshName in the collection (MeshCollection.GetFxMeshIndex).
-            uint idx = _meshCollection.GetFxMeshIndex(_fragment.SkinnedMeshPath);
-            bool nameMatches = HasMeshName(_meshCollection, _fragment.SkinnedMeshPath);
+            bool nameMatches = HasMeshName(meshCollection, fragment.SkinnedMeshPath);
             if (!nameMatches)
-                Add(Severity.Warning, $"Fragment.SkinnedMeshPath '{_fragment.SkinnedMeshPath}' does not match any " +
+                Add(Severity.Warning, $"Fragment.SkinnedMeshPath '{fragment.SkinnedMeshPath}' does not match any " +
                     "SkinnedMeshInfo.MeshName in the MeshCollection — GetFxMeshIndex falls back to mesh index 0 " +
                     "(wrong/empty mesh renders, not a crash, but not your model either).");
             else
-                Add(Severity.Info, $"SkinnedMeshPath '{_fragment.SkinnedMeshPath}' matches a baked mesh entry.");
+                Add(Severity.Info, $"SkinnedMeshPath '{fragment.SkinnedMeshPath}' matches a baked mesh entry.");
 
             // 7. Tangent/normal presence — cosmetic only, never a crash (FxMeshContent.InitFrom defaults them).
-            CheckTangentsNormals(_meshCollection);
+            CheckTangentsNormals(findings, meshCollection);
         }
 
         // 8. Registered in the fragments[] list or covered by fragmentDirectories (informational — auto-discovery
         // at build time is confirmed to populate this without manual registration; see project memory).
-        string fragPath = AssetDatabase.GetAssetPath(_fragment);
+        string fragPath = AssetDatabase.GetAssetPath(fragment);
         bool inFragmentDirs = false;
         var dirsField = typeof(AnimationManagerContent).GetField("fragmentDirectories",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-        if (dirsField?.GetValue(_content) is string[] dirs)
+        if (dirsField?.GetValue(content) is string[] dirs)
             inFragmentDirs = dirs.Any(d => !string.IsNullOrEmpty(d) && fragPath.Replace('\\', '/').StartsWith(d.Replace('\\', '/')));
         if (!inFragmentDirs)
             Add(Severity.Info, "Fragment's folder is not in AnimationManagerContent.fragmentDirectories — confirm the " +
                 "build's auto-discovery covers it (or add the folder explicitly) so the fragment ships registered.");
+
+        return findings;
     }
 
-    void CheckTangentsNormals(MeshCollection mc)
+    static void CheckTangentsNormals(List<Finding> findings, MeshCollection mc)
     {
         var infosField = typeof(MeshCollection).GetField("skinnedMeshInfos",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
@@ -207,11 +168,11 @@ public class ModelRequirementsChecker : EditorWindow
             bool hasNormals = mesh.normals != null && mesh.normals.Length > 0;
             bool hasTangents = mesh.tangents != null && mesh.tangents.Length > 0;
             if (!hasNormals)
-                Add(Severity.Warning, $"Baked mesh '{meshName}': no normals — FxMeshContent.InitFrom defaults to " +
-                    "Vector3.right per-vertex (EncodingIssueEnum.NoNormal). Cosmetic: wrong lighting, not a crash.");
+                findings.Add(new Finding { severity = Severity.Warning, message = $"Baked mesh '{meshName}': no normals — FxMeshContent.InitFrom defaults to " +
+                    "Vector3.right per-vertex (EncodingIssueEnum.NoNormal). Cosmetic: wrong lighting, not a crash." });
             if (!hasTangents)
-                Add(Severity.Warning, $"Baked mesh '{meshName}': no tangents — defaults to (0,1,0,1) " +
-                    "(EncodingIssueEnum.NoTangent). Cosmetic: wrong normal-map lighting, not a crash.");
+                findings.Add(new Finding { severity = Severity.Warning, message = $"Baked mesh '{meshName}': no tangents — defaults to (0,1,0,1) " +
+                    "(EncodingIssueEnum.NoTangent). Cosmetic: wrong normal-map lighting, not a crash." });
         }
     }
 
@@ -228,7 +189,7 @@ public class ModelRequirementsChecker : EditorWindow
         return false;
     }
 
-    static MeshCollection FindMeshCollectionByPrefab(Amplitude.Framework.Guid prefabGuid)
+    internal static MeshCollection FindMeshCollectionByPrefab(Amplitude.Framework.Guid prefabGuid)
     {
         foreach (var guid in AssetDatabase.FindAssets("t:MeshCollection"))
         {
@@ -238,6 +199,4 @@ public class ModelRequirementsChecker : EditorWindow
         }
         return null;
     }
-
-    void Add(Severity s, string msg) => _findings.Add(new Finding { severity = s, message = msg });
 }

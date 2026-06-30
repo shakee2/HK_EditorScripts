@@ -9,103 +9,72 @@ using UnityEngine;
 
 /// <summary>
 /// Populates an AnimationManagerContent (the hand-maintained registry) from the baked
-/// collection assets in your mod folder, and validates the GUID joins the runtime relies on.
+/// collection assets in a mod folder, and validates the GUID joins the runtime relies on.
+/// Used by the Unit Visual Workflow wizard's "Build into mod's AnimationManagerContent" step
+/// (Tools/Unit Visual Workflow).
 ///
 /// CORRECTION (confirmed by an actual build+in-game test, not just decompiled inference): the
 /// "game does NOT auto-discover collections, you must manually register here" premise below was
 /// speculative and turned out to be FALSE for at least the skinned-mesh-fragment case — a unit
-/// rendered correctly in-game without ever running this tool's Populate step. The Mod Editor's
-/// build pipeline appears to auto-discover/register a fragment's MeshCollection the same way it
-/// auto-scans fragmentDirectories for fragments. Treat this tool as a diagnostic/manual-override
+/// rendered correctly in-game without ever running Populate. The Mod Editor's build pipeline
+/// appears to auto-discover/register a fragment's MeshCollection the same way it auto-scans
+/// fragmentDirectories for fragments. Treat Populate/ValidateJoins as a diagnostic/manual-override
 /// aid (useful for validating joins or fixing a case the auto-discovery misses), not a required
-/// step in the normal workflow.
+/// step in the normal workflow — EXCEPT for the Tier0b live-mesh-patch case, where the replacement
+/// MeshCollection ships inert and is loaded/registered at runtime by the BepInEx injector instead.
 ///
-/// (Original, unverified rationale kept for context: AnimationManager loads exactly the GUIDs
-/// listed in one AnimationManagerContent's three arrays; anything a pawn references but isn't
-/// listed logs "not registered ... please add it to AnimationManagerContent".)
-///
-/// This tool: scan mod folder -> collect Amplitude GUIDs of MeshCollection/Skeleton/
-/// ClipCollection/OverrideController -> write into the content's arrays -> validate joins
-/// (MeshCollection.prefab GUID must equal some fragment's Prefab/ModelPrefab GUID;
-/// ClipCollection.skeleton GUID must match a registered Skeleton).
+/// This: scan mod folder -> collect Amplitude GUIDs of MeshCollection/Skeleton/ClipCollection/
+/// OverrideController -> write into the content's arrays -> validate joins (MeshCollection.prefab
+/// GUID must equal some fragment's Prefab/ModelPrefab GUID; ClipCollection.skeleton GUID must
+/// match a registered Skeleton).
 /// </summary>
-public class AnimationContentPopulator : EditorWindow
+internal static class AnimationContentBuilder
 {
     const BindingFlags ALL = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
-    UnityEngine.Object _content;                 // the AnimationManagerContent asset
-    string _scanFolder = "Assets/Resources/New Additions";
-
-    [MenuItem("Tools/Pawn Fragment/Animation Content Populator", false, 6)]
-    static void Open()
-    {
-        var w = GetWindow<AnimationContentPopulator>("Anim Content");
-        w.minSize = new Vector2(440, 240);
-    }
-
-    void OnGUI()
-    {
-        EditorGUILayout.LabelField("AnimationManagerContent registry", EditorStyles.boldLabel);
-        EditorGUILayout.HelpBox(
-            "Fills the content's MeshCollections / AnimationClipCollections / AnimatorOverrideControllers " +
-            "arrays from baked assets under the scan folder, then validates the GUID joins.",
-            MessageType.Info);
-
-        _content = EditorGUILayout.ObjectField("Content asset", _content, typeof(UnityEngine.Object), false);
-        _scanFolder = EditorGUILayout.TextField("Scan folder", _scanFolder);
-
-        EditorGUILayout.Space(6);
-        if (GUILayout.Button("Create AnimationManagerContent")) CreateContent();
-        using (new EditorGUI.DisabledScope(_content == null))
-        {
-            if (GUILayout.Button("Scan & Populate")) Populate();
-            if (GUILayout.Button("Validate Joins")) ValidateJoins();
-            if (GUILayout.Button("Dump Content")) DumpContent();
-        }
-    }
-
     // ── Create an empty content asset ─────────────────────────────────────────
-    void CreateContent()
+    internal static UnityEngine.Object CreateContent(string scanFolder, string contentName)
     {
         var t = FindType("Amplitude.Mercury.Presentation.AnimationManagerContent")
              ?? FindTypeByName("AnimationManagerContent");
-        if (t == null) { Debug.LogError("[AnimContent] AnimationManagerContent type not found."); return; }
-        EnsureFolder(_scanFolder);
+        if (t == null) { Debug.LogError("[AnimContent] AnimationManagerContent type not found."); return null; }
+        EnsureFolder(scanFolder);
         var so = ScriptableObject.CreateInstance(t);
-        so.name = "New Additions_AnimationManagerContent";
-        string path = AssetDatabase.GenerateUniqueAssetPath($"{_scanFolder}/{so.name}.asset");
+        so.name = contentName;
+        string path = AssetDatabase.GenerateUniqueAssetPath($"{scanFolder}/{so.name}.asset");
         AssetDatabase.CreateAsset(so, path);
         AssetDatabase.SaveAssets();
-        _content = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
-        Debug.Log($"[AnimContent] created at {path}. Now 'Scan & Populate'.\n" +
+        var content = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
+        Debug.Log($"[AnimContent] created at {path}.\n" +
                   "NOTE: the game's AnimationManager points at ONE content asset — confirm how your mod's " +
                   "content gets loaded/merged (replace vs per-mod), or the runtime won't read this.");
+        return content;
     }
 
     // ── Scan the folder and write GUID arrays ─────────────────────────────────
-    void Populate()
+    internal static void Populate(UnityEngine.Object content, string scanFolder)
     {
-        var meshGuids = CollectGuids("MeshCollection");      // includes Skeleton (subclass of MeshCollection)
-        var clipGuids = CollectGuids("ClipCollection");
-        var ovrGuids  = CollectGuids("OverrideController");
+        var meshGuids = CollectGuids("MeshCollection", scanFolder);      // includes Skeleton (subclass of MeshCollection)
+        var clipGuids = CollectGuids("ClipCollection", scanFolder);
+        var ovrGuids  = CollectGuids("OverrideController", scanFolder);
 
-        Undo.RecordObject(_content, "Populate animation content");
-        bool a = WriteGuidArray(_content, new[] { "MeshCollections" }, meshGuids);
-        bool b = WriteGuidArray(_content, new[] { "AnimationClipCollections", "ClipCollections" }, clipGuids);
-        bool c = WriteGuidArray(_content, new[] { "AnimatorOverrideControllers", "OverrideControllers" }, ovrGuids);
+        Undo.RecordObject(content, "Populate animation content");
+        bool a = WriteGuidArray(content, new[] { "MeshCollections" }, meshGuids);
+        bool b = WriteGuidArray(content, new[] { "AnimationClipCollections", "ClipCollections" }, clipGuids);
+        bool c = WriteGuidArray(content, new[] { "AnimatorOverrideControllers", "OverrideControllers" }, ovrGuids);
 
-        EditorUtility.SetDirty(_content);
+        EditorUtility.SetDirty(content);
         AssetDatabase.SaveAssets();
         Debug.Log($"[AnimContent] populated: {meshGuids.Count} mesh/skeleton, {clipGuids.Count} clip, {ovrGuids.Count} override." +
-                  (a && b && c ? "" : "  (one or more array fields not found — run Dump Content / tell me the field names)"));
-        ValidateJoins();
+                  (a && b && c ? "" : "  (one or more array fields not found — run DumpContent / check field names)"));
+        ValidateJoins(content, scanFolder);
     }
 
     // collect Amplitude GUIDs of all assets of a type-name under the scan folder
-    List<object> CollectGuids(string typeShortName)
+    static List<object> CollectGuids(string typeShortName, string scanFolder)
     {
         var result = new List<object>();
-        foreach (var guid in AssetDatabase.FindAssets($"t:{typeShortName}", new[] { _scanFolder }))
+        foreach (var guid in AssetDatabase.FindAssets($"t:{typeShortName}", new[] { scanFolder }))
         {
             var path = AssetDatabase.GUIDToAssetPath(guid);
             var asset = AssetDatabase.LoadMainAssetAtPath(path);
@@ -117,7 +86,7 @@ public class AnimationContentPopulator : EditorWindow
     }
 
     // ── Validation: the join keys the runtime relies on ───────────────────────
-    void ValidateJoins()
+    internal static string ValidateJoins(UnityEngine.Object content, string scanFolder)
     {
         var sb = new StringBuilder("=== Join validation ===\n");
 
@@ -136,32 +105,36 @@ public class AnimationContentPopulator : EditorWindow
 
         // each registered MeshCollection.prefab GUID should match some fragment Prefab GUID
         int matched = 0, unmatched = 0;
-        foreach (var g in AssetDatabase.FindAssets("t:MeshCollection", new[] { _scanFolder }))
+        foreach (var g in AssetDatabase.FindAssets("t:MeshCollection", new[] { scanFolder }))
         {
             var mc = AssetDatabase.LoadMainAssetAtPath(AssetDatabase.GUIDToAssetPath(g));
             var prefabRef = mc.GetType().GetField("prefab", ALL)?.GetValue(mc);
             var prefabGuid = prefabRef == null ? null : (prefabRef.GetType().FullName == "Amplitude.Framework.Guid" ? prefabRef : FindGuidField(prefabRef.GetType())?.GetValue(prefabRef));
             bool hit = prefabGuid != null && fragPrefabGuids.Any(fg => GuidEquals(fg, prefabGuid));
-            sb.AppendLine($"  MeshCollection '{mc.name}': prefab GUID {(hit ? "matches a fragment ✓" : "NO matching fragment ✗")}");
+            sb.AppendLine($"  MeshCollection '{mc.name}': prefab GUID {(hit ? "matches a fragment" : "NO matching fragment")}");
             if (hit) matched++; else unmatched++;
         }
         sb.AppendLine($"\n{matched} mesh collections joined to a fragment, {unmatched} orphaned.");
         if (unmatched > 0)
             sb.AppendLine("Orphaned = the collection's prefab GUID doesn't equal any fragment's Prefab GUID. " +
                           "The runtime looks up GetMeshCollection(fragment.Prefab.Guid), so these won't resolve.");
-        Debug.Log(sb.ToString());
+        var result = sb.ToString();
+        Debug.Log(result);
+        return result;
     }
 
-    void DumpContent()
+    internal static string DumpContent(UnityEngine.Object content)
     {
-        var sb = new StringBuilder($"=== {_content.name} ({_content.GetType().FullName}) ===\n");
-        foreach (var f in _content.GetType().GetFields(ALL))
+        var sb = new StringBuilder($"=== {content.name} ({content.GetType().FullName}) ===\n");
+        foreach (var f in content.GetType().GetFields(ALL))
         {
-            var v = f.GetValue(_content);
+            var v = f.GetValue(content);
             int n = v is Array arr ? arr.Length : (v is IList list ? list.Count : -1);
             sb.AppendLine($"  {f.Name} : {f.FieldType.Name}" + (n >= 0 ? $"  [{n}]" : ""));
         }
-        Debug.Log(sb.ToString());
+        var result = sb.ToString();
+        Debug.Log(result);
+        return result;
     }
 
     // ── reflection plumbing ───────────────────────────────────────────────────
@@ -180,7 +153,7 @@ public class AnimationContentPopulator : EditorWindow
         return true;
     }
 
-    object AmpGuidOf(UnityEngine.Object asset)
+    static object AmpGuidOf(UnityEngine.Object asset)
     {
         var au = FindType("Amplitude.Framework.Editor.Asset.AssetUtility");
         var m = au?.GetMethod("GetAssetGuid", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
