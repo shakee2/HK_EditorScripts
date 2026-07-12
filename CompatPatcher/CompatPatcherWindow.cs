@@ -30,6 +30,15 @@ namespace HK.CompatPatcher
         readonly HashSet<string> _patchNames = new HashSet<string>();                        // element names already in Assets/Databases/Patch/
         List<ElementRow> _view = new List<ElementRow>();
 
+        // Load-order validation (recomputed every Compare): findings for the current order and for a
+        // reversed order, so we can tell the user which hazards are order-caused vs intrinsic.
+        List<Finding> _findings = new List<Finding>();
+        List<Finding> _altFindings = new List<Finding>();
+        string _altOrderName = "";
+        string _validationNote = "";
+        Vector2 _validationScroll;
+        float _panelTop;   // Y where the 3 panels start (measured after the variable-height top controls)
+
         StatusFilter _status = StatusFilter.Conflicts;
         string _nameFilter = "";
         List<string> _types = new List<string>();
@@ -148,8 +157,37 @@ namespace HK.CompatPatcher
             EditorGUILayout.Space(4);
             DrawFilters();
             DrawStats();
-            DrawTable();
-            DrawDetail();
+
+            // The top controls above are variable-height (mod rows), so measure where they end and lay the
+            // three panels out as absolute Rects from there (same approach as DatabaseBrowser). Measuring only
+            // on Repaint — when GetLastRect is valid — and caching keeps it stable across the Layout pass.
+            if (Event.current.type == EventType.Repaint)
+                _panelTop = GUILayoutUtility.GetLastRect().yMax + 2f;
+            float top = _panelTop > 1f ? _panelTop : 140f;
+
+            // Three independent fixed containers — validation, the element list, and the per-element detail —
+            // each drawn into its own Rect, so a selection changing the (variable-height) detail never reflows
+            // the list: content changes stay contained inside each panel's scroll.
+            Rect rest = new Rect(0, top, position.width, Mathf.Max(0f, position.height - top));
+            LayoutThreePanels(rest, out Rect vRect, out Rect tRect, out Rect dRect);
+            DrawValidation(vRect);
+            DrawTable(tRect);
+            DrawDetail(dRect);
+        }
+
+        // Split the remaining window area into validation (top), list (middle, gets the slack), detail (bottom).
+        static void LayoutThreePanels(Rect rest, out Rect v, out Rect t, out Rect d)
+        {
+            const float gap = 4f;
+            float h = rest.height;
+            float vH = Mathf.Clamp(h * 0.22f, 48f, 170f);
+            float dH = Mathf.Clamp(h * 0.34f, 120f, 340f);
+            float tH = h - vH - dH - gap * 2f;
+            if (tH < 120f) { dH = Mathf.Max(90f, dH - (120f - tH)); tH = h - vH - dH - gap * 2f; } // give the list a floor
+            if (tH < 40f) { tH = Mathf.Max(40f, h - vH - gap); dH = Mathf.Max(0f, h - vH - tH - gap * 2f); }
+            v = new Rect(rest.x, rest.y, rest.width, vH);
+            t = new Rect(rest.x, v.yMax + gap, rest.width, tH);
+            d = new Rect(rest.x, t.yMax + gap, rest.width, dH);
         }
 
         void DrawSources()
@@ -208,6 +246,59 @@ namespace HK.CompatPatcher
                 if (GUILayout.Button("Export sidecar", GUILayout.Height(26), GUILayout.Width(130))) Export();
             }
             EditorGUILayout.EndHorizontal();
+        }
+
+        // ---- load-order validation panel (container 1) -------------------
+        void DrawValidation(Rect rect)
+        {
+            GUILayout.BeginArea(rect);
+            _validationScroll = EditorGUILayout.BeginScrollView(_validationScroll);
+
+            // Fallback/availability note (e.g. vanilla bundle not mounted) — show regardless of findings.
+            if (!string.IsNullOrEmpty(_validationNote))
+                EditorGUILayout.HelpBox(_validationNote, MessageType.Warning);
+
+            int errors = _findings.Count(f => f.Severity == FindingSeverity.Error);
+            int warns = _findings.Count - errors;
+
+            // Order-caused = hazards whose presence or resolution differs under the reversed order. Those are
+            // the ones the user can influence by reordering; the rest only a patch edit can fix.
+            var altByKey = _altFindings.GroupBy(f => f.Key).ToDictionary(g => g.Key, g => g.First());
+            var orderCaused = _findings.Where(f =>
+                !altByKey.TryGetValue(f.Key, out var a) || a.Detail != f.Detail).ToList();
+            var vanished = _altFindings.Where(f => _findings.All(x => x.Key != f.Key)).ToList();
+
+            if (_findings.Count == 0 && vanished.Count == 0)
+            {
+                EditorGUILayout.HelpBox("Load-order validation: no known load-time hazards detected in this order.", MessageType.Info);
+            }
+            else
+            {
+                EditorGUILayout.LabelField(
+                    $"Load-order validation — {errors} error(s), {warns} warning(s)  ·  order-sensitive: {orderCaused.Count}",
+                    EditorStyles.boldLabel);
+
+                foreach (var f in _findings.OrderBy(f => f.Severity).ThenBy(f => f.Element, StringComparer.OrdinalIgnoreCase))
+                {
+                    bool orderSensitive = orderCaused.Any(o => o.Key == f.Key);
+                    EditorGUILayout.HelpBox(f.Line + (orderSensitive ? "  [order-sensitive]" : ""),
+                        f.Severity == FindingSeverity.Error ? MessageType.Error : MessageType.Warning);
+                }
+
+                // If reordering would change the picture, tell the user so they can act on it (▲▼ then Compare).
+                if (orderCaused.Count > 0 || vanished.Count > 0)
+                {
+                    var sb = new System.Text.StringBuilder();
+                    sb.Append("Load order matters here. Under the reverse order (").Append(_altOrderName).Append(") ");
+                    if (vanished.Count > 0) sb.Append(vanished.Count).Append(" of these would not occur; ");
+                    sb.Append(orderCaused.Count).Append(" resolve differently. ");
+                    sb.Append("Reorder with ▲▼ above and press Compare again to re-validate.");
+                    EditorGUILayout.HelpBox(sb.ToString(), MessageType.Warning);
+                }
+            }
+
+            EditorGUILayout.EndScrollView();
+            GUILayout.EndArea();
         }
 
         void DrawFilters()
@@ -272,15 +363,17 @@ namespace HK.CompatPatcher
             }
         }
 
-        void DrawTable()
+        // ---- element list (container 2) ----------------------------------
+        void DrawTable(Rect rect)
         {
             if (_header == null) BuildHeader();
+            GUILayout.BeginArea(rect);
             float totalW = _headerState.widthOfAllVisibleColumns;
             var visible = _headerState.visibleColumns;
             Rect headerRect = GUILayoutUtility.GetRect(10, 100000, _header.height, _header.height);
             _header.OnGUI(headerRect, _tableScroll.x);
 
-            float viewH = Mathf.Max(140, position.height * 0.40f);
+            float viewH = Mathf.Max(0f, rect.height - _header.height - 2f); // fill the panel below its header
             Rect bodyArea = GUILayoutUtility.GetRect(10, 100000, viewH, viewH, GUILayout.ExpandWidth(true));
             Rect content = new Rect(0, 0, totalW, _view.Count * ROW_H);
             _tableScroll = GUI.BeginScrollView(bodyArea, _tableScroll, content);
@@ -303,85 +396,98 @@ namespace HK.CompatPatcher
                 }
             }
             GUI.EndScrollView();
+            GUILayout.EndArea();
         }
 
-        // ---- detail: per-element winner + read-only diffs -----------------
-        void DrawDetail()
+        // ---- per-element detail (container 3) ----------------------------
+        // Everything lives inside one scroll view bounded to the panel Rect, so the (variable-height) content
+        // never reflows the list above — selecting a different element only changes what scrolls here.
+        void DrawDetail(Rect rect)
         {
-            EditorGUILayout.Space(2);
-            if (_selected == null) { EditorGUILayout.HelpBox("Select an element above.", MessageType.None); return; }
-            var row = _selected;
-            string key = ElemKey(row);
-            EditorGUILayout.LabelField($"{row.Name}   ·   {row.TypeHint}   ·   {string.Join("/", row.Contributors)}", EditorStyles.boldLabel);
+            GUILayout.BeginArea(rect);
+            _detailScroll = EditorGUILayout.BeginScrollView(_detailScroll);
 
-            if (row.Conflict == null)
+            if (_selected == null)
             {
-                EditorGUILayout.HelpBox(row.Status == ElemStatus.New
-                    ? "New element (single mod). Import & Edit to bring it into the patch and adjust."
-                    : row.Status == ElemStatus.Root ? "Collection/container object — not a gameplay element."
-                    : "Identical across mods — no action needed.", MessageType.None);
-                using (new EditorGUI.DisabledScope(row.Status == ElemStatus.Root))
+                EditorGUILayout.HelpBox("Select an element from the list above.", MessageType.None);
+            }
+            else
+            {
+                var row = _selected;
+                string key = ElemKey(row);
+                EditorGUILayout.LabelField($"{row.Name}   ·   {row.TypeHint}   ·   {string.Join("/", row.Contributors)}", EditorStyles.boldLabel);
+
+                if (row.Conflict == null)
                 {
+                    EditorGUILayout.HelpBox(row.Status == ElemStatus.New
+                        ? "New element (single mod). Import & Edit to bring it into the patch and adjust."
+                        : row.Status == ElemStatus.Root ? "Collection/container object — not a gameplay element."
+                        : "Identical across mods — no action needed.", MessageType.None);
+                    using (new EditorGUI.DisabledScope(row.Status == ElemStatus.Root))
+                    {
+                        EditorGUILayout.BeginHorizontal();
+                        if (GUILayout.Button("Import & Edit into Patch/", GUILayout.Width(200))) ImportChosen(row, row.Winner);
+                        if (GUILayout.Button("Compare side-by-side", GUILayout.Width(180))) OpenCompare(row);
+                        EditorGUILayout.EndHorizontal();
+                    }
+                    if (_patchNames.Contains(row.Name))
+                        EditorGUILayout.LabelField("✓ In patch — Compare side-by-side to edit the patch version.", EditorStyles.miniLabel);
+                }
+                else
+                {
+                    string statusTag = _elemStatus.TryGetValue(key, out var st) ? "   [" + st + "]" : "";
+                    EditorGUILayout.LabelField("Which mod's version wins?" + statusTag, EditorStyles.miniBoldLabel);
+                    string chosen = _choice.TryGetValue(key, out var ch) ? ch : row.Winner;
+                    foreach (var mod in row.Contributors)
+                    {
+                        EditorGUILayout.BeginHorizontal();
+                        bool isChosen = chosen == mod;
+                        if (GUILayout.Toggle(isChosen, "", GUILayout.Width(18)) && !isChosen) _choice[key] = mod;
+                        EditorGUILayout.LabelField(mod + (mod == row.Winner ? "  (load-order winner)" : ""), GUILayout.Width(220));
+                        EditorGUILayout.EndHorizontal();
+                    }
+
                     EditorGUILayout.BeginHorizontal();
-                    if (GUILayout.Button("Import & Edit into Patch/", GUILayout.Width(200))) ImportChosen(row, row.Winner);
                     if (GUILayout.Button("Compare side-by-side", GUILayout.Width(180))) OpenCompare(row);
+                    if (GUILayout.Button("Import chosen into Patch/", GUILayout.Width(200)))
+                        ImportChosen(row, _choice.TryGetValue(key, out var c2) ? c2 : row.Winner);
                     EditorGUILayout.EndHorizontal();
+                    if (_patchNames.Contains(row.Name))
+                        EditorGUILayout.LabelField("✓ In patch — Compare side-by-side to edit the patch version directly.", EditorStyles.miniLabel);
+
+                    EditorGUILayout.Space(2);
+                    EditorGUILayout.LabelField(row.Conflict.Odin
+                        ? "Differences (read-only) — Odin element: references only, use Compare side-by-side for full fields:"
+                        : "Differences (read-only):", EditorStyles.miniBoldLabel);
+                    foreach (var d in row.Conflict.Diffs)
+                    {
+                        if (d.Kind == DiffKind.ExtraInWinner)
+                        {
+                            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+                            EditorGUILayout.LabelField($"ONLY in winner ({row.Winner})   {d.Path}", EditorStyles.miniBoldLabel);
+                            if (d.Values.TryGetValue("*winner*", out var wv) && wv != UnityYaml.Missing)
+                                EditorGUILayout.LabelField("    " + Short(wv), EditorStyles.miniLabel);
+                            EditorGUILayout.EndVertical();
+                            continue;
+                        }
+                        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+                        string kindTag = d.Kind == DiffKind.MissingInWinner ? "MISSING in winner" : "CHANGED";
+                        EditorGUILayout.LabelField($"{kindTag}   {d.Path}", EditorStyles.miniBoldLabel);
+                        foreach (var kv in d.Values.OrderBy(k => k.Key == "*winner*" ? "" : k.Key))
+                        {
+                            string who = kv.Key == "*winner*" ? row.Winner + " (winner)" : kv.Key;
+                            EditorGUILayout.BeginHorizontal();
+                            EditorGUILayout.LabelField(who, GUILayout.Width(150));
+                            EditorGUILayout.LabelField(Short(kv.Value), EditorStyles.miniLabel);
+                            EditorGUILayout.EndHorizontal();
+                        }
+                        EditorGUILayout.EndVertical();
+                    }
                 }
-                if (_patchNames.Contains(row.Name))
-                    EditorGUILayout.LabelField("✓ In patch — Compare side-by-side to edit the patch version.", EditorStyles.miniLabel);
-                return;
             }
 
-            string statusTag = _elemStatus.TryGetValue(key, out var st) ? "   [" + st + "]" : "";
-            EditorGUILayout.LabelField("Which mod's version wins?" + statusTag, EditorStyles.miniBoldLabel);
-            string chosen = _choice.TryGetValue(key, out var ch) ? ch : row.Winner;
-            foreach (var mod in row.Contributors)
-            {
-                EditorGUILayout.BeginHorizontal();
-                bool isChosen = chosen == mod;
-                if (GUILayout.Toggle(isChosen, "", GUILayout.Width(18)) && !isChosen) _choice[key] = mod;
-                EditorGUILayout.LabelField(mod + (mod == row.Winner ? "  (load-order winner)" : ""), GUILayout.Width(220));
-                EditorGUILayout.EndHorizontal();
-            }
-
-            EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Compare side-by-side", GUILayout.Width(180))) OpenCompare(row);
-            if (GUILayout.Button("Import chosen into Patch/", GUILayout.Width(200)))
-                ImportChosen(row, _choice.TryGetValue(key, out var c2) ? c2 : row.Winner);
-            EditorGUILayout.EndHorizontal();
-            if (_patchNames.Contains(row.Name))
-                EditorGUILayout.LabelField("✓ In patch — Compare side-by-side to edit the patch version directly.", EditorStyles.miniLabel);
-
-            EditorGUILayout.Space(2);
-            EditorGUILayout.LabelField(row.Conflict.Odin
-                ? "Differences (read-only) — Odin element: references only, use Compare side-by-side for full fields:"
-                : "Differences (read-only):", EditorStyles.miniBoldLabel);
-            _detailScroll = EditorGUILayout.BeginScrollView(_detailScroll, GUILayout.ExpandHeight(true));
-            foreach (var d in row.Conflict.Diffs)
-            {
-                if (d.Kind == DiffKind.ExtraInWinner)
-                {
-                    EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-                    EditorGUILayout.LabelField($"ONLY in winner ({row.Winner})   {d.Path}", EditorStyles.miniBoldLabel);
-                    if (d.Values.TryGetValue("*winner*", out var wv) && wv != UnityYaml.Missing)
-                        EditorGUILayout.LabelField("    " + Short(wv), EditorStyles.miniLabel);
-                    EditorGUILayout.EndVertical();
-                    continue;
-                }
-                EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-                string kindTag = d.Kind == DiffKind.MissingInWinner ? "MISSING in winner" : "CHANGED";
-                EditorGUILayout.LabelField($"{kindTag}   {d.Path}", EditorStyles.miniBoldLabel);
-                foreach (var kv in d.Values.OrderBy(k => k.Key == "*winner*" ? "" : k.Key))
-                {
-                    string who = kv.Key == "*winner*" ? row.Winner + " (winner)" : kv.Key;
-                    EditorGUILayout.BeginHorizontal();
-                    EditorGUILayout.LabelField(who, GUILayout.Width(150));
-                    EditorGUILayout.LabelField(Short(kv.Value), EditorStyles.miniLabel);
-                    EditorGUILayout.EndHorizontal();
-                }
-                EditorGUILayout.EndVertical();
-            }
             EditorGUILayout.EndScrollView();
+            GUILayout.EndArea();
         }
 
         static string Short(string v) => v == UnityYaml.Missing ? "(absent)" : (v != null && v.Length > 140 ? v.Substring(0, 138) + "…" : v);
@@ -419,9 +525,55 @@ namespace HK.CompatPatcher
                 _typeFilter = "";
                 _selected = null;
                 ScanPatch();
+                Validate();
             }
             catch (Exception e) { Debug.LogError("[CompatPatcher] Compare failed: " + e); }
             finally { EditorUtility.ClearProgressBar(); }
+        }
+
+        // Load-order validation, re-run on every Compare. The real order is Vanilla → the mods below, so the
+        // validator merges the mounted vanilla databases (base) under the mod overlay and replays the
+        // reset-capable load-time rules. We evaluate the current order and — only if it has findings — the
+        // reversed mod order as a control, to separate order-caused hazards (would change if you reorder)
+        // from intrinsic ones (present whatever the order, so only editing the patch fixes them).
+        void Validate()
+        {
+            _findings = new List<Finding>();
+            _altFindings.Clear();
+            _altOrderName = "";
+            _validationNote = "";
+
+            using var validator = LoadOrderValidator.Build();
+            _validationNote = validator.Note;
+
+            EditorUtility.DisplayProgressBar("Compat Patcher", "Validating load order (Vanilla → mods)…", 0.5f);
+            _findings = validator.Evaluate(_mods);
+
+            // Full dump to the console so runs can be diffed and nothing is hidden by the panel's collapsing.
+            DumpValidation("current order  Vanilla → " + string.Join(" → ", _mods.Select(m => m.Name)), _findings);
+
+            if (_findings.Count == 0) return;
+
+            var reversed = Enumerable.Reverse(_mods).ToList();
+            _altOrderName = string.Join(" → ", new[] { "Vanilla" }.Concat(reversed.Select(m => m.Name)));
+            _altFindings = validator.Evaluate(reversed);
+        }
+
+        // Console record of every finding (grouped by rule code) — persists across runs so the user can see
+        // exactly what changed between two Compares, independent of the on-screen panel.
+        static void DumpValidation(string orderLabel, List<Finding> findings)
+        {
+            int errors = findings.Count(f => f.Severity == FindingSeverity.Error);
+            var sb = new StringBuilder();
+            sb.AppendLine($"[CompatPatcher] Load-order validation — {orderLabel}");
+            sb.AppendLine($"  {errors} error(s), {findings.Count - errors} warning(s), {findings.Count} total");
+            foreach (var g in findings.GroupBy(f => f.Code).OrderBy(g => g.Key))
+            {
+                sb.AppendLine($"  {g.Key}  ({g.Count()}):");
+                foreach (var f in g.OrderBy(f => f.Element, StringComparer.OrdinalIgnoreCase))
+                    sb.AppendLine("    " + f.Line);
+            }
+            Debug.Log(sb.ToString());
         }
 
         string ElementFingerprint(ElementRow row)

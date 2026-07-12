@@ -43,7 +43,32 @@ namespace HK.CompatPatcher
 
         public static void CleanupStage(string stagePath)
         {
-            if (!string.IsNullOrEmpty(stagePath)) AssetDatabase.DeleteAsset(stagePath);
+            if (string.IsNullOrEmpty(stagePath)) return;
+            AssetDatabase.DeleteAsset(stagePath);
+            // Prune the now-empty per-source subfolder we created for this file (best-effort).
+            try
+            {
+                string dir = System.IO.Path.GetDirectoryName(stagePath)?.Replace('\\', '/');
+                if (!string.IsNullOrEmpty(dir) && dir.StartsWith(StageRoot + "/", StringComparison.Ordinal)
+                    && dir.Length > StageRoot.Length + 1 && Directory.Exists(dir)
+                    && !Directory.EnumerateFileSystemEntries(dir).Any())
+                    AssetDatabase.DeleteAsset(dir);
+            }
+            catch { /* leftover empty scratch folder is harmless */ }
+        }
+
+        /// <summary>
+        /// Stage a whole source .asset file and hand back *every* live object in it (elements + collection),
+        /// so a caller that needs several elements out of one file imports it only once. Caller must
+        /// CleanupStage(stagePath) when done. Used by the load-order validator to overlay Odin-correct mod
+        /// versions on top of the vanilla live objects.
+        /// </summary>
+        public static (UnityEngine.Object[] objects, string stagePath) StageSourceFile(HkMod mod, string sourcePath)
+        {
+            if (mod == null || sourcePath == null || !mod.RawFiles.TryGetValue(sourcePath, out var text))
+                return (Array.Empty<UnityEngine.Object>(), null);
+            string stagePath = StageFile(mod.Name, sourcePath, text);
+            return (AssetDatabase.LoadAllAssetsAtPath(stagePath), stagePath);
         }
 
         /// <summary>Duplicate one element into the Patch collection; returns the new element.</summary>
@@ -121,9 +146,15 @@ namespace HK.CompatPatcher
 
         static string StageFile(string modName, string sourcePath, string fileText)
         {
-            string dir = StageRoot + "/" + Sanitize(modName);
+            // Keep the ORIGINAL file name so the imported main object's name matches the filename — otherwise
+            // Unity's NativeFormatImporter logs "Main Object Name '…' does not match filename '…'". Uniqueness
+            // across source paths (and mods) comes from the per-source hash subfolder, so a given source file
+            // still maps to one deterministic stage path (element + its mapper reuse it).
+            string dir = StageRoot + "/" + Sanitize(modName) + "/" + Hash(sourcePath);
             Directory.CreateDirectory(dir);
-            string stagePath = dir + "/" + Hash(sourcePath) + ".asset";
+            string baseName = Sanitize(System.IO.Path.GetFileNameWithoutExtension(sourcePath));
+            if (string.IsNullOrEmpty(baseName)) baseName = "staged";
+            string stagePath = dir + "/" + baseName + ".asset";
             File.WriteAllText(stagePath, fileText);
             File.WriteAllText(stagePath + ".meta",
                 "fileFormatVersion: 2\nguid: " + System.Guid.NewGuid().ToString("N") + "\n" +

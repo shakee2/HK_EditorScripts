@@ -983,4 +983,107 @@ public static class DescriptorMapperPreview
         double v = (double)raw / s_oneRaw;
         return v == Math.Floor(v) ? ((long)v).ToString() : v.ToString("0.####");
     }
+
+    // ── External diagnostics entry point (used by InspectorDiagnostics) ────────
+    // Reuses this file's already-resolved reflection + analysis to surface the crash-capable
+    // Descriptor / DescriptorMapper problems — malformed RPN and wrong policy ParameterFlags —
+    // WITHOUT building the (expensive) translation dictionary. It only reads structural fields.
+    // severity: 2 = will crash load, 1 = quality warning. Safe no-op if reflection can't resolve
+    // or the target isn't a Descriptor/DescriptorMapper.
+    public static void CollectFindings(UnityEngine.Object target, Action<int, string, string> emit)
+    {
+        if (target == null || emit == null || !TryResolve()) return;
+
+        bool isMapper = t_DescriptorMapper.IsInstanceOfType(target);
+        bool isDescriptor = t_Descriptor.IsInstanceOfType(target);
+        if (!isMapper && !isDescriptor) return;
+
+        var descriptorObj = isDescriptor ? target : FindPairedAsset(t_Descriptor, target.name);
+        var mapperObj = isMapper ? target : FindPairedAsset(t_DescriptorMapper, target.name);
+        if (descriptorObj == null) return;   // nothing structural to check without Effects
+        if (f_effects.GetValue(descriptorObj) is not Array effects) return;
+
+        bool isSynergy = string.Equals(f_desc_category?.GetValue(descriptorObj) as string, "District_Synergy", StringComparison.Ordinal);
+
+        for (int effectIndex = 0; effectIndex < effects.Length; effectIndex++)
+        {
+            var effect = effects.GetValue(effectIndex);
+            if (effect == null) continue;
+            bool applyOnSource = f_applyOnSource != null && (bool)f_applyOnSource.GetValue(effect);
+            if (f_propertyEffects.GetValue(effect) is not Array peArr) continue;
+
+            for (int peIndex = 0; peIndex < peArr.Length; peIndex++)
+            {
+                var pe = peArr.GetValue(peIndex);
+                if (pe == null) continue;
+                string targetProperty = f_targetProperty.GetValue(pe) as string ?? "";
+                string where = $"Effect[{effectIndex}].PropertyEffect[{peIndex}] ({targetProperty})";
+
+                // 1) Malformed RPN (stack underflow from a trailing operator, or leftover operands).
+                //    An underflowing RPN throws while SimulationController.Compile() runs — inside the
+                //    reset gate — so it clears the mod list.
+                string rpnError = ValidateRpn(pe);
+                if (rpnError != null) { emit(2, $"{where}: {rpnError}", "DataController.cs:903 (RPN) / SimulationController.Compile"); continue; }
+
+                // 2) Shape must be a recognised simple / one-factor / two-factor form to render at all.
+                int toTargetOp = Convert.ToInt32(f_toTargetOp.GetValue(pe));
+                var shape = AnalyzePropertyEffectShape(pe, toTargetOp);
+                if (!shape.valid)
+                {
+                    emit(1, $"{where}: RPN isn't a recognised simple/one-factor/two-factor form — the runtime skips it and renders no tooltip row.", "SimulationEvaluatorHelper.FillPropertyEffectEvaluation");
+                    continue;
+                }
+
+                // 3) Wrong DescriptorMapper policy ParameterFlags. If a policy declares flags the effect
+                //    doesn't actually provide, the runtime logs "Specified set of Parameters is invalid"
+                //    during effect translation (inside the reset gate).
+                if (mapperObj == null) continue;
+                object policy = FindPolicy(mapperObj, effectIndex, peIndex);
+                if (policy == null) continue;
+                int declaredFlags = Convert.ToInt32(f_pol_flags.GetValue(policy));
+                if (declaredFlags == FLAG_None) continue;   // exotic literal / no flag override → no subset requirement
+
+                PathInfo pathInfo; int pathFlags;
+                if (isSynergy) { pathInfo = ClassifySynergyPath(effect, out _); pathFlags = string.IsNullOrEmpty(pathInfo.synergySource) ? 0 : FLAG_SynergySource; }
+                else { pathInfo = ClassifyPath(effect, applyOnSource); pathFlags = ComputePathFlags(pathInfo); }
+                int autoFlags = shape.propFlags | pathFlags;
+                if ((declaredFlags & ~autoFlags) != 0)
+                    emit(2, $"{where}: DescriptorMapper policy declares ParameterFlags '{DecodeFlags(declaredFlags)}' but the effect only provides '{DecodeFlags(autoFlags)}' — runtime logs \"Specified set of Parameters is invalid\".", "EffectTranslator (ParameterFlags subset)");
+            }
+        }
+    }
+
+    static object FindPolicy(UnityEngine.Object mapperObj, int effectIndex, int peIndex)
+    {
+        if (mapperObj == null || f_dm_policies.GetValue(mapperObj) is not Array policies) return null;
+        foreach (var p in policies)
+        {
+            if (p == null) continue;
+            if (Convert.ToInt32(f_pol_effectIndex.GetValue(p)) == effectIndex && Convert.ToInt32(f_pol_peIndex.GetValue(p)) == peIndex) return p;
+        }
+        return null;
+    }
+
+    // Simulates the RPN operand stack the way SimulationController compiles it: Get* ops push a value,
+    // every other (binary) op pops two and pushes one. A binary op with <2 on the stack is the classic
+    // "trailing operator" crash; a final stack size != 1 means a missing or extra operation. Returns a
+    // human-readable reason, or null when the RPN is well-formed (or absent — a bare constant).
+    static string ValidateRpn(object pe)
+    {
+        if (f_rpnStack.GetValue(pe) is not Array rpn || rpn.Length == 0) return null;
+        int stack = 0;
+        for (int i = 0; i < rpn.Length; i++)
+        {
+            int op = Convert.ToInt32(rpn.GetValue(i));
+            if (op == OP_GetConst || op == OP_GetTarget || op == OP_GetSource || op == OP_GetWorld || op == OP_GetVariable)
+                stack++;
+            else
+            {
+                if (stack < 2) return $"malformed RPN — operation '{BinSym(op)}' at index {i} has only {stack} operand(s) on the stack (stack underflow → crash at Compile).";
+                stack -= 1;
+            }
+        }
+        if (stack != 1) return $"malformed RPN — {stack} value(s) left on the stack at the end (expected exactly 1; a missing or extra operation).";
+        return null;
+    }
 }

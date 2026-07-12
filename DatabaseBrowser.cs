@@ -44,6 +44,11 @@ public class DatabaseBrowser : EditorWindow
     bool _contentOnly = true;   // hide build/plugin/config ScriptableObjects; show only actual data rows
     string ContentOnlyKey => "DatabaseBrowser.ContentOnly";
 
+    // Diagnostics filter — narrows to MY mod's files with issues (vanilla is never analyzed).
+    enum IssueFilter { All, Warnings, HardStops }
+    static readonly string[] ISSUE_LABELS = { "All", "Warnings", "Hard Stops" };
+    IssueFilter _issue = IssueFilter.All;
+
     enum ViewMode { Window, ListOnly }
     static readonly string[] MODE_LABELS = { "Window", "Only List" };
     ViewMode _mode = ViewMode.Window;
@@ -142,10 +147,23 @@ public class DatabaseBrowser : EditorWindow
             (_scope == ScopeFilter.All ||
              (_scope == ScopeFilter.MyMod && e.scope == "Mod") ||
              (_scope == ScopeFilter.Vanilla && e.scope == "Vanilla")) &&
-            (s.Length == 0 || e.name.ToLowerInvariant().Contains(s))
+            (s.Length == 0 || e.name.ToLowerInvariant().Contains(s)) &&
+            MatchesIssue(e)
         ).ToList();
         BuildDisplay();
         Repaint();
+    }
+
+    // Issue filter: only my mod's content files, with a warning / hard-stop finding. Vanilla is never
+    // analyzed (keeps it fast). Uses the shared, cached InspectorDiagnostics engine.
+    bool MatchesIssue(Entry e)
+    {
+        if (_issue == IssueFilter.All) return true;
+        if (e.scope != "Mod" || !e.isContent || e.obj == null) return false;
+        var findings = InspectorDiagnostics.Analyze(e.obj);
+        var want = _issue == IssueFilter.HardStops ? DiagSeverity.Crash : DiagSeverity.Warn;
+        for (int i = 0; i < findings.Count; i++) if (findings[i].severity == want) return true;
+        return false;
     }
 
     void BuildDisplay()
@@ -238,6 +256,10 @@ public class DatabaseBrowser : EditorWindow
         _scope = (ScopeFilter)GUILayout.Toolbar((int)_scope, SCOPE_LABELS);
         if (EditorGUI.EndChangeCheck()) ApplyFilters();
 
+        EditorGUI.BeginChangeCheck();
+        _issue = (IssueFilter)GUILayout.Toolbar((int)_issue, ISSUE_LABELS);
+        if (EditorGUI.EndChangeCheck()) ApplyFilters();
+
         EditorGUILayout.Space(2);
 
         // Virtualized list over _display
@@ -290,9 +312,22 @@ public class DatabaseBrowser : EditorWindow
 
             float indent = _groupByType ? 14f : 0f;
             float typeW = _groupByType ? 0f : TYPE_COL_W;   // type column only in flat mode
-            Rect nameRect = new Rect(row.x + 4 + indent, row.y, row.width - 8 - indent - typeW, row.height);
+
+            // Diagnostics badge — a colored dot for content rows with load-time issues, so the
+            // problem files are findable at a glance (worst severity, cached by InspectorDiagnostics).
+            DiagSeverity sev = e.isContent ? InspectorDiagnostics.WorstSeverity(e.obj) : DiagSeverity.None;
+            float badgeW = sev != DiagSeverity.None ? 12f : 0f;
+            if (sev != DiagSeverity.None)
+            {
+                Color c = sev == DiagSeverity.Crash ? new Color(0.90f, 0.27f, 0.22f) : new Color(0.95f, 0.75f, 0.15f);
+                EditorGUI.DrawRect(new Rect(row.x + 3 + indent, row.y + (ROW_H - 7f) * 0.5f, 7f, 7f), c);
+            }
+
+            Rect nameRect = new Rect(row.x + 4 + indent + badgeW, row.y, row.width - 8 - indent - badgeW - typeW, row.height);
             string label = (e.scope == "Mod" ? "● " : "  ") + e.name;
-            if (GUI.Button(nameRect, new GUIContent(label, $"{e.typeName} ({e.scope})"), EditorStyles.label))
+            string tip = $"{e.typeName} ({e.scope})" + (sev == DiagSeverity.Crash ? "\n⛔ Will crash load — see the inspector Diagnostics panel"
+                                                        : sev == DiagSeverity.Warn ? "\n⚠ Has warnings — see the inspector Diagnostics panel" : "");
+            if (GUI.Button(nameRect, new GUIContent(label, tip), EditorStyles.label))
                 Select(e.obj);
 
             if (!_groupByType)
