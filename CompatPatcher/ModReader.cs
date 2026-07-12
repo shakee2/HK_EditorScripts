@@ -4,6 +4,11 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
+using Amplitude.Framework;
+using Amplitude.Framework.Asset;
+using UnityEditor;
+using UnityEngine;
+using AssetDatabase = Amplitude.Framework.Asset.AssetDatabase;
 
 namespace HK.CompatPatcher
 {
@@ -78,9 +83,14 @@ namespace HK.CompatPatcher
                 foreach (var kv in ReadUnityPackageDatabaseAssets(path))
                     yield return (kv.Key, kv.Value);
             }
+            else if (ext == ".assetbundle")
+            {
+                foreach (var kv in ReadAssetBundleDatabaseAssets(path))
+                    yield return (kv.Key, kv.Value);
+            }
             else
             {
-                throw new InvalidDataException("Unsupported mod source (use .unitypackage, .zip, or a folder): " + path);
+                throw new InvalidDataException("Unsupported mod source (use .unitypackage, .zip, .assetbundle, or a folder): " + path);
             }
         }
 
@@ -89,6 +99,151 @@ namespace HK.CompatPatcher
             using var s = e.Open();
             using var r = new StreamReader(s, Encoding.UTF8);
             return r.ReadToEnd();
+        }
+
+        static IEnumerable<KeyValuePair<string, string>> ReadAssetBundleDatabaseAssets(string path)
+        {
+            IAssetProvider provider = null;
+            string providerName = "compatpatcher." + Hash(path) + "." + System.IO.Path.GetFileName(path).ToLowerInvariant();
+            bool weMounted = false;
+            string sharedProviderName = System.IO.Path.GetFileName(path).ToLowerInvariant();
+
+            try
+            {
+                if (AssetDatabase.IsMounted(sharedProviderName))
+                {
+                    provider = AssetDatabase.AllProviders.FirstOrDefault(p => p.Name == sharedProviderName);
+                }
+                else
+                {
+                    weMounted = AssetDatabase.TryMountAssetBundle(providerName, path, uint.MaxValue, out provider, Amplitude.Framework.Asset.AssetBundle.Options.None);
+                }
+                if (provider == null)
+                    throw new InvalidDataException("Failed to mount assetbundle: " + path);
+
+                var descriptors = new List<AssetDescriptor>();
+                provider.AddAllAssetDescriptors(descriptors, AssetProviderOption.AskForType);
+                foreach (var d in descriptors)
+                {
+                    var collectionType = d.GetAssetType();
+                    if (collectionType == null || !typeof(DatatableElementCollection).IsAssignableFrom(collectionType)) continue;
+                    var collection = provider.LoadAsset<DatatableElementCollection>(d);
+                    if (collection == null) continue;
+                    collection.Initialize();
+                    var elementType = collection.DatatableElementType;
+                    if (elementType == null) continue;
+
+                    string logicalPath = NormalizeBundleDatabasePath(d.FilePath, d.FileName);
+                    var elements = provider.FetchAllSubAssetsOfType(d.Guid, elementType)
+                        .Where(o => o is IDatatableElement)
+                        .ToArray();
+                    string text = SerializeBundleCollection(collection, elements, logicalPath);
+                    if (!string.IsNullOrEmpty(text))
+                        yield return new KeyValuePair<string, string>(logicalPath, text);
+                }
+            }
+            finally
+            {
+                if (weMounted)
+                {
+                    try { AssetDatabase.UnmountAssetBundle(providerName); } catch { }
+                }
+            }
+        }
+
+        static string NormalizeBundleDatabasePath(string filePath, string fileName)
+        {
+            string p = (filePath ?? "").Replace('\\', '/');
+            if (p.EndsWith(".asset", StringComparison.OrdinalIgnoreCase)) return p;
+            string name = string.IsNullOrEmpty(fileName) ? "BundleCollection.asset" : fileName;
+            if (!name.EndsWith(".asset", StringComparison.OrdinalIgnoreCase)) name += ".asset";
+            return "Assets/Databases/AssetBundle/" + name;
+        }
+
+        static string SerializeBundleCollection(DatatableElementCollection collection, UnityEngine.Object[] elements, string logicalPath)
+        {
+            string dir = "Assets/_PatcherBundleStage/" + Hash(logicalPath);
+            Directory.CreateDirectory(dir);
+            string stagePath = dir + "/" + Sanitize(System.IO.Path.GetFileNameWithoutExtension(logicalPath)) + ".asset";
+
+            try
+            {
+                var collectionClone = CloneFromBundle(collection);
+                if (collectionClone == null) return null;
+                var objects = new List<UnityEngine.Object> { collectionClone };
+                foreach (var element in elements)
+                {
+                    if (element == null || element == collection) continue;
+                    if (element is IDatatableElement de) de.Initialize();
+                    var clone = CloneFromBundle(element);
+                    if (clone != null) objects.Add(clone);
+                }
+
+                SaveToFile(objects.ToArray(), stagePath);
+                return File.Exists(stagePath) ? File.ReadAllText(stagePath) : null;
+            }
+            finally
+            {
+                if (File.Exists(stagePath))
+                {
+                    try { UnityEditor.AssetDatabase.DeleteAsset(stagePath); } catch { File.Delete(stagePath); }
+                }
+                try
+                {
+                    if (Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
+                        UnityEditor.AssetDatabase.DeleteAsset(dir);
+                }
+                catch { }
+            }
+        }
+
+        static UnityEngine.Object CloneFromBundle(UnityEngine.Object source)
+        {
+            if (source == null) return null;
+            var dest = ScriptableObject.CreateInstance(source.GetType());
+            dest.name = source.name;
+            var correctScript = MonoScript.FromScriptableObject(dest);
+            if (correctScript == null)
+            {
+                var monos = Resources.FindObjectsOfTypeAll<MonoScript>();
+                foreach (var m in monos)
+                {
+                    if (m.GetClass() == source.GetType())
+                    { correctScript = m; break; }
+                }
+            }
+            EditorUtility.CopySerialized(source, dest);
+            if (correctScript != null)
+            {
+                using var so = new SerializedObject(dest);
+                var p = so.FindProperty("m_Script");
+                if (p != null)
+                {
+                    p.objectReferenceValue = correctScript;
+                    so.ApplyModifiedProperties();
+                }
+            }
+            return dest;
+        }
+
+        static void SaveToFile(UnityEngine.Object[] objects, string path)
+        {
+            var method = typeof(UnityEditorInternal.InternalEditorUtility).GetMethod(
+                "SaveToSerializedFileAndForget",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public,
+                null, new[] { typeof(UnityEngine.Object[]), typeof(string), typeof(bool) }, null);
+            if (method != null)
+            {
+                method.Invoke(null, new object[] { objects, path, true });
+            }
+            else
+            {
+                var main = objects[0];
+                UnityEditor.AssetDatabase.CreateAsset(main, path);
+                for (int i = 1; i < objects.Length; i++)
+                    UnityEditor.AssetDatabase.AddObjectToAsset(objects[i], path);
+                UnityEditor.AssetDatabase.SaveAssets();
+            }
         }
 
         // ---- .unitypackage = gzip(tar of <guid>/{pathname,asset,asset.meta}) ----
@@ -224,6 +379,22 @@ namespace HK.CompatPatcher
             int j = i;
             while (j < s.Length && s[j] != ',' && s[j] != '}' && s[j] != ' ') j++;
             return s.Substring(i, j - i).Trim();
+        }
+
+        static string Sanitize(string s)
+        {
+            foreach (var c in System.IO.Path.GetInvalidFileNameChars()) s = s.Replace(c, '_');
+            return s;
+        }
+
+        static string Hash(string s)
+        {
+            unchecked
+            {
+                uint h = 2166136261;
+                foreach (var c in s) { h ^= c; h *= 16777619; }
+                return h.ToString("x8");
+            }
         }
     }
 }

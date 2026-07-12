@@ -42,6 +42,10 @@ namespace HK.CompatPatcher
     ///   :4718 unlock targets an EmpireWideConstructionParticipationDefinition (illegal)
     ///   :4734 constructibles in one unlock event resolve to different families (the confirmed ENC+VIP crash)
     ///   :4747 unlock references a resource no vanilla-or-mod defines
+    ///   :4299 PresentationPawn references a PresentationUnitDefinition that doesn't exist after merge
+    ///   :4369 PresentationSecondaryPawn (mount) references a PresentationUnitDefinition that doesn't exist
+    ///   :4139 emblematic constructible placed in a common family level
+    ///   :4144 common constructible placed in an emblematic family level
     ///
     /// Evaluate checks the order **incrementally at every load step** (Vanilla, +Mod A, +Mod A+B, …), because
     /// the game validates as each mod loads and resets at the first bad step — so a hazard Mod B introduces is
@@ -55,17 +59,22 @@ namespace HK.CompatPatcher
     public sealed class LoadOrderValidator : IDisposable
     {
         const string NS = "Amplitude.Mercury.Data.Simulation.";
+        const string NSW = "Amplitude.Mercury.Data.World.";
         const BindingFlags ALL = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
         // Resolved element/effect types (null if the game assemblies aren't loaded).
         readonly Type tConstructible, tResource, tTech, tCivic, tNationalProject, tNPLeveling,
-                      tEmpireWideParticipation, tUnlockConstructible, tUnlockResource;
+                      tEmpireWideParticipation, tUnlockConstructible, tUnlockResource,
+                      tPresentationUnit, tPresentationPawn, tPresentationMount;
 
         // Vanilla base for this instance (empty until a successful mount; then pointed at the shared cache).
         Dictionary<string, Object> _vConstruct = new Dictionary<string, Object>();
         Dictionary<string, Object> _vResource = new Dictionary<string, Object>();
         Dictionary<string, Object> _vTech = new Dictionary<string, Object>();
         Dictionary<string, Object> _vCivic = new Dictionary<string, Object>();
+        Dictionary<string, Object> _vPresentationUnit = new Dictionary<string, Object>();
+        Dictionary<string, Object> _vPresentationPawn = new Dictionary<string, Object>();
+        Dictionary<string, Object> _vPresentationMount = new Dictionary<string, Object>();
 
         readonly Dictionary<string, Type> _typeCache = new Dictionary<string, Type>();
 
@@ -73,7 +82,8 @@ namespace HK.CompatPatcher
         // Vanilla is identical for the whole session, so it's loaded once and reused across every Compare.
         // The cache is invalidated automatically: a domain reload resets the statics, and an unmount/remount
         // destroys the loaded objects — detected by the Unity fake-null check on a sample below.
-        static Dictionary<string, Object> s_vConstruct, s_vResource, s_vTech, s_vCivic;
+        static Dictionary<string, Object> s_vConstruct, s_vResource, s_vTech, s_vCivic,
+                                            s_vPresentationUnit, s_vPresentationPawn, s_vPresentationMount;
         static Object s_cacheSample;
 
         static bool CacheAlive => s_vTech != null && s_cacheSample != null;
@@ -85,11 +95,18 @@ namespace HK.CompatPatcher
             s_vResource = new Dictionary<string, Object>();
             s_vTech = new Dictionary<string, Object>();
             s_vCivic = new Dictionary<string, Object>();
+            s_vPresentationUnit = new Dictionary<string, Object>();
+            s_vPresentationPawn = new Dictionary<string, Object>();
+            s_vPresentationMount = new Dictionary<string, Object>();
             LoadVanilla(s_vConstruct, v.tConstructible);
             LoadVanilla(s_vResource, v.tResource);
             LoadVanilla(s_vTech, v.tTech);
             LoadVanilla(s_vCivic, v.tCivic);
-            s_cacheSample = s_vTech.Values.FirstOrDefault() ?? s_vConstruct.Values.FirstOrDefault();
+            LoadVanilla(s_vPresentationUnit, v.tPresentationUnit);
+            LoadVanilla(s_vPresentationPawn, v.tPresentationPawn);
+            LoadVanilla(s_vPresentationMount, v.tPresentationMount);
+            s_cacheSample = s_vTech.Values.FirstOrDefault() ?? s_vConstruct.Values.FirstOrDefault()
+                         ?? s_vPresentationUnit.Values.FirstOrDefault();
         }
 
         /// <summary>Drop the cached vanilla base so the next Compare reloads it (use after changing the Humankind folder).</summary>
@@ -97,6 +114,7 @@ namespace HK.CompatPatcher
         public static void ClearVanillaCache()
         {
             s_vConstruct = s_vResource = s_vTech = s_vCivic = null;
+            s_vPresentationUnit = s_vPresentationPawn = s_vPresentationMount = null;
             s_cacheSample = null;
         }
 
@@ -114,6 +132,9 @@ namespace HK.CompatPatcher
             tEmpireWideParticipation = FindType(NS + "EmpireWideConstructionParticipationDefinition");
             tUnlockConstructible = FindType(NS + "SimulationEventEffect_UnlockConstructible");
             tUnlockResource = FindType(NS + "SimulationEventEffect_UnlockResource");
+            tPresentationUnit = FindType(NSW + "PresentationUnitDefinition");
+            tPresentationPawn = FindType(NSW + "PresentationPawnDefinition");
+            tPresentationMount = FindType(NSW + "PresentationSecondaryPawnDefinition");
         }
 
         public static LoadOrderValidator Build()
@@ -137,6 +158,9 @@ namespace HK.CompatPatcher
             v._vResource = s_vResource;
             v._vTech = s_vTech;
             v._vCivic = s_vCivic;
+            v._vPresentationUnit = s_vPresentationUnit;
+            v._vPresentationPawn = s_vPresentationPawn;
+            v._vPresentationMount = s_vPresentationMount;
             return v;
         }
 
@@ -155,7 +179,7 @@ namespace HK.CompatPatcher
         /// attributed via <see cref="Finding.IntroducedBy"/> to the mod whose load first triggers it. Mod
         /// overrides are staged to live objects; everything is cleaned up before returning.
         /// </summary>
-        public List<Finding> Evaluate(List<HkMod> modsInLoadOrder)
+        public List<Finding> Evaluate(List<HkMod> modsInLoadOrder, Action<double, string> progress = null)
         {
             var results = new List<Finding>();
             if (tConstructible == null || tTech == null) return results;
@@ -166,6 +190,9 @@ namespace HK.CompatPatcher
             var resource = new Dictionary<string, Object>(_vResource);
             var tech = new Dictionary<string, Object>(_vTech);
             var civic = new Dictionary<string, Object>(_vCivic);
+            var presentationUnit = new Dictionary<string, Object>(_vPresentationUnit);
+            var presentationPawn = new Dictionary<string, Object>(_vPresentationPawn);
+            var presentationMount = new Dictionary<string, Object>(_vPresentationMount);
             var source = new Dictionary<string, string>(); // element name -> "vanilla" or mod name (provenance for messages)
             foreach (var k in construct.Keys) source[k] = "vanilla";
 
@@ -175,14 +202,17 @@ namespace HK.CompatPatcher
                 // Baseline: hazards already present in vanilla alone (expected: none) — excluded so the first
                 // mod isn't blamed for a pre-existing vanilla issue.
                 var seen = new HashSet<string>();
-                foreach (var f in RunRules(construct, resource, tech, civic, source)) seen.Add(f.DedupKey);
+                foreach (var f in RunRules(construct, resource, tech, civic, presentationUnit, presentationPawn, presentationMount, source)) seen.Add(f.DedupKey);
 
                 // Each mod load is one step. A distinct hazard that first appears at this step is caused by this
                 // mod's load; record it once (it stays reported even if a later mod's step makes it disappear).
+                int total = modsInLoadOrder.Count, n = 0;
                 foreach (var mod in modsInLoadOrder)
                 {
-                    OverlayOneMod(mod, construct, resource, tech, civic, source, stagePaths);
-                    foreach (var f in RunRules(construct, resource, tech, civic, source))
+                    n++;
+                    if (progress != null) progress((double)n / total, "Validating " + mod.Name);
+                    OverlayOneMod(mod, construct, resource, tech, civic, presentationUnit, presentationPawn, presentationMount, source, stagePaths);
+                    foreach (var f in RunRules(construct, resource, tech, civic, presentationUnit, presentationPawn, presentationMount, source))
                         if (seen.Add(f.DedupKey))
                         {
                             f.IntroducedBy = mod.Name;
@@ -202,7 +232,8 @@ namespace HK.CompatPatcher
         // from repeated effects; the caller dedups by Finding.DedupKey).
         List<Finding> RunRules(Dictionary<string, Object> construct, Dictionary<string, Object> resource,
                                Dictionary<string, Object> tech, Dictionary<string, Object> civic,
-                               Dictionary<string, string> source)
+                               Dictionary<string, Object> presentationUnit, Dictionary<string, Object> presentationPawn,
+                               Dictionary<string, Object> presentationMount, Dictionary<string, string> source)
         {
             var findings = new List<Finding>();
             foreach (var carrier in tech.Values)
@@ -217,6 +248,8 @@ namespace HK.CompatPatcher
                 if (tNationalProject != null && tNationalProject.IsInstanceOfType(c))
                     EvaluateCarrier(c, ReadArray(c, "Effects"), construct, resource, source, findings);
             }
+            EvaluatePresentation(presentationUnit, presentationPawn, presentationMount, source, findings);
+            EvaluateFamilies(construct, source, findings);
             return findings;
         }
 
@@ -224,7 +257,9 @@ namespace HK.CompatPatcher
         // definitions win over vanilla and earlier mods). One stage per source file.
         void OverlayOneMod(HkMod mod, Dictionary<string, Object> construct, Dictionary<string, Object> resource,
                            Dictionary<string, Object> tech, Dictionary<string, Object> civic,
-                           Dictionary<string, string> source, List<string> stagePaths)
+                           Dictionary<string, Object> presentationUnit, Dictionary<string, Object> presentationPawn,
+                           Dictionary<string, Object> presentationMount, Dictionary<string, string> source,
+                           List<string> stagePaths)
         {
             var relevant = mod.Elements.Values.Where(el => !el.IsRoot && IsRelevant(ResolveType(el.Type)));
             foreach (var g in relevant.GroupBy(el => el.SourcePath))
@@ -234,7 +269,7 @@ namespace HK.CompatPatcher
                 foreach (var el in g)
                 {
                     var live = objects.FirstOrDefault(o => o != null && o.name == el.Name);
-                    if (live != null && Place(live, construct, resource, tech, civic))
+                    if (live != null && Place(live, construct, resource, tech, civic, presentationUnit, presentationPawn, presentationMount))
                         source[el.Name] = mod.Name;
                 }
             }
@@ -242,15 +277,22 @@ namespace HK.CompatPatcher
 
         bool IsRelevant(Type t) =>
             t != null && ((tConstructible?.IsAssignableFrom(t) ?? false) || (tResource?.IsAssignableFrom(t) ?? false)
-                       || (tTech?.IsAssignableFrom(t) ?? false) || (tCivic?.IsAssignableFrom(t) ?? false));
+                       || (tTech?.IsAssignableFrom(t) ?? false) || (tCivic?.IsAssignableFrom(t) ?? false)
+                       || (tPresentationUnit?.IsAssignableFrom(t) ?? false) || (tPresentationPawn?.IsAssignableFrom(t) ?? false)
+                       || (tPresentationMount?.IsAssignableFrom(t) ?? false));
 
         bool Place(Object live, Dictionary<string, Object> construct, Dictionary<string, Object> resource,
-                   Dictionary<string, Object> tech, Dictionary<string, Object> civic)
+                   Dictionary<string, Object> tech, Dictionary<string, Object> civic,
+                   Dictionary<string, Object> presentationUnit, Dictionary<string, Object> presentationPawn,
+                   Dictionary<string, Object> presentationMount)
         {
             if (tTech != null && tTech.IsInstanceOfType(live)) { tech[live.name] = live; return true; }
             if (tCivic != null && tCivic.IsInstanceOfType(live)) { civic[live.name] = live; return true; }
             if (tResource != null && tResource.IsInstanceOfType(live)) { resource[live.name] = live; return true; }
             if (tConstructible != null && tConstructible.IsInstanceOfType(live)) { construct[live.name] = live; return true; }
+            if (tPresentationUnit != null && tPresentationUnit.IsInstanceOfType(live)) { presentationUnit[live.name] = live; return true; }
+            if (tPresentationPawn != null && tPresentationPawn.IsInstanceOfType(live)) { presentationPawn[live.name] = live; return true; }
+            if (tPresentationMount != null && tPresentationMount.IsInstanceOfType(live)) { presentationMount[live.name] = live; return true; }
             return false;
         }
 
@@ -308,6 +350,104 @@ namespace HK.CompatPatcher
             }
         }
 
+        // Replay InitializePresentationUnitDefinitions (:4299 + :4369): each PresentationPawnDefinition
+        // and PresentationSecondaryPawnDefinition must reference a PresentationUnitDefinition that exists
+        // in the merged set.
+        void EvaluatePresentation(Dictionary<string, Object> presentationUnit, Dictionary<string, Object> presentationPawn,
+                                  Dictionary<string, Object> presentationMount, Dictionary<string, string> source,
+                                  List<Finding> findings)
+        {
+            if (tPresentationPawn == null || tPresentationUnit == null) return;
+            foreach (var kv in presentationPawn)
+            {
+                var pawn = kv.Value;
+                var refName = GetDatatableElementRefName(pawn, "PresentationUnitDefinition");
+                if (!string.IsNullOrEmpty(refName) && !presentationUnit.ContainsKey(refName))
+                {
+                    findings.Add(Err(":4299", refName + " / " + pawn.name,
+                        $"PresentationPawnDefinition '{pawn.name}' references PresentationUnitDefinition '{refName}', "
+                        + "which neither vanilla nor any loaded mod defines. Game refuses to load."));
+                }
+            }
+            if (tPresentationMount == null) return;
+            foreach (var kv in presentationMount)
+            {
+                var mount = kv.Value;
+                var refName = GetDatatableElementRefName(mount, "PresentationUnitDefinition");
+                if (!string.IsNullOrEmpty(refName) && !presentationUnit.ContainsKey(refName))
+                {
+                    findings.Add(Err(":4369", refName + " / " + mount.name,
+                        $"PresentationSecondaryPawnDefinition '{mount.name}' references PresentationUnitDefinition '{refName}', "
+                        + "which neither vanilla nor any loaded mod defines. Game refuses to load."));
+                }
+            }
+        }
+
+        // Replay InitializeFamilies (:4139 + :4144): for each constructible family, within each level
+        // all constructibles must share the same emblematic/common status. The first constructible in a
+        // level sets the level type; subsequent ones must match.
+        void EvaluateFamilies(Dictionary<string, Object> construct, Dictionary<string, string> source,
+                              List<Finding> findings)
+        {
+            if (tConstructible == null) return;
+            var byFamilyLevel = new Dictionary<string, Dictionary<int, List<object>>>();
+            foreach (var kv in construct)
+            {
+                var family = GetString(kv.Value, "SerializableFamily");
+                if (string.IsNullOrEmpty(family)) continue;
+                var levelObj = kv.Value.GetType().GetField("Level", ALL)?.GetValue(kv.Value);
+                if (levelObj is not int level) continue;
+                if (!byFamilyLevel.TryGetValue(family, out var levels))
+                {
+                    levels = new Dictionary<int, List<object>>();
+                    byFamilyLevel[family] = levels;
+                }
+                if (!levels.TryGetValue(level, out var list))
+                {
+                    list = new List<object>();
+                    levels[level] = list;
+                }
+                list.Add(kv.Value);
+            }
+            foreach (var (family, levels) in byFamilyLevel)
+            {
+                foreach (var (level, list) in levels)
+                {
+                    if (list.Count < 2) continue;
+                    bool firstIsEmblematic = HasFactionPrerequisite(list[0]);
+                    for (int i = 1; i < list.Count; i++)
+                    {
+                        bool isEmblematic = HasFactionPrerequisite(list[i]);
+                        var c = (Object)list[i];
+                        if (firstIsEmblematic && !isEmblematic)
+                        {
+                            findings.Add(Err(":4144", c.name,
+                                $"Common {c.GetType().Name} '{c.name}' in emblematic level "
+                                + $"(family '{family}', level {level}). Game refuses to load."));
+                        }
+                        else if (!firstIsEmblematic && isEmblematic)
+                        {
+                            findings.Add(Err(":4139", c.name,
+                                $"Emblematic {c.GetType().Name} '{c.name}' in common level "
+                                + $"(family '{family}', level {level}). Game refuses to load."));
+                        }
+                    }
+                }
+            }
+        }
+
+        static bool HasFactionPrerequisite(object constructible)
+        {
+            var fpField = constructible.GetType().GetField("FactionPrerequisite", ALL);
+            if (fpField == null) return false;
+            var fp = fpField.GetValue(constructible);
+            if (fp == null) return false;
+            var fnProp = fp.GetType().GetProperty("FactionNames");
+            if (fnProp == null) return false;
+            var fn = fnProp.GetValue(fp) as Array;
+            return fn != null && fn.Length > 0;
+        }
+
         // ---- reflection helpers ------------------------------------------
 
         static Finding Err(string code, string element, string detail) =>
@@ -342,6 +482,17 @@ namespace HK.CompatPatcher
         }
 
         static string Show(string fam) => string.IsNullOrEmpty(fam) ? "(none)" : fam;
+
+        // Read the ElementName from a single DatatableElementReference field on an object.
+        static string GetDatatableElementRefName(object obj, string field)
+        {
+            if (obj == null) return null;
+            var fi = obj.GetType().GetField(field, ALL);
+            if (fi == null) return null;
+            var refObj = fi.GetValue(obj);
+            if (refObj == null) return null;
+            return GetString(refObj, "serializableElementName");
+        }
 
         // guid:fileID (mod element m_Script) -> concrete element Type, via the script's MonoScript.
         Type ResolveType(string guidFileId)

@@ -65,15 +65,20 @@ namespace HK.CompatPatcher
     {
         static readonly Regex AncestorRe = new Regex(@"^(.*\])", RegexOptions.Compiled);
 
-        public static AnalyzeResult Analyse(List<HkMod> modsInLoadOrder, Dictionary<string, Sidecar.Decision> prior)
+        public static AnalyzeResult Analyse(List<HkMod> modsInLoadOrder, Dictionary<string, Sidecar.Decision> prior,
+                                            Action<double, string> progress = null)
         {
             var res = new AnalyzeResult { LoadOrder = modsInLoadOrder.Select(m => m.Name).ToList() };
             var allKeys = new HashSet<string>();
             foreach (var m in modsInLoadOrder)
                 foreach (var k in m.Elements.Keys) allKeys.Add(k);
 
+            int total = allKeys.Count, n = 0;
             foreach (var key in allKeys)
             {
+                n++;
+                if (progress != null && (n & 0x3F) == 0) progress((double)n / total, "Analyzing " + n + " / " + total);
+
                 var present = new List<(HkMod mod, HkElement el)>();
                 foreach (var m in modsInLoadOrder)
                     if (m.Elements.TryGetValue(key, out var el)) present.Add((m, el));
@@ -122,8 +127,11 @@ namespace HK.CompatPatcher
                 if (winner.el.Odin) res.Stats.OdinConflicts++;
                 int add = diffs.Count(d => d.Kind == DiffKind.MissingInWinner);
                 int pick = diffs.Count(d => d.Kind == DiffKind.Changed);
+                int only = diffs.Count(d => d.Kind == DiffKind.ExtraInWinner);
                 row.Summary = string.Join(", ", new[] {
-                    add > 0 ? add + " ADD" : null, pick > 0 ? pick + " PICK" : null
+                    add > 0 ? add + " ADD" : null,
+                    pick > 0 ? pick + " PICK" : null,
+                    only > 0 ? only + " WINNER" : null
                 }.Where(x => x != null));
                 row.Status = ElemStatus.Conflict;
                 row.Conflict = conflict;
@@ -215,6 +223,19 @@ namespace HK.CompatPatcher
             }
             others.AddRange(merged);
             return others;
+        }
+
+        /// <summary>
+        /// Compute diffs between a winner element and a set of losers (by mod name).
+        /// Exposed for external callers (e.g. the Compare window) that need to recompute
+        /// diffs from live data without rebuilding the whole conflict tree.
+        /// </summary>
+        public static List<Diff> ComputeDiffs(HkElement winner, Dictionary<string, HkElement> losers)
+        {
+            if (winner == null || losers == null || losers.Count == 0) return new List<Diff>();
+            bool odin = winner.Odin || losers.Values.Any(e => e.Odin) || winner.Body == null;
+            if (odin) return RefDiff(winner, losers);
+            return CollapseMissing(StructDiff(winner, losers));
         }
 
         static void AssignStatus(ElementConflict c, Diff d, Dictionary<string, Sidecar.Decision> prior)
