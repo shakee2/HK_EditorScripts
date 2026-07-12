@@ -1,0 +1,229 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.IO.Compression;
+using System.Linq;
+using System.Text;
+
+namespace HK.CompatPatcher
+{
+    /// <summary>One database element flattened out of a mod, keyed by name (path-agnostic).</summary>
+    public class HkElement
+    {
+        public string Name;                 // m_Name
+        public string Type;                 // m_Script guid:fileID (concrete element class)
+        public string TypeHint;             // source file stem (friendly label, e.g. TechnologyDefinition)
+        public string SourcePath;           // logical path inside the mod (info only)
+        public bool IsRoot;                 // collection container object (m_Name == file stem)
+        public bool Odin;                   // payload in Odin node stream
+        public List<string> DocLines;       // raw YAML document (for verbatim copy on PICK)
+        public Dictionary<string, object> Body;       // parsed field tree (null if opaque)
+        public HashSet<string> Refs;        // referenced element names
+        public Dictionary<string, string> Flat;       // lazily-filled path -> value
+        public string Key => Type + "" + Name;
+    }
+
+    /// <summary>A loaded mod: element map keyed by (type,name).</summary>
+    public class HkMod
+    {
+        public string Name;
+        public string Path;
+        public int FileCount;
+        public Dictionary<string, HkElement> Elements = new Dictionary<string, HkElement>();
+        public Dictionary<string, string> RawFiles = new Dictionary<string, string>(); // logical path -> full .asset text (for staging)
+    }
+
+    public static class ModReader
+    {
+        public static HkMod Load(string modName, string path)
+        {
+            var mod = new HkMod { Name = modName, Path = path };
+            foreach (var (logicalPath, text) in EnumerateDatabaseAssets(path))
+            {
+                mod.FileCount++;
+                mod.RawFiles[logicalPath] = text;
+                foreach (var el in ParseElements(text, logicalPath))
+                    mod.Elements[el.Key] = el; // last within a mod wins (in-mod override)
+            }
+            return mod;
+        }
+
+        // ---- source enumeration -------------------------------------------
+        public static IEnumerable<(string path, string text)> EnumerateDatabaseAssets(string path)
+        {
+            if (Directory.Exists(path))
+            {
+                foreach (var fp in Directory.EnumerateFiles(path, "*.asset", SearchOption.AllDirectories))
+                {
+                    var norm = fp.Replace('\\', '/');
+                    if (norm.Contains("/Assets/Databases/"))
+                        yield return (norm, File.ReadAllText(fp));
+                }
+                yield break;
+            }
+            string ext = System.IO.Path.GetExtension(path).ToLowerInvariant();
+            if (ext == ".zip")
+            {
+                using var fs = File.OpenRead(path);
+                using var z = new ZipArchive(fs, ZipArchiveMode.Read);
+                foreach (var e in z.Entries)
+                {
+                    var n = e.FullName.Replace('\\', '/');
+                    if (n.EndsWith(".asset") && n.Contains("/Assets/Databases/"))
+                        yield return (n, ReadEntry(e));
+                }
+            }
+            else if (ext == ".unitypackage")
+            {
+                foreach (var kv in ReadUnityPackageDatabaseAssets(path))
+                    yield return (kv.Key, kv.Value);
+            }
+            else
+            {
+                throw new InvalidDataException("Unsupported mod source (use .unitypackage, .zip, or a folder): " + path);
+            }
+        }
+
+        static string ReadEntry(ZipArchiveEntry e)
+        {
+            using var s = e.Open();
+            using var r = new StreamReader(s, Encoding.UTF8);
+            return r.ReadToEnd();
+        }
+
+        // ---- .unitypackage = gzip(tar of <guid>/{pathname,asset,asset.meta}) ----
+        static IEnumerable<KeyValuePair<string, string>> ReadUnityPackageDatabaseAssets(string path)
+        {
+            byte[] tar;
+            using (var fs = File.OpenRead(path))
+            using (var gz = new GZipStream(fs, CompressionMode.Decompress))
+            using (var ms = new MemoryStream())
+            {
+                gz.CopyTo(ms);
+                tar = ms.ToArray();
+            }
+
+            var pathnames = new Dictionary<string, string>();     // guid -> logical path
+            var assets = new Dictionary<string, byte[]>();        // guid -> asset bytes
+            foreach (var (name, data) in ReadTar(tar))
+            {
+                int slash = name.IndexOf('/');
+                if (slash <= 0) continue;
+                string guid = name.Substring(0, slash);
+                string leaf = name.Substring(slash + 1);
+                if (leaf == "pathname")
+                {
+                    var p = Encoding.UTF8.GetString(data).Trim();
+                    int nl = p.IndexOfAny(new[] { '\r', '\n' });
+                    if (nl >= 0) p = p.Substring(0, nl);
+                    pathnames[guid] = p.Trim();
+                }
+                else if (leaf == "asset")
+                {
+                    assets[guid] = data;
+                }
+            }
+
+            foreach (var kv in pathnames)
+            {
+                var p = kv.Value.Replace('\\', '/');
+                if (p.EndsWith(".asset") && p.Contains("Assets/Databases/") && assets.TryGetValue(kv.Key, out var bytes))
+                    yield return new KeyValuePair<string, string>(p, Encoding.UTF8.GetString(bytes));
+            }
+        }
+
+        // Minimal USTAR reader (unitypackage uses short entry names, no GNU extensions).
+        static IEnumerable<(string name, byte[] data)> ReadTar(byte[] tar)
+        {
+            int pos = 0;
+            while (pos + 512 <= tar.Length)
+            {
+                // name (0..100)
+                int end = 0; while (end < 100 && tar[pos + end] != 0) end++;
+                string name = Encoding.UTF8.GetString(tar, pos, end);
+                if (name.Length == 0) yield break; // two zero blocks terminate
+
+                // size (124..136) octal
+                long size = 0;
+                for (int i = 124; i < 124 + 12; i++)
+                {
+                    byte b = tar[pos + i];
+                    if (b == 0 || b == ' ') continue;
+                    if (b < '0' || b > '7') break;
+                    size = size * 8 + (b - '0');
+                }
+                char typeFlag = (char)tar[pos + 156];
+                pos += 512;
+
+                if ((typeFlag == '0' || typeFlag == '\0') && size > 0 && pos + size <= tar.Length)
+                {
+                    var data = new byte[size];
+                    Array.Copy(tar, pos, data, 0, size);
+                    yield return (name, data);
+                }
+                pos += (int)((size + 511) / 512) * 512; // advance past data, padded to 512
+            }
+        }
+
+        // ---- split a .asset into elements ---------------------------------
+        public static List<HkElement> ParseElements(string text, string sourcePath)
+        {
+            var outp = new List<HkElement>();
+            var lines = text.Replace("\r\n", "\n").Split('\n');
+            string stem = System.IO.Path.GetFileNameWithoutExtension(sourcePath);
+
+            var starts = new List<int>();
+            for (int i = 0; i < lines.Length; i++)
+                if (lines[i].StartsWith("--- !u!")) starts.Add(i);
+            starts.Add(lines.Length);
+
+            for (int s = 0; s < starts.Count - 1; s++)
+            {
+                var doc = new List<string>();
+                for (int i = starts[s]; i < starts[s + 1]; i++) doc.Add(lines[i]);
+
+                string name = null, type = "?";
+                foreach (var l in doc)
+                {
+                    var t = l.TrimStart();
+                    if (name == null && t.StartsWith("m_Name:"))
+                        name = l.Substring(l.IndexOf(':') + 1).Trim();
+                    else if (t.StartsWith("m_Script:"))
+                    {
+                        // m_Script: {fileID: 123, guid: abc..., type: 3}
+                        var fid = Extract(t, "fileID:");
+                        var guid = Extract(t, "guid:");
+                        if (guid != null) type = guid + ":" + (fid ?? "0");
+                    }
+                }
+                if (name == null) continue;
+
+                var body = UnityYaml.ParseElementBody(doc);
+                outp.Add(new HkElement
+                {
+                    Name = name,
+                    Type = type,
+                    TypeHint = stem,
+                    SourcePath = sourcePath,
+                    IsRoot = name == stem || UnityYaml.IsContainerBody(body),
+                    Body = body,
+                    Odin = UnityYaml.IsOdinPayload(body),
+                    DocLines = doc,
+                    Refs = UnityYaml.CollectRefs(doc),
+                });
+            }
+            return outp;
+        }
+
+        static string Extract(string s, string token)
+        {
+            int i = s.IndexOf(token, StringComparison.Ordinal);
+            if (i < 0) return null;
+            i += token.Length;
+            while (i < s.Length && s[i] == ' ') i++;
+            int j = i;
+            while (j < s.Length && s[j] != ',' && s[j] != '}' && s[j] != ' ') j++;
+            return s.Substring(i, j - i).Trim();
+        }
+    }
+}

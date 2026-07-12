@@ -123,6 +123,140 @@ internal static class MeshCollectionBaker
         return target;
     }
 
+    // Bakes a SKINNED reskin Skeleton: relabels the source rig's bones to the target's names (via the
+    // step-3 remap) so vanilla animation clips bind by name, combines all skinned submeshes into one
+    // weight-PRESERVING mesh, and bakes it as a Skeleton. Unlike BuildSingleBoneSkinnedVariant (which
+    // collapses to a single static bone and destroys the skin), this keeps the per-vertex weights — it
+    // just renames the rig. First pass: all submeshes merge into one material (atlasing is a later
+    // polish step). Goal: a non-zero skinned bake whose bones match the vanilla rig, for the register +
+    // Description.Template repoint route (NOT the MeshIndex swap — that hits the bone-index wall).
+    internal static MeshCollection BakeReskinSkeleton(GameObject sourcePrefab, string[] remap, string meshEntryName, string createFolder)
+    {
+        if (sourcePrefab == null) { Debug.LogError("[MeshBaker] reskin: no source prefab."); return null; }
+        EnsureFolder(createFolder);
+
+        var instance = Object.Instantiate(sourcePrefab);
+        instance.name = sourcePrefab.name;
+        try
+        {
+            var smrs = instance.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+            if (smrs.Length == 0) { Debug.LogError("[MeshBaker] reskin: source has no SkinnedMeshRenderer."); return null; }
+
+            // 1. Rename every bone transform to its matched target name (map by source name so all
+            //    shared-armature bones are covered, not just the first renderer's).
+            if (remap != null)
+            {
+                var first = instance.GetComponentInChildren<SkinnedMeshRenderer>();
+                var nameMap = new Dictionary<string, string>();
+                for (int i = 0; i < first.bones.Length && i < remap.Length; i++)
+                    if (first.bones[i] != null && !string.IsNullOrEmpty(remap[i])) nameMap[first.bones[i].name] = remap[i];
+                foreach (var tr in instance.GetComponentsInChildren<Transform>(true))
+                    if (nameMap.TryGetValue(tr.name, out var nn)) tr.name = nn;
+            }
+
+            // 2. Skinned-combine all renderers into one weight-preserving mesh (bone indices unified).
+            var combined = CombineSkinned(smrs, meshEntryName + "_SkinnedMesh", out var unifiedBones);
+            if (combined == null || unifiedBones.Length == 0) { Debug.LogError("[MeshBaker] reskin: skinned combine produced nothing."); return null; }
+            combined.RecalculateBounds();
+            combined.RecalculateTangents();
+            string meshPath = AssetDatabase.GenerateUniqueAssetPath($"{createFolder}/{combined.name}.asset");
+            AssetDatabase.CreateAsset(combined, meshPath);
+
+            // 3. Rebuild the prefab: keep the renamed armature, replace the N renderers with ONE named
+            //    to match the target fragment's SkinnedMeshPath (GetFxMeshIndex looks it up by name).
+            var rootBone = unifiedBones[0];
+            foreach (var old in smrs) if (old != null) Object.DestroyImmediate(old.gameObject);
+            var meshGO = new GameObject(meshEntryName);
+            meshGO.transform.SetParent(instance.transform, false);
+            var smrNew = meshGO.AddComponent<SkinnedMeshRenderer>();
+            smrNew.sharedMesh = combined;
+            smrNew.bones = unifiedBones;
+            smrNew.rootBone = rootBone;
+
+            string prefabPath = AssetDatabase.GenerateUniqueAssetPath($"{createFolder}/{sourcePrefab.name}_Reskin.prefab");
+            var reskinPrefab = PrefabUtility.SaveAsPrefabAsset(instance, prefabPath);
+            if (reskinPrefab == null) { Debug.LogError("[MeshBaker] reskin: failed to save prefab."); return null; }
+
+            // 4. Bake as a Skeleton (skinned meshes bind because SkeletonInstance is non-null).
+            var skel = ScriptableObject.CreateInstance<Skeleton>();
+            skel.name = sourcePrefab.name + "_Skeleton";
+            string skelPath = AssetDatabase.GenerateUniqueAssetPath($"{createFolder}/{skel.name}.asset");
+            AssetDatabase.CreateAsset(skel, skelPath);
+            skel.SetPrefab(reskinPrefab);
+            skel.Reimport();
+            EditorUtility.SetDirty(skel);
+            AssetDatabase.SaveAssets();
+
+            Debug.Log($"[MeshBaker] reskin Skeleton '{skel.name}': SourcePrefab={skel.SourcePrefab}, " +
+                      $"meshes={skel.SkinnedMeshInfos?.Length ?? 0}, bones={skel.BoneInfos?.Length ?? 0}, " +
+                      $"mesh entry '{meshEntryName}' ({combined.vertexCount} verts). Next: add this Skeleton to the mod's " +
+                      $"AnimationManagerContent (step 8), then register + repoint the target's Description.Template -> this " +
+                      $"skeleton's SourcePrefab at runtime.");
+            EditorGUIUtility.PingObject(skel);
+            return skel;
+        }
+        finally { if (instance != null) Object.DestroyImmediate(instance); }
+    }
+
+    // Combines skinned renderers that SHARE an armature into one mesh, unifying their bone arrays and
+    // remapping each vertex's bone indices (single material/submesh — atlasing is a later polish step).
+    // Bind poses come from whichever renderer first introduces each bone.
+    static Mesh CombineSkinned(SkinnedMeshRenderer[] smrs, string name, out Transform[] unifiedBones)
+    {
+        var boneList = new List<Transform>();
+        var boneIndex = new Dictionary<Transform, int>();
+        var bindList = new List<Matrix4x4>();
+        var verts = new List<Vector3>(); var norms = new List<Vector3>(); var uvs = new List<Vector2>();
+        var bws = new List<BoneWeight>(); var tris = new List<int>();
+
+        foreach (var smr in smrs)
+        {
+            var m = smr.sharedMesh; if (m == null) continue;
+            var sb = smr.bones; var bp = m.bindposes;
+            int vbase = verts.Count;
+            verts.AddRange(m.vertices);
+            var mn = m.normals; norms.AddRange(mn != null && mn.Length == m.vertexCount ? mn : Enumerable.Repeat(Vector3.up, m.vertexCount));
+            var mu = m.uv; uvs.AddRange(mu != null && mu.Length == m.vertexCount ? mu : Enumerable.Repeat(Vector2.zero, m.vertexCount));
+
+            int[] localToUnified = new int[sb.Length];
+            for (int i = 0; i < sb.Length; i++)
+            {
+                var t = sb[i];
+                if (t == null) { localToUnified[i] = 0; continue; }
+                if (!boneIndex.TryGetValue(t, out int u))
+                {
+                    u = boneList.Count; boneList.Add(t); boneIndex[t] = u;
+                    bindList.Add(bp != null && i < bp.Length ? bp[i] : Matrix4x4.identity);
+                }
+                localToUnified[i] = u;
+            }
+
+            var bw = m.boneWeights;
+            for (int v = 0; v < m.vertexCount; v++)
+            {
+                var w = (bw != null && v < bw.Length) ? bw[v] : new BoneWeight { boneIndex0 = 0, weight0 = 1f };
+                w.boneIndex0 = Remap(localToUnified, w.boneIndex0);
+                w.boneIndex1 = Remap(localToUnified, w.boneIndex1);
+                w.boneIndex2 = Remap(localToUnified, w.boneIndex2);
+                w.boneIndex3 = Remap(localToUnified, w.boneIndex3);
+                bws.Add(w);
+            }
+            foreach (var tri in m.triangles) tris.Add(tri + vbase);
+        }
+
+        if (verts.Count == 0) { unifiedBones = System.Array.Empty<Transform>(); return null; }
+
+        var mesh = new Mesh { name = name, indexFormat = verts.Count > 65000 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16 };
+        mesh.SetVertices(verts); mesh.SetNormals(norms); mesh.SetUVs(0, uvs);
+        mesh.boneWeights = bws.ToArray();
+        mesh.bindposes = bindList.ToArray();
+        mesh.SetTriangles(tris, 0);
+        unifiedBones = boneList.ToArray();
+        return mesh;
+    }
+
+    static int Remap(int[] map, int idx) => (idx >= 0 && idx < map.Length) ? map[idx] : 0;
+
     internal static void ForcePrefabGuid(MeshCollection existing, string hex)
     {
         var guid = new Amplitude.Framework.Guid((hex ?? "").Trim());

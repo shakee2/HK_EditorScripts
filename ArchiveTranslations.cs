@@ -19,82 +19,145 @@ public static class ArchiveTranslations
     const string BundleFileName = "Mercury.Modding.Translations.assetbundle";
     const string PreferredLanguageCode = "en-US";
 
+    // A real asset path shipped inside the translations bundle (from its Unity .manifest). Used
+    // as a cheap content probe (AssetBundle.Contains is a hash lookup) to recognise the native
+    // Unity AssetBundle for our file among UnityEngine.AssetBundle.GetAllLoadedAssetBundles()
+    // when no Amplitude provider wraps it (an orphan that survived a domain reload). AssetBundle
+    // stores/queries asset names lower-invariant, so this must be lowercase.
+    const string OrphanProbeAssetPath = "assets/localization/translations/en-us, amplitude.mercury.localization (t).asset";
+
     static string ProviderName => BundleFileName.ToLowerInvariant();
 
     static IAssetProvider s_provider;
     static string s_lastError;
     static Dictionary<string, string> s_vanillaCache;  // vanilla bundle only — built once, never changes mid-session
 
+    // After a failed/stuck mount we must not re-attempt on every single call: callers like the
+    // inspector preview hit BuildKeyToTextDict on every element switch, and a stuck provider
+    // (native bundle loaded but Amplitude's registry says unmounted, post-refresh) would re-log
+    // "already loaded" / NRE warnings each time. Rate-limit retries to this cool-down window.
+    const double MountRetryCooldownSeconds = 10.0;
+    static double s_nextMountRetryTime;
+
     public static bool IsMounted => s_provider != null;
     public static string LastError => s_lastError;
 
     public static string BundlePath => Path.GetFullPath(Path.Combine(BundleFolderPath, BundleFileName));
 
+    // The translations bundle is owned by the Mod Editor's own Localization Window
+    // (Amplitude.Mercury.Production.Modification.LocalizationEditor). It mounts the *same file*
+    // under the *same provider name* we use (both = BundleFileName.ToLowerInvariant()), first
+    // trying AssetDatabase.TryGetAssetBundleFromPath and otherwise TryMountAssetBundle — verified
+    // against the shipped Amplitude.Mercury.Production.dll.
+    //
+    // The failure we're guarding against: after a domain reload Amplitude's providerTable (a
+    // static) is cleared, so IsMounted(ProviderName) is false — but Unity's native AssetBundle
+    // (loaded via LoadFromFile) SURVIVES the reload. A naive cold mount then calls LoadFromFile
+    // on an already-loaded file, which fails; and Amplitude's TryMountAssetBundle Mount()s the
+    // wrapper *even when the load failed*, registering a null-content "broken" provider into the
+    // global table. From then on Amplitude's own BuildLocalizationCache (walked on every
+    // DatatableElementReference repaint) NREs inside LoadAllMainAssetsOfType on that broken
+    // provider — poisoning the whole inspector, not just us.
+    //
+    // So this method repairs the provider table on access: adopt a healthy already-mounted
+    // provider for our file; unmount any broken one; unload an orphaned native bundle so a fresh
+    // mount can load it cleanly; and if a mount still yields a non-loaded provider, unmount it
+    // immediately so we never leave the table poisoned. IMPORTANT: never call
+    // AssetDatabase.Refresh() here — that forces the same BuildLocalizationCache rebuild against
+    // whatever half-registered state exists and NREs the inspector.
     public static bool TryMount(out string error)
     {
         error = null;
         if (s_provider != null) return true;
 
-        // The translations bundle is owned by the Mod Editor's own Localization Window
-        // (Amplitude.Mercury.Production.Modification.LocalizationEditor). On a cold start
-        // it may not be mounted yet, so we mount it ourselves; after a domain reload our
-        // static s_provider is wiped, so we recover Amplitude's already-registered provider
-        // by name first.
-        //
-        // IMPORTANT: never call AssetDatabase.Refresh() here. After a reload the native Unity
-        // AssetBundle may still be loaded while Amplitude's provider registry is transient.
-        // Refresh() forces Amplitude's DatatableElementCache.BuildLocalizationCache to rebuild
-        // (it walks every provider via LoadAllMainAssetsOfType), and against a half-registered
-        // translations provider that throws a NullReferenceException that breaks every
-        // DatatableElementReference drawer in the inspector (CTRL+R / Refresh hit the same
-        // Amplitude path). Re-mounting when the native bundle is already loaded throws
-        // "another AssetBundle with the same files is already loaded" and leaves the provider
-        // half-registered — the exact state that makes the cache rebuild NRE. So: recover by
-        // name if available; otherwise attempt a fresh mount (cold start only, when nothing is
-        // loaded yet) wrapped so the "already loaded" throw can't propagate or trigger Refresh.
-        if (AssetDatabase.IsMounted(ProviderName))
-        {
-            foreach (var provider in AssetDatabase.AllProviders)
-                if (provider.Name == ProviderName) { s_provider = provider; break; }
-            if (s_provider != null) { s_lastError = null; return true; }
-            // Mounted per IsMounted but the provider isn't in AllProviders yet — transient
-            // right after a reload. Don't poison s_lastError and don't re-mount (the native
-            // bundle is loaded; re-mounting would throw). Return false so the caller retries.
-            error = null;
-            return false;
-        }
-
-        // IsMounted is false: nothing is registered for this name, so a fresh mount is safe
-        // (no "already loaded" conflict). This is the cold-start path.
         string bundlePath = BundlePath;
+
+        // 1) Adopt a healthy already-mounted provider (name or resolved-path match), and scrub
+        //    any broken same-file provider out of the global table so it can't NRE the cache.
+        if (TryAdoptOrCleanProviders(bundlePath, out s_provider) && s_provider != null)
+        { s_lastError = null; return true; }
+
         if (!File.Exists(bundlePath))
-        {
-            error = s_lastError = $"Translations bundle not found at: {bundlePath}";
-            return false;
-        }
+        { error = s_lastError = $"Translations bundle not found at: {bundlePath}"; BackOffMountRetry(); return false; }
+
+        // 2) No live provider references our file. If Unity still has the native bundle loaded
+        //    (orphaned across a reload), unload it so the mount below won't hit "already loaded".
+        try { UnloadOrphanNativeBundle(); } catch { }
+
+        // 3) Cold mount. A returned provider is NOT proof of success (Amplitude mounts the
+        //    wrapper even on a failed load) — verify IsLoaded, and unmount on failure so we
+        //    never poison the table.
         try
         {
-            bool ok = AssetDatabase.TryMountAssetBundle(ProviderName, bundlePath, 0u, out s_provider, Amplitude.Framework.Asset.AssetBundle.Options.None);
-            if (ok) { s_lastError = null; return true; }
-            error = s_lastError = $"Failed to mount translations bundle: {bundlePath}";
+            bool ok = AssetDatabase.TryMountAssetBundle(ProviderName, bundlePath, 0u, out var mounted, Amplitude.Framework.Asset.AssetBundle.Options.None);
+            if (ok && mounted is Amplitude.Framework.Asset.AssetBundle ab && ab.IsLoaded)
+            { s_provider = mounted; s_lastError = null; return true; }
+
+            if (AssetDatabase.IsMounted(ProviderName)) { try { AssetDatabase.UnmountAssetBundle(ProviderName); } catch { } }
+            s_provider = null;
+            BackOffMountRetry();
+            error = s_lastError = $"Translations bundle failed to load (native bundle already loaded / invalid): {bundlePath}";
             return false;
         }
         catch (System.Exception e)
         {
-            // The only way to get here on the cold-start path is an unexpected error; the
-            // "already loaded" case is ruled out by the IsMounted check above. Do NOT call
-            // Refresh() — that would trigger Amplitude's localization-cache rebuild against
-            // the half-registered provider and NRE the whole inspector. Just report and fail
-            // softly; the caller retries next frame via the delayed retry / Reload button.
+            if (AssetDatabase.IsMounted(ProviderName)) { try { AssetDatabase.UnmountAssetBundle(ProviderName); } catch { } }
+            s_provider = null;
+            BackOffMountRetry();
             error = s_lastError = $"Translations bundle mount threw: {e.Message}";
             return false;
         }
+    }
+
+    // Scans Amplitude's global provider table for our translations bundle. Adopts the first
+    // healthy (IsLoaded) provider whose name or resolved path matches, and unmounts any broken
+    // (not-loaded) same-file provider — those are the null-content wrappers that NRE
+    // BuildLocalizationCache. Names to unmount are collected first: UnmountAssetBundle mutates
+    // the provider list, which can't be modified mid-enumeration.
+    static bool TryAdoptOrCleanProviders(string bundlePath, out IAssetProvider healthy)
+    {
+        healthy = null;
+        string fullPath = SafeFullPath(bundlePath);
+        List<string> brokenSameFile = null;
+        foreach (var provider in AssetDatabase.AllProviders)
+        {
+            if (provider is not Amplitude.Framework.Asset.AssetBundle ab) continue;
+            bool sameFile = string.Equals(ab.Name, ProviderName, System.StringComparison.OrdinalIgnoreCase)
+                || (fullPath != null && string.Equals(SafeFullPath(ab.Path), fullPath, System.StringComparison.OrdinalIgnoreCase));
+            if (!sameFile) continue;
+            if (ab.IsLoaded) healthy = provider;
+            else (brokenSameFile ??= new List<string>()).Add(ab.Name);
+        }
+        if (brokenSameFile != null)
+            foreach (var name in brokenSameFile) { try { AssetDatabase.UnmountAssetBundle(name); } catch { } }
+        return healthy != null;
+    }
+
+    // Unloads the native Unity AssetBundle for our file if it's loaded but wrapped by no
+    // Amplitude provider (an orphan left by a domain reload). Only call after
+    // TryAdoptOrCleanProviders reported no live provider, so we never unload a bundle a healthy
+    // provider still owns. Identified by content probe rather than a fragile name/path.
+    static void UnloadOrphanNativeBundle()
+    {
+        foreach (var b in UnityEngine.AssetBundle.GetAllLoadedAssetBundles())
+        {
+            if (b == null) continue;
+            bool mine;
+            try { mine = b.Contains(OrphanProbeAssetPath); } catch { continue; }
+            if (mine) { try { b.Unload(unloadAllLoadedObjects: false); } catch { } }
+        }
+    }
+
+    static string SafeFullPath(string p)
+    {
+        try { return string.IsNullOrEmpty(p) ? null : Path.GetFullPath(p); } catch { return p; }
     }
 
     public static void Invalidate()
     {
         s_provider = null;
         s_vanillaCache = null;
+        s_nextMountRetryTime = 0.0;   // allow an immediate retry after an explicit invalidation
     }
 
     /// <summary>
@@ -292,8 +355,15 @@ public static class ArchiveTranslations
         // make every later call return empty forever (labels stuck on keys) even after the
         // provider recovers. So treat an empty cache as "not built yet" and retry the mount.
         if (s_vanillaCache != null && s_vanillaCache.Count > 0) return s_vanillaCache;
+
+        // A prior attempt failed and the provider is likely stuck (see s_nextMountRetryTime).
+        // Return the empty cache without touching the mount again until the cool-down elapses,
+        // so rapid inspector element-switching doesn't re-log the same warnings every event.
+        if (UnityEditor.EditorApplication.timeSinceStartup < s_nextMountRetryTime)
+            return s_vanillaCache ??= new Dictionary<string, string>();
+
         s_vanillaCache = new Dictionary<string, string>(48000);
-        if (!TryMount(out _)) return s_vanillaCache;
+        if (!TryMount(out _)) { BackOffMountRetry(); return s_vanillaCache; }
 
         // The provider may be "mounted" per IsMounted/AllProviders but still in a stale,
         // broken state after a CTRL+R refresh (native bundle half-loaded). Touching it can
@@ -307,14 +377,18 @@ public static class ArchiveTranslations
         }
         catch (System.Exception e)
         {
-            // Drop the (likely half-populated) cache and the provider ref so the next call
-            // re-attempts the mount from scratch instead of re-using the broken provider.
+            // Drop the provider ref so the next attempt re-mounts from scratch, but keep a
+            // non-null (empty) cache and arm the cool-down so we don't retry — and re-log —
+            // on every following inspector event until the window passes.
             s_provider = null;
-            s_vanillaCache = null;
-            Debug.LogWarning($"[ArchiveTranslations] Vanilla cache build failed (provider likely stale after refresh): {e.Message}");
+            s_vanillaCache = new Dictionary<string, string>();
+            BackOffMountRetry();
+            Debug.LogWarning($"[ArchiveTranslations] Vanilla cache build failed (provider likely stale after refresh); backing off retries for {MountRetryCooldownSeconds:0}s: {e.Message}");
         }
-        return s_vanillaCache ?? (s_vanillaCache = new Dictionary<string, string>(48000));
+        return s_vanillaCache;
     }
+
+    static void BackOffMountRetry() => s_nextMountRetryTime = UnityEditor.EditorApplication.timeSinceStartup + MountRetryCooldownSeconds;
 
     static void BuildVanillaCacheFromProvider()
     {

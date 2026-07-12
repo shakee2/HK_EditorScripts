@@ -384,7 +384,10 @@ public class UnitVisualWorkflow : EditorWindow
         }
 
         _boneRemap = remap;
-        _tier = (_existingMeshCollectionForTarget != null || _targetIsProjectAsset) ? Tier.Tier0a : Tier.Tier0b;
+        // A successful bone match means the source rig can be relabelled to the target's and baked as a
+        // skinned Skeleton that reuses vanilla animation — the register + Description.Template repoint
+        // route (Tier0a), NOT the static MeshIndex swap (Tier0b). Default accordingly.
+        _tier = Tier.Tier0a;
     }
 
     // ── Step 4 ──────────────────────────────────────────────────────────────────
@@ -453,6 +456,20 @@ public class UnitVisualWorkflow : EditorWindow
     void RunBake()
     {
         var prefab = _effectivePrefab ?? _sourcePrefab;
+
+        // Bone-matched skinned reskin (the source rig structurally matches the target's): rename the
+        // source bones to the vanilla names and bake a weight-preserving Skeleton, so vanilla animation
+        // binds by name. This is the register + Description.Template repoint route (works for a full
+        // animated humanoid), not the static MeshIndex swap. Takes precedence over the static tier paths.
+        if (_boneRemap != null && prefab != null && prefab.GetComponentInChildren<SkinnedMeshRenderer>() != null)
+        {
+            string meshName = string.IsNullOrWhiteSpace(_meshNameOverride) ? "Body" : _meshNameOverride.Trim();
+            _bakedMeshCollection = MeshCollectionBaker.BakeReskinSkeleton(prefab, _boneRemap, meshName, _createFolder);
+            // No project fragment authored — the reskin reuses the target unit's existing fragment by
+            // name (its SkinnedMeshPath must equal the mesh entry name above). Add the baked Skeleton to
+            // the AnimationManagerContent in step 8; register + repoint happen at runtime (your plugin).
+            return;
+        }
 
         if (_tier == Tier.Tier0b)
         {
@@ -532,8 +549,16 @@ public class UnitVisualWorkflow : EditorWindow
 
         if (GUILayout.Button("Create AnimationManagerContent")) _content = (AnimationManagerContent)AnimationContentBuilder.CreateContent(_createFolder, _contentName);
 
-        bool blocked = _tier != Tier.Tier0b && (_content == null || _fragmentAsset == null || (_validationFindings.Count > 0 && !_validated));
-        using (new EditorGUI.DisabledScope(blocked && _tier != Tier.Tier0b))
+        // Reskin/repoint route (bone-matched skinned bake): no project fragment is authored — the unit
+        // reuses its existing fragment by name — so Build only needs the content to register the skeleton.
+        bool reskin = _boneRemap != null && _bakedMeshCollection != null;
+        bool blocked;
+        if (_tier == Tier.Tier0b) blocked = false;                                  // manifest path
+        else if (reskin) blocked = _content == null;                                // repoint route
+        else blocked = _content == null || _fragmentAsset == null || (_validationFindings.Count > 0 && !_validated);
+        if (reskin && _content == null)
+            EditorGUILayout.HelpBox("Reskin route: create/assign an AnimationManagerContent above, then Build adds the baked Skeleton to it.", MessageType.Info);
+        using (new EditorGUI.DisabledScope(blocked))
             if (GUILayout.Button("Build")) RunBuild();
         EditorGUILayout.Space(8);
     }
