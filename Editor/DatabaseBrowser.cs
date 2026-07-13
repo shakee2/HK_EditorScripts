@@ -27,6 +27,8 @@ public class DatabaseBrowser : EditorWindow
     }
 
     // ── State ─────────────────────────────────────────────────────────────────
+    static List<Entry> s_cachedAll;   // survives across the close+reopen we use to dock/undock, so toggling modes doesn't rescan
+    static bool s_suppressPlacement;  // guard: while we deliberately reopen, don't re-trigger placement in OnEnable
     List<Entry> _all = new();
     List<Entry> _view = new();
     List<DI>    _display = new();
@@ -42,7 +44,15 @@ public class DatabaseBrowser : EditorWindow
     static readonly string[] SCOPE_LABELS = { "All", "My Mod", "Vanilla" };
     ScopeFilter _scope = ScopeFilter.All;
     bool _contentOnly = true;   // hide build/plugin/config ScriptableObjects; show only actual data rows
-    string ContentOnlyKey => "DatabaseBrowser.ContentOnly";
+
+    // prefs keys
+    const string SearchKey     = "DatabaseBrowser.Search";
+    const string TypeFilterKey = "DatabaseBrowser.TypeFilter";
+    const string GroupKey      = "DatabaseBrowser.GroupByType";
+    const string ScopeKey      = "DatabaseBrowser.Scope";
+    const string IssueKey      = "DatabaseBrowser.Issue";
+    const string ContentOnlyKey = "DatabaseBrowser.ContentOnly";
+    const string SelectedGuidKey = "DatabaseBrowser.SelectedGuid";
 
     // Diagnostics filter — narrows to MY mod's files with issues (vanilla is never analyzed).
     enum IssueFilter { All, Warnings, HardStops }
@@ -52,7 +62,7 @@ public class DatabaseBrowser : EditorWindow
     enum ViewMode { Window, ListOnly }
     static readonly string[] MODE_LABELS = { "Window", "Only List" };
     ViewMode _mode = ViewMode.Window;
-    string ModeKey => "DatabaseBrowser.Mode";
+    const string ModeKey = "DatabaseBrowser.Mode";
 
     // selection + embedded inspector
     UnityEngine.Object _selected;
@@ -80,14 +90,49 @@ public class DatabaseBrowser : EditorWindow
     void OnEnable()
     {
         wantsMouseMove = true;
+        LoadPrefs();
         _mode = (ViewMode)EditorPrefs.GetInt(ModeKey, 0);
         _contentOnly = EditorPrefs.GetBool(ContentOnlyKey, true);
         Refresh();
+        RestoreSelection();
+        if (!s_suppressPlacement) ApplyWindowPlacement();
+    }
+
+    void LoadPrefs()
+    {
+        _search     = EditorPrefs.GetString(SearchKey, "");
+        _typeFilter = EditorPrefs.GetString(TypeFilterKey, "");
+        _groupByType = EditorPrefs.GetBool(GroupKey, false);
+        _scope      = (ScopeFilter)EditorPrefs.GetInt(ScopeKey, 0);
+        _issue      = (IssueFilter)EditorPrefs.GetInt(IssueKey, 0);
     }
 
     void OnDisable()
     {
+        SavePrefs();
         if (_editor != null) DestroyImmediate(_editor);
+    }
+
+    void SavePrefs()
+    {
+        EditorPrefs.SetString(SearchKey, _search);
+        EditorPrefs.SetString(TypeFilterKey, _typeFilter);
+        EditorPrefs.SetBool(GroupKey, _groupByType);
+        EditorPrefs.SetInt(ScopeKey, (int)_scope);
+        EditorPrefs.SetInt(IssueKey, (int)_issue);
+        // Persist selected element by asset GUID (only mod/asset selections survive; vanilla refs can't)
+        if (_selected != null && AssetDatabase.Contains(_selected))
+            EditorPrefs.SetString(SelectedGuidKey, AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(_selected)));
+        else
+            EditorPrefs.DeleteKey(SelectedGuidKey);
+    }
+
+    void RestoreSelection()
+    {
+        string guid = EditorPrefs.GetString(SelectedGuidKey, "");
+        if (guid.Length == 0) return;
+        var obj = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(AssetDatabase.GUIDToAssetPath(guid));
+        if (obj != null) _selected = obj;
     }
 
     void InitStyles()
@@ -103,7 +148,14 @@ public class DatabaseBrowser : EditorWindow
     }
 
     // ── Scan ──────────────────────────────────────────────────────────────────
-    void Refresh()
+    void Refresh(bool force = false)
+    {
+        if (force || s_cachedAll == null) s_cachedAll = ScanAll();
+        _all = s_cachedAll.OrderBy(e => e.typeName).ThenBy(e => e.name).ToList();
+        ApplyFilters();
+    }
+
+    static List<Entry> ScanAll()
     {
         var list = new List<Entry>();
         try
@@ -129,9 +181,7 @@ public class DatabaseBrowser : EditorWindow
                     isContent = obj is Amplitude.Framework.IDatatableElement });
         }
         finally { EditorUtility.ClearProgressBar(); }
-
-        _all = list.OrderBy(e => e.typeName).ThenBy(e => e.name).ToList();
-        ApplyFilters();
+        return list;
     }
 
     void ApplyFilters()
@@ -199,9 +249,10 @@ public class DatabaseBrowser : EditorWindow
         {
             EditorPrefs.SetInt(ModeKey, (int)_mode);
             if (_mode == ViewMode.ListOnly && _editor != null) { DestroyImmediate(_editor); _editor = null; }
+            ApplyWindowPlacement();
         }
         GUILayout.Space(8);
-        if (GUILayout.Button("Refresh", EditorStyles.toolbarButton, GUILayout.Width(70))) Refresh();
+        if (GUILayout.Button("Refresh", EditorStyles.toolbarButton, GUILayout.Width(70))) Refresh(true);
         if (GUILayout.Button("Save Assets", EditorStyles.toolbarButton, GUILayout.Width(90))) AssetDatabase.SaveAssets();
         GUILayout.FlexibleSpace();
         GUILayout.Label($"{_view.Count} / {_all.Count}", EditorStyles.miniLabel);
@@ -228,9 +279,13 @@ public class DatabaseBrowser : EditorWindow
     {
         GUILayout.BeginArea(area);
 
+        EditorGUILayout.BeginHorizontal();
         EditorGUI.BeginChangeCheck();
         _search = EditorGUILayout.TextField("Search", _search);
         if (EditorGUI.EndChangeCheck()) ApplyFilters();
+        if (GUILayout.Button("x", EditorStyles.miniButton, GUILayout.Width(18)) && _search.Length > 0)
+        { _search = ""; ApplyFilters(); }
+        EditorGUILayout.EndHorizontal();
 
         // Searchable type dropdown
         EditorGUILayout.BeginHorizontal();
@@ -438,6 +493,55 @@ public class DatabaseBrowser : EditorWindow
 
         EditorGUIUtility.labelWidth = prevLabel;
         GUILayout.EndArea();
+    }
+
+    // ── Window placement ──────────────────────────────────────────────────────
+    // Unity exposes no public dock/undock API, so we move the window by closing
+    // and reopening it with the desired docking hint. This uses only public API,
+    // is stable across Unity updates, and the static scan cache means reopening
+    // is instant (no rescan, no progress bar).
+    void ApplyWindowPlacement()
+    {
+        EditorApplication.delayCall -= DoApplyWindowPlacement;
+        EditorApplication.delayCall += DoApplyWindowPlacement;
+    }
+
+    void DoApplyWindowPlacement()
+    {
+        s_suppressPlacement = true;
+        try
+        {
+            bool wantDocked = _mode == ViewMode.ListOnly;
+            if (wantDocked == docked) return; // already in the right placement
+            if (wantDocked)
+            {
+                Type hostType = FindDockedNeighborType();
+                Close();
+                // desiredDockNextTo makes GetWindow dock as a tab next to that window.
+                GetWindow<DatabaseBrowser>("Database Browser", true, hostType);
+            }
+            else // Window — reopen as a free-floating, movable window
+            {
+                Close();
+                GetWindow<DatabaseBrowser>("Database Browser", true);
+            }
+        }
+        catch (Exception e) { Debug.LogError($"[DatabaseBrowser] placement failed: {e}"); }
+        finally { s_suppressPlacement = false; }
+    }
+
+    static Type FindDockedNeighborType()
+    {
+        // Prefer docking next to Project / Hierarchy / Console so the List tab
+        // lands in the same dock column as those, matching the standard layout.
+        foreach (var w in Resources.FindObjectsOfTypeAll<EditorWindow>())
+        {
+            if (w == null || !w.docked) continue;
+            string n = w.GetType().Name;
+            if (n == "ProjectBrowser" || n == "SceneHierarchyWindow" || n == "ConsoleWindow")
+                return w.GetType();
+        }
+        return null;
     }
 
     // ── Searchable type dropdown ──────────────────────────────────────────────
