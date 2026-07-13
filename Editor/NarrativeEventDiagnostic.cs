@@ -26,13 +26,16 @@ static class NarrativeEventDiagnostic
             return;
         }
 
-        bool wasMounted = AssetDatabase.IsMounted(ProviderName);
+        bool wasMounted = VanillaDatabaseMount.IsMounted || AssetDatabase.IsMounted(ProviderName);
         if (wasMounted)
         {
             try { AssetDatabase.UnmountAssetBundle(ProviderName); } catch { /* phantom handle */ }
             VanillaDatabaseMount.Invalidate();
         }
 
+        var savedSelection = Selection.objects;
+        Selection.activeObject = null;
+        
         var bundle = UnityEngine.AssetBundle.LoadFromFile(bundlePath);
         if (bundle == null)
         {
@@ -66,7 +69,62 @@ static class NarrativeEventDiagnostic
                     {
                         suspectCount++;
                         Debug.LogWarning($"[NarrativeEventDiagnostic] SUSPECT NarrativeEventDefinition '{obj.name}' (bundle path: {name}) — threw: {lastConditionText}");
+                        
+                        var type = obj.GetType();
+                        Debug.LogWarning($"[NarrativeEventDiagnostic] Inspecting nested fields of '{obj.name}' via reflection:");
+                        
+                        var triggerField = type.GetField("Trigger");
+                        if (triggerField != null)
+                        {
+                            var trigger = triggerField.GetValue(obj);
+                            if (trigger == null)
+                                Debug.LogWarning("  Trigger = [NULL]");
+                            else
+                            {
+                                Debug.LogWarning($"  Trigger = {trigger.GetType().Name}");
+                                var triggerType = trigger.GetType();
+                                foreach (var tf in triggerType.GetFields())
+                                {
+                                    var val = tf.GetValue(trigger);
+                                    if (val == null)
+                                        Debug.LogWarning($"    Trigger.{tf.Name} = [NULL]");
+                                    else if (val is UnityEngine.Object uobj && uobj == null)
+                                        Debug.LogWarning($"    Trigger.{tf.Name} = [UNITY NULL]");
+                                }
+                            }
+                        }
+                        
+                        var choicesField = type.GetField("Choices");
+                        if (choicesField != null)
+                        {
+                            var choices = choicesField.GetValue(obj) as Array;
+                            if (choices == null)
+                                Debug.LogWarning("  Choices = [NULL]");
+                            else
+                            {
+                                Debug.LogWarning($"  Choices = {choices.Length} elements");
+                                for (int i = 0; i < choices.Length; i++)
+                                {
+                                    var choice = choices.GetValue(i);
+                                    if (choice == null)
+                                    {
+                                        Debug.LogWarning($"    Choices[{i}] = [NULL]");
+                                        continue;
+                                    }
+                                    var choiceType = choice.GetType();
+                                    foreach (var cf in choiceType.GetFields())
+                                    {
+                                        var val = cf.GetValue(choice);
+                                        if (val == null)
+                                            Debug.LogWarning($"    Choices[{i}].{cf.Name} = [NULL]");
+                                        else if (val is UnityEngine.Object uobj && uobj == null)
+                                            Debug.LogWarning($"    Choices[{i}].{cf.Name} = [UNITY NULL]");
+                                    }
+                                }
+                            }
+                        }
                     }
+                    Selection.activeObject = null;
                 }
                 Debug.Log($"[NarrativeEventDiagnostic] Scan complete. {suspectCount} suspect asset(s) out of {checkedCount} NarrativeEventDefinition assets checked.");
             }
@@ -75,13 +133,12 @@ static class NarrativeEventDiagnostic
                 bundle.Unload(true);
             }
         }
+        
+        Selection.objects = savedSelection;
 
-        if (wasMounted)
-        {
-            if (VanillaDatabaseMount.ForceRemount(out var error))
-                Debug.Log("[NarrativeEventDiagnostic] Restored vanilla mount.");
-            else
-                Debug.LogError($"[NarrativeEventDiagnostic] Failed to restore vanilla mount: {error}");
-        }
+        if (VanillaDatabaseMount.ForceRemount(out var error))
+            Debug.Log("[NarrativeEventDiagnostic] Restored vanilla mount.");
+        else
+            Debug.LogError($"[NarrativeEventDiagnostic] Failed to restore vanilla mount: {error}");
     }
 }
