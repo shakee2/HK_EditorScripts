@@ -104,7 +104,7 @@ public class UnitVisualWorkflow : EditorWindow
     AnimationManagerContent _content;
     string _contentName = "New Additions_AnimationManagerContent";
 
-    [MenuItem("Tools/Unit Visual Workflow", false, 0)]
+    [MenuItem("Tools/shakee's Tools/Unit Visual Workflow (Experimental)", false, 0)]
     static void Open()
     {
         var w = GetWindow<UnitVisualWorkflow>("Unit Visual Workflow");

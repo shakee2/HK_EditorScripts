@@ -110,7 +110,7 @@ namespace HK.CompatPatcher
         }
 
         /// <summary>Drop the cached vanilla base so the next Compare reloads it (use after changing the Humankind folder).</summary>
-        [MenuItem("Tools/Debug/Compat Patcher/Clear Vanilla Validation Cache")]
+        [MenuItem("Tools/shakee's Tools/Debug/Compat Patcher/Clear Vanilla Validation Cache")]
         public static void ClearVanillaCache()
         {
             s_vConstruct = s_vResource = s_vTech = s_vCivic = null;

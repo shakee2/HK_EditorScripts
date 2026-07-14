@@ -96,7 +96,7 @@ public class AssetExplorer : EditorWindow
 
     GUIStyle _typeColStyle, _headerStyle;
 
-    [MenuItem("Tools/Asset Explorer", false, 7)]
+    [MenuItem("Tools/shakee's Tools/Asset Explorer", false, 7)]
     static void Open() => GetWindow<AssetExplorer>("Asset Explorer");
 
     void OnEnable()

@@ -56,7 +56,7 @@ namespace HK.CompatPatcher
         static readonly Color ROW_ALT = new Color(1f, 1f, 1f, 0.03f);
         static readonly Color ROW_SEL = new Color(0.3f, 0.5f, 0.9f, 0.28f);
 
-        [MenuItem("Tools/Compatibility Patcher", false, 4)]
+        [MenuItem("Tools/shakee's Tools/Compatibility Patcher", false, 4)]
         static void Open() => GetWindow<CompatPatcherWindow>("Compat Patcher");
 
         void OnEnable() { wantsMouseMove = true; BuildHeader(); ScanPatch(); }

@@ -76,7 +76,7 @@ public class DescriptorPropertyIndex : EditorWindow
     static readonly Color ROW_LINE  = new Color(0f, 0f, 0f, 0.25f);
     enum Col { Descriptor, Scope, Definition, Starting, Path, Target, Property, Op, Formula }
 
-    [MenuItem("Tools/Descriptor Property Browser", false, 3)]
+    [MenuItem("Tools/shakee's Tools/Descriptor Property Browser", false, 3)]
     static void Open() => GetWindow<DescriptorPropertyIndex>("Descriptor Browser");
 
     void OnEnable()

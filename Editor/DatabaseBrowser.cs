@@ -84,7 +84,7 @@ public class DatabaseBrowser : EditorWindow
 
     GUIStyle _typeColStyle, _headerStyle;
 
-    [MenuItem("Tools/Database Browser", false, 2)]
+    [MenuItem("Tools/shakee's Tools/Database Browser", false, 2)]
     static void Open() => GetWindow<DatabaseBrowser>("Database Browser");
 
     void OnEnable()
@@ -280,11 +280,12 @@ public class DatabaseBrowser : EditorWindow
         GUILayout.BeginArea(area);
 
         EditorGUILayout.BeginHorizontal();
+        GUI.SetNextControlName("dbSearch");
         EditorGUI.BeginChangeCheck();
         _search = EditorGUILayout.TextField("Search", _search);
         if (EditorGUI.EndChangeCheck()) ApplyFilters();
         if (GUILayout.Button("x", EditorStyles.miniButton, GUILayout.Width(18)) && _search.Length > 0)
-        { _search = ""; ApplyFilters(); }
+        { _search = ""; GUI.FocusControl(null); ApplyFilters(); }
         EditorGUILayout.EndHorizontal();
 
         // Searchable type dropdown

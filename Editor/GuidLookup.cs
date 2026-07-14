@@ -25,7 +25,7 @@ public class GuidLookup : EditorWindow
     string _result = "";
     Vector2 _scroll;
 
-    [MenuItem("Tools/Pawn Fragment/Debug/Find GUID In Vanilla Bundles", false, 9)]
+    [MenuItem("Tools/shakee's Tools/Debug/Find GUID In Vanilla Bundles", false, 9)]
     static void Open()
     {
         var w = GetWindow<GuidLookup>("GUID Lookup");

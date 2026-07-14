@@ -46,10 +46,22 @@ public static class DescriptorMapperPreview
 {
     static DescriptorMapperPreview()
     {
-        Editor.finishedDefaultHeaderGUI += OnHeaderGUI;
+        s_active = EditorPrefs.GetBool(ActiveKey, true);
+        // The header seam is owned by InspectorAnalysisPanel, which draws this panel (via Draw) and the
+        // diagnostics panel inside one shared, height-capped scroll container.
+        Undo.undoRedoPerformed += () => { s_generation++; s_previewCache.Clear(); };
+        EditorApplication.projectChanged += () => { s_generation++; s_previewCache.Clear(); s_byNameCache.Clear(); s_effectMapperConfig = null; s_effectMapperConfigSearched = false; };
     }
 
     static bool s_expanded = true;
+    static bool s_active = true;
+    const string ActiveKey = "DescriptorMapperPreview.Active";
+
+    /// <summary>Generation counter — bumps when caches are invalidated. Used by PropertyEffectDrawer.</summary>
+    public static int Generation => s_generation;
+
+    /// <summary>When false, the header panel and the PropertyEffectDrawer inline content are suppressed.</summary>
+    public static bool IsActive => s_active;
 
     // ── Render cache ─────────────────────────────────────────────────────────
     // finishedDefaultHeaderGUI fires for every inspector event (every Layout + every
@@ -83,7 +95,7 @@ public static class DescriptorMapperPreview
     static FieldInfo f_propertyToFollow, f_validations;
     static FieldInfo f_val_pathIndex, f_val_elementName, f_val_inverted;
     static FieldInfo f_targetProperty, f_toTargetOp, f_rpnStack, f_constantStack, f_propertyLocalNames;
-    static FieldInfo f_rawValue;
+    static FieldInfo f_rawValue, f_note;
     static long s_oneRaw = 1000;
 
     static FieldInfo f_dm_localizedName, f_dm_hideDescriptor, f_dm_policies;
@@ -147,6 +159,7 @@ public static class DescriptorMapperPreview
         f_rpnStack = GetField(t_PropertyEffect, "RpnOperationStack");
         f_constantStack = GetField(t_PropertyEffect, "ConstantStack");
         f_propertyLocalNames = GetField(t_PropertyEffect, "PropertyLocalName");
+        f_note = GetField(t_PropertyEffect, "Note");
 
         t_OperationEnum = f_toTargetOp?.FieldType;
         var fixedPointType = f_constantStack?.FieldType.GetElementType();
@@ -271,8 +284,17 @@ public static class DescriptorMapperPreview
 
     static FieldInfo GetField(Type t, string name) => t?.GetField(name, ALL);
 
-    // ── Header hook ─────────────────────────────────────────────────────────
-    static void OnHeaderGUI(Editor editor)
+    // ── Drawn by InspectorAnalysisPanel inside the shared, height-capped container ──
+    /// <summary>True when this panel applies to the inspected target (a Descriptor or DescriptorMapper).</summary>
+    public static bool WillDraw(Editor editor)
+    {
+        if (editor == null || editor.targets == null || editor.targets.Length != 1) return false;
+        var target = editor.target;
+        if (target == null || !TryResolve()) return false;
+        return t_DescriptorMapper.IsInstanceOfType(target) || t_Descriptor.IsInstanceOfType(target);
+    }
+
+    public static void Draw(Editor editor)
     {
         if (editor.targets == null || editor.targets.Length != 1) return;
         var target = editor.target;
@@ -287,8 +309,19 @@ public static class DescriptorMapperPreview
         UnityEngine.Object mapperObj = isMapper ? target : FindPairedAsset(t_DescriptorMapper, target.name);
 
         EditorGUILayout.Space(2);
+        EditorGUILayout.BeginHorizontal();
         s_expanded = EditorGUILayout.Foldout(s_expanded, "Tooltip Breakdown Preview", true);
-        if (!s_expanded) return;
+        GUILayout.FlexibleSpace();
+        EditorGUI.BeginChangeCheck();
+        s_active = GUILayout.Toggle(s_active, "Enabled", EditorStyles.miniButton, GUILayout.Width(60));
+        if (EditorGUI.EndChangeCheck())
+        {
+            EditorPrefs.SetBool(ActiveKey, s_active);
+            s_generation++;   // invalidate PropertyEffectDrawer cache so it honours the toggle
+            s_previewCache.Clear();
+        }
+        EditorGUILayout.EndHorizontal();
+        if (!s_expanded || !s_active) return;
 
         var ops = GetOrBuildOps(target.GetInstanceID(), descriptorObj, mapperObj, target.name);
         EditorGUI.indentLevel++;
@@ -422,6 +455,10 @@ public static class DescriptorMapperPreview
         string formula = BuildFormula(pe);
         int toTargetOp = Convert.ToInt32(f_toTargetOp.GetValue(pe));
         OpTwo(ops, "Formula", formula);
+        OpTwo(ops, "In-game render", BuildResolvedFormula(pe, toTargetOp, targetProperty));
+        string note = f_note?.GetValue(pe) as string;
+        if (!string.IsNullOrEmpty(note))
+            OpTwo(ops, "Note", note);
 
         // Policy fields (a mapper's per-PropertyEffect override), matching DescriptorMapper.PropertyEffectPolicy.
         int declaredFlags = policy != null ? Convert.ToInt32(f_pol_flags.GetValue(policy)) : FLAG_None;
@@ -830,7 +867,7 @@ public static class DescriptorMapperPreview
         return VanillaDatabaseMount.LoadAllOfType(type).FirstOrDefault();
     }
 
-    [MenuItem("Tools/Debug/Descriptor Mapper Preview/Clear Name Cache")]
+    [MenuItem("Tools/shakee's Tools/Debug/Descriptor Mapper Preview/Clear Name Cache")]
     static void ClearCache()
     {
         s_byNameCache.Clear();
@@ -840,6 +877,43 @@ public static class DescriptorMapperPreview
         s_previewCache.Clear();
         s_generation++;
         Debug.Log("[DescriptorMapperPreview] Name lookup cache cleared.");
+    }
+
+    // ── Available property names (for intellisense in PropertyEffect fields) ──
+    static IList<string> s_propertyNames;
+    static int s_propertyNamesGeneration = -1;
+
+    /// <summary>All PropertyMapper names (project + vanilla), cached per generation. For intellisense.</summary>
+    public static IList<string> GetAvailablePropertyNames()
+    {
+        if (s_propertyNames != null && s_propertyNamesGeneration == s_generation)
+            return s_propertyNames;
+        s_propertyNamesGeneration = s_generation;
+        var set = new HashSet<string>();
+        try
+        {
+            if (t_PropertyMapper != null)
+            {
+                foreach (var obj in VanillaDatabaseMount.LoadAllOfType(t_PropertyMapper))
+                    if (obj != null && !string.IsNullOrEmpty(obj.name)) set.Add(obj.name);
+            }
+        }
+        catch { }
+        try
+        {
+            foreach (var guid in AssetDatabase.FindAssets("t:ScriptableObject"))
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                foreach (var obj in AssetDatabase.LoadAllAssetsAtPath(path))
+                    if (obj != null && t_PropertyMapper != null && t_PropertyMapper.IsInstanceOfType(obj)
+                        && !string.IsNullOrEmpty(obj.name)) set.Add(obj.name);
+            }
+        }
+        catch { }
+        var list = new List<string>(set);
+        list.Sort(StringComparer.Ordinal);
+        s_propertyNames = list;
+        return list;
     }
 
     // ── %key -> text resolution ──────────────────────────────────────────────
@@ -918,6 +992,7 @@ public static class DescriptorMapperPreview
                     {
                         if (pe == null) { h = Mix(h, 0); continue; }
                         h = MixStr(h, f_targetProperty.GetValue(pe) as string);
+                        h = MixStr(h, f_note?.GetValue(pe) as string);
                         h = Mix(h, Convert.ToInt32(f_toTargetOp.GetValue(pe)));
                         if (f_rpnStack.GetValue(pe) is Array rpn) foreach (var o in rpn) h = Mix(h, Convert.ToInt32(o));
                         if (f_constantStack.GetValue(pe) is Array cs) foreach (var c in cs) h = Mix(h, c == null ? 0 : Convert.ToInt32(f_rawValue.GetValue(c)));
@@ -966,6 +1041,59 @@ public static class DescriptorMapperPreview
     }
 
     static string NextName(string[] names, ref int idx) => names != null && idx < names.Length ? names[idx++] : $"p{idx++}";
+
+    // Like BuildFormula, but resolves property names through PropertyMapper (display names) and
+    // formats the leading constant with sign/percent per the PropertyMapper. Used both in the
+    // preview panel and by the PropertyEffectDrawer for inline display.
+    static string BuildResolvedFormula(object pe, int toTargetOp, string targetProperty)
+    {
+        var rpn = f_rpnStack?.GetValue(pe) as Array;
+        var constants = f_constantStack?.GetValue(pe) as Array;
+        var names = f_propertyLocalNames?.GetValue(pe) as string[];
+
+        if (rpn == null || rpn.Length == 0)
+        {
+            if (constants != null && constants.Length > 0)
+            {
+                double value = RawToDouble(constants.GetValue(0));
+                return FormatValueString(value, toTargetOp, targetProperty);
+            }
+            return "0";
+        }
+
+        var stack = new Stack<string>(); int propIdx = 0, constIdx = 0;
+        foreach (var opObj in rpn)
+        {
+            int op = Convert.ToInt32(opObj);
+            if (op == OP_GetConst)
+            {
+                double value = constants != null && constIdx < constants.Length ? RawToDouble(constants.GetValue(constIdx++)) : 0;
+                stack.Push(FormatValueString(value, toTargetOp, targetProperty));
+            }
+            else if (op == OP_GetTarget || op == OP_GetSource || op == OP_GetWorld)
+                stack.Push(ResolvePropertyLabel(NextName(names, ref propIdx)));
+            else if (op == OP_GetVariable)
+                stack.Push("var:" + NextName(names, ref propIdx));
+            else
+            {
+                if (stack.Count < 2) { stack.Push("?op" + op); continue; }
+                string b = stack.Pop(), a = stack.Pop();
+                stack.Push("(" + a + " " + BinSymResolved(op) + " " + b + ")");
+            }
+        }
+        string result = stack.Count > 0 ? stack.Peek() : "?";
+        if (result.Length > 1 && result[0] == '(' && result[^1] == ')') result = result.Substring(1, result.Length - 2);
+        return result;
+    }
+
+    static string BinSymResolved(int op)
+    {
+        if (op == OP_Add) return "+"; if (op == OP_Sub) return "-";
+        if (op == OP_Mult) return "×"; if (op == OP_Div) return "÷";
+        if (op == OP_Pow) return "^"; if (op == OP_Percent) return "% of";
+        if (op == OP_Max) return "max"; if (op == OP_Min) return "min";
+        return "op" + op;
+    }
 
     static string BinSym(int op)
     {
@@ -1085,5 +1213,104 @@ public static class DescriptorMapperPreview
         }
         if (stack != 1) return $"malformed RPN — {stack} value(s) left on the stack at the end (expected exactly 1; a missing or extra operation).";
         return null;
+    }
+
+    // ── Public API for PropertyEffectDrawer (inline in-game render) ────────
+    // Resolves one PropertyEffect into a display-ready formula + warnings, fetching the
+    // DescriptorMapper (from project or vanilla) for policy context. Accepts either a
+    // Descriptor or a DescriptorMapper as the root (the paired asset is found by name).
+    // Safe no-op if reflection isn't ready or the target isn't either type.
+    public struct PropertyEffectResolution
+    {
+        public string rawFormula;           // infix with raw names: "3 * Target.Industry"
+        public string resolvedFormula;      // infix with resolved names + formatted constant: "+3 × Industry"
+        public string note;                 // PropertyEffect.Note (may be empty)
+        public bool foundDescriptorMapper;
+        public bool solveRPNFormula;
+        public bool hidden;
+        public List<string> warnings;
+    }
+
+    public static PropertyEffectResolution ResolvePropertyEffect(
+        UnityEngine.Object rootObj, int effectIndex, int peIndex)
+    {
+        var r = new PropertyEffectResolution { warnings = new List<string>() };
+        if (!TryResolve() || rootObj == null) return r;
+
+        // Accept either a Descriptor or a DescriptorMapper; find the paired Descriptor.
+        UnityEngine.Object descriptorObj, mapperObj;
+        if (t_Descriptor != null && t_Descriptor.IsInstanceOfType(rootObj))
+        {
+            descriptorObj = rootObj;
+            mapperObj = FindPairedAsset(t_DescriptorMapper, rootObj.name);
+        }
+        else if (t_DescriptorMapper != null && t_DescriptorMapper.IsInstanceOfType(rootObj))
+        {
+            mapperObj = rootObj;
+            descriptorObj = FindPairedAsset(t_Descriptor, rootObj.name);
+        }
+        else return r;
+
+        r.foundDescriptorMapper = mapperObj != null;
+
+        if (descriptorObj == null)
+        {
+            r.warnings.Add("No paired Descriptor found — can't resolve Effects/PropertyEffects.");
+            return r;
+        }
+        if (f_effects.GetValue(descriptorObj) is not Array effects) return r;
+        if (effectIndex < 0 || effectIndex >= effects.Length) return r;
+        var effect = effects.GetValue(effectIndex);
+        if (effect == null) return r;
+        if (f_propertyEffects.GetValue(effect) is not Array peArr) return r;
+        if (peIndex < 0 || peIndex >= peArr.Length) return r;
+        var pe = peArr.GetValue(peIndex);
+        if (pe == null) return r;
+
+        string targetProperty = f_targetProperty.GetValue(pe) as string ?? "";
+        int toTargetOp = Convert.ToInt32(f_toTargetOp.GetValue(pe));
+        r.rawFormula = BuildFormula(pe);
+        r.resolvedFormula = BuildResolvedFormula(pe, toTargetOp, targetProperty);
+        r.note = f_note?.GetValue(pe) as string ?? "";
+
+        object policy = FindPolicy(mapperObj, effectIndex, peIndex);
+        r.hidden = policy != null && (bool)f_pol_hide.GetValue(policy);
+        r.solveRPNFormula = policy != null && f_pol_solveRpn != null && (bool)f_pol_solveRpn.GetValue(policy);
+
+        // Warnings
+        if (!r.foundDescriptorMapper)
+            r.warnings.Add("No DescriptorMapper found (project or vanilla) — rows render with auto-computed parameters only.");
+        if (r.hidden)
+            r.warnings.Add("HidePropertyEffect = true — this PropertyEffect is never shown in tooltips.");
+        if (r.solveRPNFormula)
+            r.warnings.Add("SolveRPNFormula is ON — runtime evaluates this live against game state; the formula is shown as static.");
+
+        string rpnError = ValidateRpn(pe);
+        if (rpnError != null) r.warnings.Add(rpnError);
+        else
+        {
+            var shape = AnalyzePropertyEffectShape(pe, toTargetOp);
+            if (!shape.valid)
+                r.warnings.Add("RPN isn't a recognised simple/one-factor/two-factor form — the runtime skips it and renders no tooltip row.");
+        }
+
+        if (mapperObj != null && policy != null)
+        {
+            int declaredFlags = Convert.ToInt32(f_pol_flags.GetValue(policy));
+            if (declaredFlags != FLAG_None)
+            {
+                bool applyOnSource = f_applyOnSource != null && (bool)f_applyOnSource.GetValue(effect);
+                bool isSynergy = string.Equals(f_desc_category?.GetValue(descriptorObj) as string, "District_Synergy", StringComparison.Ordinal);
+                PathInfo pathInfo; int pathFlags;
+                if (isSynergy) { pathInfo = ClassifySynergyPath(effect, out _); pathFlags = string.IsNullOrEmpty(pathInfo.synergySource) ? 0 : FLAG_SynergySource; }
+                else { pathInfo = ClassifyPath(effect, applyOnSource); pathFlags = ComputePathFlags(pathInfo); }
+                var shape = AnalyzePropertyEffectShape(pe, toTargetOp);
+                int autoFlags = shape.propFlags | pathFlags;
+                if ((declaredFlags & ~autoFlags) != 0)
+                    r.warnings.Add($"DescriptorMapper policy declares ParameterFlags '{DecodeFlags(declaredFlags)}' but the effect only provides '{DecodeFlags(autoFlags)}' — runtime logs an error and falls back to auto.");
+            }
+        }
+
+        return r;
     }
 }

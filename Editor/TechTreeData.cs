@@ -231,7 +231,7 @@ public static class TechTreeData
     }
 
     // ── Verification dump ─────────────────────────────────────────────────────
-    [MenuItem("Tools/Debug/Tech Tree/Diagnose Mod Split", false, 100)]
+    [MenuItem("Tools/shakee's Tools/Debug/Tech Tree/Diagnose Mod Split", false, 100)]
     static void DiagnoseModSplit()
     {
         DiagnoseModSplit(DefaultModPath);
@@ -278,7 +278,7 @@ public static class TechTreeData
         Debug.Log(sb.ToString());
     }
 
-    [MenuItem("Tools/Debug/Tech Tree/Dump Data", false, 101)]
+    [MenuItem("Tools/shakee's Tools/Debug/Tech Tree/Dump Data", false, 101)]
     static void DumpData()
     {
         var nodes = Build();

@@ -16,7 +16,7 @@ static class NarrativeEventDiagnostic
 {
     const string ProviderName = "mercurydatabases.assetbundle";
 
-    [MenuItem("Tools/Debug/Tech Tree/Find Bad NarrativeEventDefinition", false, 103)]
+    [MenuItem("Tools/shakee's Tools/Debug/Find Bad NarrativeEventDefinition", false, 103)]
     static void Run()
     {
         string bundlePath = VanillaDatabaseMount.BundlePath;

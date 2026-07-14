@@ -332,14 +332,14 @@ public static class VanillaDatabaseMount
         return duplicates[0] as UnityEngine.Object;
     }
 
-    [UnityEditor.MenuItem("Tools/Debug/Tech Tree/Force Re-mount Vanilla Database", false, 101)]
+    [UnityEditor.MenuItem("Tools/shakee's Tools/Debug/Tech Tree/Force Re-mount Vanilla Database", false, 101)]
     static void DebugForceRemount()
     {
         if (ForceRemount(out var error)) Debug.Log("[VanillaMount] Force re-mount succeeded.");
         else Debug.LogError($"[VanillaMount] {error}");
     }
 
-    [UnityEditor.MenuItem("Tools/Debug/Tech Tree/Vanilla Mount", false, 102)]
+    [UnityEditor.MenuItem("Tools/shakee's Tools/Debug/Tech Tree/Vanilla Mount", false, 102)]
     static void DebugMount()
     {
         if (!TryMount(out var error)) { Debug.LogError($"[VanillaMount] {error}"); return; }

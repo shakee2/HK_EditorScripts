@@ -20,7 +20,7 @@ using UnityEngine;
 /// </summary>
 public static class ExportModEditorScriptsPackage
 {
-    const string MENU = "Tools/Export Mod Editor Scripts Package";
+    const string MENU = "Tools/shakee's Tools/Export Mod Editor Scripts Package";
 
     static readonly string[] SCRIPTS =
     {

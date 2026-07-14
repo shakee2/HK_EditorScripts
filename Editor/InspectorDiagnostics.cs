@@ -324,15 +324,29 @@ public static class InspectorDiagnostics
     //  Inspector panel (finishedDefaultHeaderGUI) + inline localization editor
     // ══════════════════════════════════════════════════════════════════════════
     static bool s_foldDiag = true, s_foldLoc = false;
+    static bool s_active = true;
+    const string ActiveKey = "InspectorDiagnostics.Active";
 
     static InspectorDiagnostics()
     {
-        Editor.finishedDefaultHeaderGUI += OnHeaderGUI;
+        s_active = EditorPrefs.GetBool(ActiveKey, true);
+        // The header seam is owned by InspectorAnalysisPanel, which draws this panel (via Draw) and the
+        // Tooltip Breakdown Preview inside one shared, height-capped scroll container.
         Undo.undoRedoPerformed += InvalidateAll;
         EditorApplication.projectChanged += InvalidateAll;
     }
 
-    static void OnHeaderGUI(Editor editor)
+    /// <summary>True when this element has something to show (findings or localization keys).</summary>
+    public static bool WillDraw(Editor editor)
+    {
+        if (editor == null || editor.targets == null || editor.targets.Length != 1) return false;
+        var target = editor.target;
+        if (target == null || !TryResolve()) return false;
+        if (t_IDatatableElement == null || !t_IDatatableElement.IsInstanceOfType(target)) return false;
+        return Analyze(target).Count > 0 || GetLocModel(target).Count > 0;
+    }
+
+    public static void Draw(Editor editor)
     {
         if (editor.targets == null || editor.targets.Length != 1) return;
         var target = editor.target;
@@ -344,6 +358,16 @@ public static class InspectorDiagnostics
         if (findings.Count == 0 && loc.Count == 0) return;
 
         EditorGUILayout.Space(2);
+
+        EditorGUILayout.BeginHorizontal();
+        GUILayout.Label("Inspector Diagnostics", EditorStyles.miniBoldLabel);
+        GUILayout.FlexibleSpace();
+        EditorGUI.BeginChangeCheck();
+        s_active = GUILayout.Toggle(s_active, "Enabled", EditorStyles.miniButton, GUILayout.Width(60));
+        if (EditorGUI.EndChangeCheck()) EditorPrefs.SetBool(ActiveKey, s_active);
+        EditorGUILayout.EndHorizontal();
+
+        if (!s_active) return;
 
         if (findings.Count > 0)
         {

@@ -31,7 +31,7 @@ public static class PawnFragmentProbe
     // Small explicit type so element names survive the LINQ chain.
     struct Hit { public string Type; public string Path; }
 
-    [MenuItem("Tools/Debug/Pawn Probe/1. Find Presentation Assets", false, 120)]
+    [MenuItem("Tools/shakee's Tools/Debug/Pawn Probe/1. Find Presentation Assets", false, 120)]
     static void FindPresentationAssets()
     {
         var sb = new StringBuilder();
@@ -69,7 +69,7 @@ public static class PawnFragmentProbe
     // holds the mesh (and which hold the material/texture references we must NOT
     // touch). Select a fragment asset in the Project window, then run this.
     // ──────────────────────────────────────────────────────────────────────────
-    [MenuItem("Tools/Debug/Pawn Probe/2. Dump Selected Fragment Fields", false, 121)]
+    [MenuItem("Tools/shakee's Tools/Debug/Dump Selected Element Fields", false, 121)]
     static void DumpFragmentFields()
     {
         var obj = Selection.activeObject;
@@ -144,6 +144,60 @@ public static class PawnFragmentProbe
                 }
 
             }
+            if (f.Name == "Effects")
+            {
+                sb.AppendLine($"\n-- Effects --");
+                System.Collections.IList values = (System.Collections.IList)v;
+                if (values.Count > 0)
+                {
+                    for (int i = 0; i < values.Count; i++)
+                    {
+                        object firstItem = values[i];
+                        sb.AppendLine($"Line #{i} ({firstItem.GetType().Name}):");
+
+                        // Reflect into the fields of this specific translation object
+                        foreach (var subField in firstItem.GetType().GetFields(ALL))
+                        {                           
+                            object subValue = null;
+                            try { subValue = subField.GetValue(firstItem); } catch { subValue = "<unreadable>"; }
+                            
+                            sb.AppendLine($"    -> {subField.Name} = {subValue}");
+                            if (subField.Name == "PropertyEffects" || subField.Name == "PropertyEffect")
+                            {
+                                object subFieldValue = null;
+                                try { subFieldValue = subField.GetValue(firstItem); } catch { subFieldValue = "<unreadable>"; }
+                                System.Collections.IList values2 = (System.Collections.IList)subFieldValue;
+                                if (values2.Count > 0)
+                                {
+                                    for (int j = 0; j < values2.Count; j++)
+                                    {
+                                        object secondItem = values2[j];
+                                        sb.AppendLine($"PropertyEffect #{j} ({secondItem.GetType().Name}):");
+
+                                        // Reflect into the fields of this specific translation object
+                                        foreach (var subField2 in secondItem.GetType().GetFields(ALL))
+                                        {                           
+                                            object subValue2 = null;
+                                            try { subValue2 = subField2.GetValue(secondItem); } catch { subValue2 = "<unreadable>"; }
+                                            
+                                            sb.AppendLine($"        -> {subField2.Name} = {subValue2}");
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    sb.AppendLine($"PropertyEffect #0 = <empty list>");
+                                }
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    sb.AppendLine($"Line #0 = <empty list>");
+                }
+
+            }
             /* foreach (var sub in f.FieldType.GetFields(ALL))
             {
                 object v2 = null;
@@ -171,7 +225,7 @@ public static class PawnFragmentProbe
     // copy is editable + savable. If this works, clone-and-swap is buildable.
     // Select a fragment asset, then run.
     // ──────────────────────────────────────────────────────────────────────────
-    [MenuItem("Tools/Debug/Pawn Probe/3. Try Clone Selected Fragment", false, 122)]
+    [MenuItem("Tools/shakee's Tools/Debug/Pawn Probe/3. Try Clone Selected Fragment", false, 122)]
     static void TryCloneFragment()
     {
         var obj = Selection.activeObject;

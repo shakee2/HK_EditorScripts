@@ -22,7 +22,7 @@ public class BundleContentProbe : EditorWindow
     string _nameFilter = "Erika";
     IAssetProvider _provider;
 
-    [MenuItem("Tools/Pawn Fragment/Debug/Inspect Built Mod Bundle", false, 8)]
+    [MenuItem("Tools/shakee's Tools/Debug/Inspect Built Mod Bundle", false, 8)]
     static void Open()
     {
         var w = GetWindow<BundleContentProbe>("Bundle Probe");
