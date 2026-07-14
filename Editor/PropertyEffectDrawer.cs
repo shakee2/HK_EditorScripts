@@ -9,6 +9,7 @@ using UnityEngine;
 #if ODIN_INSPECTOR
 using Sirenix.OdinInspector.Editor;
 using Amplitude.Framework.Simulation;              // Operation
+using Amplitude.Framework.Simulation.Description;  // Effect, PropertyEffect
 using Amplitude.Framework.Editor.Simulation.Rpn;   // RpnTextCompiler, CompilerStatus
 using Amplitude.Mercury.Production;                // PropertyEffectPropertyDrawer (Source/Target type context)
 using Amplitude.Mercury.Production.Extensions;     // InspectorProperty.SerializeArray
@@ -49,18 +50,30 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
 
     protected override void DrawPropertyLayout(GUIContent label)
     {
-        // Consume a click on last frame's floating suggestion dropdown BEFORE Amplitude's own controls
-        // (the note field it overlaps) can steal the mousedown.
-        HandleOverlayClick();
-        // Amplitude's own PropertyEffect drawer (compact formula editor + dropdowns) untouched…
+        HandleSuggestionKeyboard();
+        HandleOverlayClickEarly();
         CallNextDrawer(label);
-        // …then: (A) compute the floating autocomplete (needs the field rect), (B) our backup additive
-        // field (collapsed), and the in-game render preview…
         ComputeFormulaOverlay();
         DrawAutocompleteFormula();
         DrawInlineRender();
-        // …and finally paint the dropdown LAST so nothing overdraws it (top layer).
         DrawFormulaOverlayVisuals();
+        DrawAcSuggestionPopupVisuals();
+    }
+
+    void OnOverlayPick(int index)
+    {
+        if (FormulaSuggestionOverlaySession.Kind == FormulaSuggestionOverlaySession.OverlayKind.Amp)
+        {
+            var (start, len, text) = FormulaSuggestionOverlaySession.GetItem(index);
+            InsertIntoFormula(start, len, text, ExpectedFormulaControlName());
+        }
+        else
+        {
+            var (start, len, text) = FormulaSuggestionOverlaySession.GetItem(index);
+            if (_acCtrl != null) EditorGUI.FocusTextInControl(_acCtrl);
+            InsertCompletion(start, len, text);
+        }
+        RepaintFocusedWindow();
     }
 
     // ════════════════════════════════════════════════════════════════════════════
@@ -73,7 +86,14 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
     //  that editor so Amplitude's own Parse/Compile picks them up.
     // ════════════════════════════════════════════════════════════════════════════
     readonly List<(int start, int len, string text)> _ovItems = new();
-    Rect _ovRect;   // floating dropdown rect (0 when hidden); also used by HandleOverlayClick
+    Rect _ovAnchor;     // Amplitude formula field rect (anchor for the popup)
+    Rect _ovRect;       // floating dropdown rect; used by HandleOverlayClick + drawing
+    Vector2 _ovScroll;
+    int _ovSel = -1;
+    string _ovHeader = "";
+    string _ovFilterKey = "";
+    bool _ovScrollResetThisLayout;
+    int _formulaControlId;
 
     // Compute the suggestions + the dropdown rect (anchored under Amplitude's formula field). No drawing —
     // the visuals are painted last (DrawFormulaOverlayVisuals) so nothing overdraws them.
@@ -82,7 +102,12 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
         try
         {
             _ovRect = Rect.zero;
-            if (!PropertyEffectPropertyDrawer.SourceType.TryGetValue(out Type src) || src == null) { _ovItems.Clear(); return; }
+            if (!PropertyEffectPropertyDrawer.SourceType.TryGetValue(out Type src) || src == null)
+            {
+                _ovItems.Clear();
+                _ovAnchor = Rect.zero;
+                return;
+            }
             PropertyEffectPropertyDrawer.TargetType.TryGetValue(out Type tgt);
 
             string focused = GUI.GetNameOfFocusedControl();
@@ -94,61 +119,231 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
             var te = formulaFocused ? ActiveRecycledEditor() : null;
             if (Event.current.type == EventType.Layout)
             {
-                _ovItems.Clear();
-                if (te != null) ComputeSuggestions(te.text ?? "", te.cursorIndex, src, tgt, _ovItems);
+                if (te != null)
+                {
+                    string text = te.text ?? "";
+                    int caret = te.cursorIndex;
+                    _ovItems.Clear();
+                    ComputeSuggestions(text, caret, src, tgt, _ovItems);
+                    _ovHeader = SuggestionHeader(text, caret);
+                    string filterKey = SuggestionFilterKey(text, caret);
+                    if (filterKey != _ovFilterKey)
+                    {
+                        _ovFilterKey = filterKey;
+                        _ovSel = _ovItems.Count > 0 ? 0 : -1;
+                        _ovScroll = Vector2.zero;
+                        _ovScrollResetThisLayout = true;
+                    }
+                    else
+                        _ovSel = _ovItems.Count > 0 ? Mathf.Clamp(_ovSel, 0, _ovItems.Count - 1) : -1;
+                    _formulaControlId = GUIUtility.keyboardControl;
+                }
+                else
+                {
+                    _ovItems.Clear();
+                    _ovFilterKey = "";
+                    _formulaControlId = 0;
+                    _ovAnchor = Rect.zero;
+                }
             }
             if (_ovItems.Count == 0 || te == null || te.position.width < 2f) return;
 
-            float rowH = EditorGUIUtility.singleLineHeight;
-            var field = te.position;
-            _ovRect = new Rect(field.x, field.yMax + 1f, Mathf.Max(field.width, 200f), _ovItems.Count * rowH + 2f);
+            _ovAnchor = te.position;
+            FormulaSuggestionDropdownGui.Layout(_ovAnchor, _ovItems.Count, out _ovRect, out _, out _);
         }
-        catch { _ovRect = Rect.zero; }
+        catch { _ovRect = Rect.zero; _ovAnchor = Rect.zero; }
     }
 
-    static readonly Color OvBackDark = new Color(0.22f, 0.22f, 0.22f, 1f);
-    static readonly Color OvBackLight = new Color(0.78f, 0.78f, 0.78f, 1f);
-    static readonly Color OvBorder = new Color(0f, 0f, 0f, 0.6f);
-    static readonly Color OvHover = new Color(0.3f, 0.5f, 0.9f, 0.45f);
+    void HandleOverlayClickEarly()
+    {
+        var e = Event.current;
+        if (e.type != EventType.MouseDown || e.button != 0) return;
+        // Don't steal clicks while a control is mid-drag (e.g. text selection in the formula field).
+        if (GUIUtility.hotControl != 0) return;
+
+        if (_ovItems.Count > 0 && _ovAnchor.width > 2f)
+        {
+            FormulaSuggestionDropdownGui.Layout(_ovAnchor, _ovItems.Count, out Rect popupRect, out _, out _);
+            if (popupRect.Contains(e.mousePosition))
+            {
+                e.Use();
+                if (FormulaSuggestionDropdownGui.TryPick(popupRect, _ovItems.Count, _ovScroll, e.mousePosition, out int idx))
+                {
+                    var (start, len, text) = _ovItems[idx];
+                    InsertIntoFormula(start, len, text, ExpectedFormulaControlName());
+                    RepaintFocusedWindow();
+                }
+                return;
+            }
+        }
+
+        if (_acShowPopup && _acItems.Count > 0 && _acFieldRect.width > 2f)
+        {
+            FormulaSuggestionDropdownGui.Layout(_acFieldRect, _acItems.Count, out Rect popupRect, out _, out _);
+            if (popupRect.Contains(e.mousePosition))
+            {
+                e.Use();
+                if (FormulaSuggestionDropdownGui.TryPick(popupRect, _acItems.Count, _acScroll, e.mousePosition, out int idx))
+                {
+                    var (start, len, text) = _acItems[idx];
+                    if (_acCtrl != null) EditorGUI.FocusTextInControl(_acCtrl);
+                    InsertCompletion(start, len, text);
+                    RepaintFocusedWindow();
+                }
+            }
+        }
+    }
 
     void DrawFormulaOverlayVisuals()
     {
-        if (Event.current.type != EventType.Repaint || _ovRect.width < 2f || _ovItems.Count == 0) return;
-        // Opaque fill + border so the note/error underneath don't bleed through; drawn last = top layer.
-        EditorGUI.DrawRect(_ovRect, EditorGUIUtility.isProSkin ? OvBackDark : OvBackLight);
-        DrawBorder(_ovRect, OvBorder);
-        float rowH = EditorGUIUtility.singleLineHeight;
-        var mouse = Event.current.mousePosition;
-        for (int i = 0; i < _ovItems.Count; i++)
+        if (_ovItems.Count == 0 || _ovAnchor.width < 2f)
         {
-            var r = new Rect(_ovRect.x + 1f, _ovRect.y + 1f + i * rowH, _ovRect.width - 2f, rowH);
-            if (r.Contains(mouse)) EditorGUI.DrawRect(r, OvHover);
-            GUI.Label(r, _ovItems[i].text, AcStyle);
+            FormulaSuggestionOverlaySession.ClearIfOwner(Property.Path, FormulaSuggestionOverlaySession.OverlayKind.Amp);
+            return;
+        }
+
+        if (Event.current.type == EventType.Repaint)
+        {
+            // Wheel updates land in the session; pull them in only for painting.
+            _ovScroll = FormulaSuggestionOverlaySession.Scroll;
+            FormulaSuggestionDropdownGui.ClampScroll(ref _ovScroll, _ovItems.Count);
+            FormulaSuggestionDropdownGui.PaintPopup(
+                _ovAnchor, _ovHeader, _ovItems, _ovScroll, out _ovRect, _ovSel);
+            FormulaSuggestionOverlaySession.UpdateGeometry(_ovRect, _ovScroll);
+        }
+        else if (Event.current.type == EventType.Layout)
+        {
+            if (!_ovScrollResetThisLayout)
+                _ovScroll = FormulaSuggestionOverlaySession.Scroll;
+            FormulaSuggestionDropdownGui.ClampScroll(ref _ovScroll, _ovItems.Count);
+            FormulaSuggestionDropdownGui.Layout(_ovAnchor, _ovItems.Count, out Rect popupRect, out _, out _);
+            FormulaSuggestionOverlaySession.Publish(
+                Property.Path, FormulaSuggestionOverlaySession.OverlayKind.Amp,
+                popupRect, _ovScroll, _ovItems, _ovSel, _ovHeader);
+            FormulaSuggestionOverlaySession.SetOwnerPick(Property.Path, OnOverlayPick);
+            FormulaSuggestionOverlaySession.EnsureEndOfFrameBlocker(Property.Tree);
+            _ovScrollResetThisLayout = false;
         }
     }
 
-    static void DrawBorder(Rect r, Color c)
-    {
-        EditorGUI.DrawRect(new Rect(r.x, r.y, r.width, 1f), c);
-        EditorGUI.DrawRect(new Rect(r.x, r.yMax - 1f, r.width, 1f), c);
-        EditorGUI.DrawRect(new Rect(r.x, r.y, 1f, r.height), c);
-        EditorGUI.DrawRect(new Rect(r.xMax - 1f, r.y, 1f, r.height), c);
-    }
-
-    // Runs before CallNextDrawer: if a click lands in last frame's dropdown, apply it and swallow the event
-    // so Amplitude's overlapped note field never sees the mousedown.
-    void HandleOverlayClick()
+    void HandleSuggestionKeyboard()
     {
         var e = Event.current;
-        if (e.type != EventType.MouseDown || e.button != 0 || _ovItems.Count == 0 || _ovRect.width < 2f) return;
-        if (!_ovRect.Contains(e.mousePosition)) return;
-        int idx = Mathf.FloorToInt((e.mousePosition.y - (_ovRect.y + 1f)) / EditorGUIUtility.singleLineHeight);
-        if (idx >= 0 && idx < _ovItems.Count)
+        if (e.type != EventType.KeyDown) return;
+        if (e.keyCode is not (KeyCode.UpArrow or KeyCode.DownArrow) && !IsConfirmShortcut(e)) return;
+
+        if (IsAmplitudeFormulaFocused())
         {
-            var (start, len, text) = _ovItems[idx];
-            InsertIntoFormula(start, len, text, ExpectedFormulaControlName());
-            e.Use();
+            RefreshOvItemsForKeyboard();
+            if (_ovItems.Count == 0) return;
+
+            bool nav = e.keyCode is KeyCode.UpArrow or KeyCode.DownArrow;
+            if (HandleListKeyboard(e, _ovItems.Count, ref _ovSel, ref _ovScroll, out int pick))
+            {
+                var (start, len, text) = _ovItems[pick];
+                InsertIntoFormula(start, len, text, ExpectedFormulaControlName());
+            }
+            else if (nav)
+            {
+                FormulaSuggestionOverlaySession.SyncNavigation(_ovScroll, _ovSel);
+                RepaintFocusedWindow();
+            }
+            return;
         }
+
+        if (_acCtrl != null && IsAcFormulaFocused())
+        {
+            RefreshAcItemsForKeyboard();
+            if (_acItems.Count == 0) return;
+
+            bool nav = e.keyCode is KeyCode.UpArrow or KeyCode.DownArrow;
+            if (HandleListKeyboard(e, _acItems.Count, ref _acSel, ref _acScroll, out int pick))
+            {
+                var (start, len, text) = _acItems[pick];
+                InsertCompletion(start, len, text);
+            }
+            else if (nav)
+            {
+                FormulaSuggestionOverlaySession.SyncNavigation(_acScroll, _acSel);
+                RepaintFocusedWindow();
+            }
+        }
+    }
+
+    bool IsAcFormulaFocused() =>
+        _acCtrl != null && (GUI.GetNameOfFocusedControl() == _acCtrl || GUIUtility.keyboardControl == _acControlId);
+
+    static void RepaintFocusedWindow() => EditorWindow.focusedWindow?.Repaint();
+
+    bool IsAmplitudeFormulaFocused()
+    {
+        string expected = ExpectedFormulaControlName();
+        if (expected == null) return false;
+        if (GUI.GetNameOfFocusedControl() == expected) return true;
+        return _formulaControlId != 0 && GUIUtility.keyboardControl == _formulaControlId;
+    }
+
+    void RefreshOvItemsForKeyboard()
+    {
+        if (!PropertyEffectPropertyDrawer.SourceType.TryGetValue(out Type src) || src == null) return;
+        PropertyEffectPropertyDrawer.TargetType.TryGetValue(out Type tgt);
+        var te = ActiveRecycledEditor();
+        if (te == null) return;
+        _ovItems.Clear();
+        string text = te.text ?? "";
+        ComputeSuggestions(text, te.cursorIndex, src, tgt, _ovItems);
+        _ovHeader = SuggestionHeader(text, te.cursorIndex);
+        if (_ovItems.Count > 0)
+            _ovSel = Mathf.Clamp(_ovSel, 0, _ovItems.Count - 1);
+        else
+            _ovSel = -1;
+    }
+
+    void RefreshAcItemsForKeyboard()
+    {
+        if (!PropertyEffectPropertyDrawer.SourceType.TryGetValue(out Type src) || src == null) return;
+        PropertyEffectPropertyDrawer.TargetType.TryGetValue(out Type tgt);
+        var te = GUIUtility.GetStateObject(typeof(TextEditor), GUIUtility.keyboardControl) as TextEditor;
+        int caret = te != null ? te.cursorIndex : (_formula?.Length ?? 0);
+        _acItems.Clear();
+        if (string.IsNullOrEmpty(_formula)) return;
+        ComputeSuggestions(_formula, caret, src, tgt, _acItems);
+        _acHeader = SuggestionHeader(_formula, caret);
+        _acSel = _acItems.Count > 0 ? Mathf.Clamp(_acSel, 0, _acItems.Count - 1) : -1;
+    }
+
+    static bool IsConfirmShortcut(Event e) =>
+        e.keyCode == KeyCode.RightArrow
+        || (e.control && (e.keyCode == KeyCode.E || e.keyCode == KeyCode.D));
+
+    // Returns true when → / Ctrl+E / Ctrl+D confirms an insert; sets pick to the chosen index.
+    static bool HandleListKeyboard(Event e, int count, ref int sel, ref Vector2 scroll, out int pick)
+    {
+        pick = -1;
+        if (count == 0) return false;
+
+        if (e.keyCode == KeyCode.DownArrow)
+        {
+            sel = sel < 0 ? 0 : Mathf.Min(sel + 1, count - 1);
+            FormulaSuggestionDropdownGui.ScrollToIndex(ref scroll, sel, count);
+            e.Use();
+            return false;
+        }
+        if (e.keyCode == KeyCode.UpArrow)
+        {
+            sel = sel < 0 ? 0 : Mathf.Max(sel - 1, 0);
+            FormulaSuggestionDropdownGui.ScrollToIndex(ref scroll, sel, count);
+            e.Use();
+            return false;
+        }
+        if (IsConfirmShortcut(e))
+        {
+            pick = sel >= 0 ? sel : 0;
+            e.Use();
+            GUI.changed = true;
+            return true;
+        }
+        return false;
     }
 
     // Amplitude's own PropertyEffectPropertyDrawer instance for THIS element (its sibling in our drawer
@@ -212,35 +407,41 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
 
     void InsertIntoFormula(int start, int len, string completion, string ctrlName)
     {
-        // Re-fetch (not the captured ref): the button click steals keyboard focus, but the shared recycled
-        // editor still holds the formula's text/caret until another text field is focused.
+        if (ctrlName != null) EditorGUI.FocusTextInControl(ctrlName);
+
         var te = ActiveRecycledEditor();
-        if (te == null) return;
-        string t = te.text ?? "";
+        string t = te?.text;
+        if (string.IsNullOrEmpty(t))
+        {
+            var amp = FindAmpDrawer();
+            ReflectAmp();
+            if (amp != null && s_ampCompiler?.GetValue(amp) is RpnTextCompiler comp)
+                t = comp.ControlValue;
+        }
+        if (string.IsNullOrEmpty(t)) return;
+
         start = Mathf.Clamp(start, 0, t.Length);
         len = Mathf.Clamp(len, 0, t.Length - start);
         string nt = t.Substring(0, start) + completion + t.Substring(start + len);
-        te.text = nt;
-        te.cursorIndex = te.selectIndex = Mathf.Clamp(start + completion.Length, 0, nt.Length);
+        if (te != null)
+        {
+            te.text = nt;
+            te.cursorIndex = te.selectIndex = Mathf.Clamp(start + completion.Length, 0, nt.Length);
+        }
 
-        // Our edit didn't go through Amplitude's TextArea, so its EndChangeCheck never fired. Drive its OWN
-        // compiler: Parse() sets ControlValue + the highlight tokens for ANY text (so the field shows our
-        // insert and never reverts — even mid-completion like "5 + Source."), and only when it's a valid,
-        // complete formula do we Compile() to write the RPN arrays. We deliberately do NOT call Decompile()
-        // (it rebuilds the text from the old arrays and would wipe an incomplete insert).
-        var amp = FindAmpDrawer();
+        var ampDrawer = FindAmpDrawer();
         ReflectAmp();
-        if (amp != null && s_ampCompiler?.GetValue(amp) is RpnTextCompiler comp)
+        if (ampDrawer != null && s_ampCompiler?.GetValue(ampDrawer) is RpnTextCompiler comp2)
         {
             try
             {
-                if (comp.Parse(nt) == CompilerStatus.Ok && comp.Validate() == CompilerStatus.Ok)
-                    s_ampCompile?.Invoke(amp, null);
+                comp2.Parse(nt);
+                if (comp2.Validate() == CompilerStatus.Ok)
+                    s_ampCompile?.Invoke(ampDrawer, null);
             }
             catch { }
         }
-        // Suggestions rebuild on the next Layout (moved caret); don't clear here (control-count safety).
-        if (ctrlName != null) EditorGUI.FocusTextInControl(ctrlName);   // keep editing the formula field
+        if (ctrlName != null) EditorGUI.FocusTextInControl(ctrlName);
         GUI.changed = true;
     }
 
@@ -273,7 +474,29 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
             rs = start; rl = token.Length;
             matches = new[] { "Source.", "Target.", "World." }.Where(k => k.StartsWith(token, StringComparison.OrdinalIgnoreCase) && k != token);
         }
-        foreach (var m in matches.Take(8)) outItems.Add((rs, rl, m));
+        foreach (var m in matches) outItems.Add((rs, rl, m));
+    }
+
+    static string SuggestionFilterKey(string text, int caret)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        caret = Mathf.Clamp(caret, 0, text.Length);
+        int start = caret;
+        while (start > 0 && (char.IsLetterOrDigit(text[start - 1]) || text[start - 1] == '_' || text[start - 1] == '.')) start--;
+        string token = text.Substring(start, caret - start);
+        return token.Length == 0 ? "" : start + "|" + token;
+    }
+
+    static string SuggestionHeader(string text, int caret)
+    {
+        if (string.IsNullOrEmpty(text)) return "Formula";
+        caret = Mathf.Clamp(caret, 0, text.Length);
+        int start = caret;
+        while (start > 0 && (char.IsLetterOrDigit(text[start - 1]) || text[start - 1] == '_' || text[start - 1] == '.')) start--;
+        string token = text.Substring(start, caret - start);
+        int dot = token.LastIndexOf('.');
+        if (dot >= 0) return token.Substring(0, dot);
+        return "Keyword";
     }
 
     // ════════════════════════════════════════════════════════════════════════════
@@ -293,7 +516,15 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
     bool _acFold;               // collapsed by default
     bool _acDirty;              // text changed → re-parse on next Layout
     string _acCtrl;
-    readonly List<(int start, int len, string text)> _acItems = new();   // rebuilt on Layout only
+    readonly List<(int start, int len, string text)> _acItems = new();
+    Vector2 _acScroll;
+    int _acSel = -1;
+    string _acHeader = "";
+    string _acFilterKey = "";
+    bool _acScrollResetThisLayout;
+    int _acControlId;
+    Rect _acFieldRect;
+    bool _acShowPopup;
 
     void DrawAutocompleteFormula()
     {
@@ -324,6 +555,7 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
                 // TextEditor at GUIUtility.GetStateObject(typeof(TextEditor), controlID), so we can read
                 // the real caret/text. The editor variant uses an internal recycled editor we can't reach.
                 string txt = GUILayout.TextField(_formula, EditorStyles.textField);
+                _acFieldRect = GUILayoutUtility.GetLastRect();
                 if (EditorGUI.EndChangeCheck()) { _formula = txt; _acDirty = true; }
 
                 bool focused = GUI.GetNameOfFocusedControl() == _acCtrl;
@@ -338,8 +570,8 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
                         _acDirty = false;
                     }
                     RebuildSuggestions(focused, src, tgt);
+                    _acShowPopup = focused && _acItems.Count > 0;
                 }
-                DrawSuggestionList();
 
                 using (new EditorGUI.DisabledScope(!_formulaOk))
                     if (GUILayout.Button("Apply to RPN", EditorStyles.miniButton)) ApplyFormula(src, tgt);
@@ -381,22 +613,57 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
     void RebuildSuggestions(bool focused, Type src, Type tgt)
     {
         _acItems.Clear();
-        if (!focused || string.IsNullOrEmpty(_formula)) return;
+        if (!focused || string.IsNullOrEmpty(_formula))
+        {
+            _acFilterKey = "";
+            return;
+        }
         var te = GUIUtility.GetStateObject(typeof(TextEditor), GUIUtility.keyboardControl) as TextEditor;
         int caret = te != null ? te.cursorIndex : _formula.Length;
         ComputeSuggestions(_formula, caret, src, tgt, _acItems);
+        _acHeader = SuggestionHeader(_formula, caret);
+        string filterKey = SuggestionFilterKey(_formula, caret);
+        if (filterKey != _acFilterKey)
+        {
+            _acFilterKey = filterKey;
+            _acSel = _acItems.Count > 0 ? 0 : -1;
+            _acScroll = Vector2.zero;
+            _acScrollResetThisLayout = true;
+        }
+        else
+            _acSel = _acItems.Count > 0 ? Mathf.Clamp(_acSel, 0, _acItems.Count - 1) : -1;
+        _acControlId = GUIUtility.keyboardControl;
     }
 
-    void DrawSuggestionList()
+    void DrawAcSuggestionPopupVisuals()
     {
-        if (_acItems.Count == 0) return;
-        EditorGUI.indentLevel++;
-        foreach (var (start, len, text) in _acItems)
+        if (!_acShowPopup || _acItems.Count == 0 || _acFieldRect.width < 2f)
         {
-            var r = EditorGUI.IndentedRect(EditorGUILayout.GetControlRect(false, EditorGUIUtility.singleLineHeight));
-            if (GUI.Button(r, text, AcStyle)) InsertCompletion(start, len, text);
+            FormulaSuggestionOverlaySession.ClearIfOwner(Property.Path, FormulaSuggestionOverlaySession.OverlayKind.Ac);
+            return;
         }
-        EditorGUI.indentLevel--;
+
+        if (Event.current.type == EventType.Repaint)
+        {
+            _acScroll = FormulaSuggestionOverlaySession.Scroll;
+            FormulaSuggestionDropdownGui.ClampScroll(ref _acScroll, _acItems.Count);
+            FormulaSuggestionDropdownGui.PaintPopup(
+                _acFieldRect, _acHeader, _acItems, _acScroll, out var popupRect, _acSel);
+            FormulaSuggestionOverlaySession.UpdateGeometry(popupRect, _acScroll);
+        }
+        else if (Event.current.type == EventType.Layout)
+        {
+            if (!_acScrollResetThisLayout)
+                _acScroll = FormulaSuggestionOverlaySession.Scroll;
+            FormulaSuggestionDropdownGui.ClampScroll(ref _acScroll, _acItems.Count);
+            FormulaSuggestionDropdownGui.Layout(_acFieldRect, _acItems.Count, out Rect popupRect, out _, out _);
+            FormulaSuggestionOverlaySession.Publish(
+                Property.Path, FormulaSuggestionOverlaySession.OverlayKind.Ac,
+                popupRect, _acScroll, _acItems, _acSel, _acHeader);
+            FormulaSuggestionOverlaySession.SetOwnerPick(Property.Path, OnOverlayPick);
+            FormulaSuggestionOverlaySession.EnsureEndOfFrameBlocker(Property.Tree);
+            _acScrollResetThisLayout = false;
+        }
     }
 
     void InsertCompletion(int start, int len, string completion)
@@ -411,9 +678,6 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
         // stays consistent within this event pass.
         _acDirty = true;
     }
-
-    static GUIStyle s_acStyle;
-    static GUIStyle AcStyle => s_acStyle ??= new GUIStyle(EditorStyles.miniButton) { alignment = TextAnchor.MiddleLeft };
 
     // ── Inline in-game render ───────────────────────────────────────────────────
     void DrawInlineRender()
@@ -463,6 +727,24 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
         catch (Exception e) { return "render error: " + e.Message; }
     }
 }
+
+/// <summary>
+/// SuperPriority wrapper on every Odin property: when the formula suggestion popup is open, eat pointer
+/// events over its rect before any inner drawer (Path, foldouts, fields) can see them.
+/// </summary>
+[DrawerPriority(DrawerPriorityLevel.SuperPriority)]
+public class FormulaSuggestionOverlayBlockerDrawer : OdinDrawer
+{
+    public override bool CanDrawProperty(InspectorProperty property) => true;
+
+    protected override void DrawPropertyLayout(GUIContent label)
+    {
+        if (FormulaSuggestionOverlaySession.Active)
+            FormulaSuggestionOverlaySession.BlockPointerEvents();
+        CallNextDrawer(label);
+    }
+}
+
 #else
 [CustomPropertyDrawer(typeof(Amplitude.Framework.Simulation.Description.PropertyEffect))]
 public class PropertyEffectDrawer : PropertyDrawer
@@ -667,6 +949,481 @@ public class PropertyEffectDrawer : PropertyDrawer
     }
 }
 #endif
+
+#if ODIN_INSPECTOR
+/// <summary>
+/// Tracks the one open formula suggestion popup. PropertyEffect drawers publish geometry;
+/// <see cref="FormulaSuggestionOverlayBlockerDrawer"/> wraps every Odin property; an end-of-frame
+/// blocker is drawn last via <see cref="PropertyTree.DelayAction"/> so it wins IMGUI hit-testing.
+/// </summary>
+static class FormulaSuggestionOverlaySession
+{
+    internal enum OverlayKind { None, Amp, Ac }
+
+    static readonly int s_BlockHint = "FormulaSuggestionOverlayBlock".GetHashCode();
+    static readonly List<(int start, int len, string text)> s_items = new();
+
+    static int s_layoutFrame = -1;
+    static int s_blockControlId;
+    static int s_blockerQueuedFrame = -1;
+
+    internal static bool Active { get; private set; }
+    internal static Rect BlockRect { get; private set; }
+    internal static Vector2 Scroll { get; set; }
+    internal static int SelectedIndex { get; private set; }
+    internal static string OwnerPath { get; private set; }
+    internal static OverlayKind Kind { get; private set; }
+    internal static Action<int> OwnerPick { get; private set; }
+    static string s_header = "";
+
+    static FormulaSuggestionOverlaySession()
+    {
+        Editor.finishedDefaultHeaderGUI += _ => BlockPointerEvents();
+    }
+
+    internal static void SetOwnerPick(string ownerPath, Action<int> onPick)
+    {
+        if (Active && string.Equals(OwnerPath, ownerPath, StringComparison.Ordinal))
+            OwnerPick = onPick;
+    }
+
+    internal static void UpdateGeometry(Rect blockRect, Vector2 scroll)
+    {
+        if (!Active || blockRect.width < 2f) return;
+        BlockRect = blockRect;
+        Scroll = scroll;
+    }
+
+    internal static void EnsureEndOfFrameBlocker(PropertyTree tree)
+    {
+        if (!Active || tree == null) return;
+        if (s_blockerQueuedFrame == Time.frameCount) return;
+        s_blockerQueuedFrame = Time.frameCount;
+        tree.DelayAction(DrawEndOfFrameBlocker);
+    }
+
+    static void DrawEndOfFrameBlocker()
+    {
+        if (!Active || BlockRect.width < 2f) return;
+        if (Event.current == null || Event.current.type != EventType.Repaint) return;
+        FormulaSuggestionDropdownGui.PaintInRect(BlockRect, s_header, s_items, Scroll, SelectedIndex);
+    }
+
+    internal static void Publish(
+        string ownerPath,
+        OverlayKind kind,
+        Rect blockRect,
+        Vector2 scroll,
+        IReadOnlyList<(int start, int len, string text)> items,
+        int selectedIndex,
+        string header)
+    {
+        if (items == null || items.Count == 0 || blockRect.width < 2f)
+        {
+            ClearIfOwner(ownerPath, kind);
+            return;
+        }
+
+        Active = true;
+        OwnerPath = ownerPath;
+        Kind = kind;
+        BlockRect = blockRect;
+        Scroll = scroll;
+        SelectedIndex = selectedIndex;
+        s_header = header ?? "";
+        s_items.Clear();
+        s_items.AddRange(items);
+    }
+
+    internal static void ClearIfOwner(string ownerPath, OverlayKind kind)
+    {
+        if (!Active || Kind != kind || !string.Equals(OwnerPath, ownerPath, StringComparison.Ordinal))
+            return;
+        Clear();
+    }
+
+    internal static void Clear()
+    {
+        Active = false;
+        BlockRect = default;
+        Scroll = default;
+        SelectedIndex = -1;
+        OwnerPath = null;
+        Kind = OverlayKind.None;
+        OwnerPick = null;
+        s_header = "";
+        s_items.Clear();
+    }
+
+    internal static (int start, int len, string text) GetItem(int index) => s_items[index];
+
+    internal static void SyncNavigation(Vector2 scroll, int selectedIndex)
+    {
+        if (!Active) return;
+        Scroll = scroll;
+        SelectedIndex = selectedIndex;
+    }
+
+    /// <summary>Eat pointer events over the open overlay. Click-to-insert is handled here on MouseDown (SuperPriority, before TextArea).</summary>
+    internal static void BlockPointerEvents()
+    {
+        if (!Active) return;
+        var e = Event.current;
+        if (e == null || e.type == EventType.Used) return;
+        // Don't intercept while another control owns the pointer (e.g. text selection drag in the formula field).
+        if (GUIUtility.hotControl != 0) return;
+
+        if (e.type == EventType.Layout)
+        {
+            if (s_layoutFrame != Time.frameCount)
+            {
+                s_layoutFrame = Time.frameCount;
+                s_blockControlId = GUIUtility.GetControlID(s_BlockHint, FocusType.Passive, BlockRect);
+            }
+            return;
+        }
+
+        if (!BlockRect.Contains(e.mousePosition)) return;
+
+        switch (e.type)
+        {
+            case EventType.ScrollWheel:
+            {
+                var scroll = Scroll;
+                FormulaSuggestionDropdownGui.ApplyScrollWheel(ref scroll, s_items.Count, e.delta.y);
+                Scroll = scroll;
+                e.Use();
+                EditorWindow.focusedWindow?.Repaint();
+                return;
+            }
+            case EventType.MouseDown:
+                if (e.button == 0 && FormulaSuggestionDropdownGui.TryPick(BlockRect, s_items.Count, Scroll, e.mousePosition, out int idx))
+                    OwnerPick?.Invoke(idx);
+                e.Use();
+                return;
+            case EventType.MouseUp:
+            case EventType.MouseDrag:
+            case EventType.ContextClick:
+                e.Use();
+                return;
+        }
+    }
+}
+#endif
+
+/// <summary>
+/// Scrollable popup list styled like Unity's enum/AdvancedDropdown picker (header row + scrollbar, no search).
+/// Used for formula-token autocomplete on both Amplitude's formula field and the backup autocomplete field.
+/// </summary>
+static class FormulaSuggestionDropdownGui
+{
+    public const float MinWidth = 200f;
+    const float MaxListHeight = 200f;
+    const float Pad = 1f;
+    const float Gap = 1f;   // gap between popup and anchor field (popup opens above the field)
+
+    static readonly Color BackDark = new(0.169f, 0.169f, 0.169f);
+    static readonly Color BackLight = new(0.92f, 0.92f, 0.92f);
+    static readonly Color HeaderDark = new(0.235f, 0.247f, 0.255f);
+    static readonly Color HeaderLight = new(0.65f, 0.65f, 0.65f);
+    static readonly Color SelectDark = new(0.294f, 0.431f, 0.686f);
+    static readonly Color SelectLight = new(0.24f, 0.49f, 0.90f);
+    static readonly Color Border = new(0f, 0f, 0f, 0.6f);
+
+    static GUIStyle s_header, s_item;
+
+    static float RowH => EditorGUIUtility.singleLineHeight;
+
+    static GUIStyle HeaderStyle
+    {
+        get
+        {
+            if (s_header != null) return s_header;
+            s_header = new GUIStyle(EditorStyles.label)
+            {
+                padding = new RectOffset(6, 4, 0, 0),
+                alignment = TextAnchor.MiddleLeft,
+                fontStyle = FontStyle.Normal
+            };
+            s_header.normal.textColor = EditorGUIUtility.isProSkin ? new Color(0.733f, 0.733f, 0.733f) : new Color(0.15f, 0.15f, 0.15f);
+            return s_header;
+        }
+    }
+
+    static GUIStyle ItemStyle
+    {
+        get
+        {
+            if (s_item != null) return s_item;
+            s_item = new GUIStyle(EditorStyles.label)
+            {
+                padding = new RectOffset(6, 4, 0, 0),
+                alignment = TextAnchor.MiddleLeft,
+                clipping = TextClipping.Clip
+            };
+            s_item.normal.textColor = EditorGUIUtility.isProSkin ? new Color(0.733f, 0.733f, 0.733f) : new Color(0.1f, 0.1f, 0.1f);
+            return s_item;
+        }
+    }
+
+    public static Vector2 CalcSize(int itemCount, float anchorWidth)
+    {
+        ListMetrics(itemCount, out _, out float viewH);
+        return new Vector2(Mathf.Max(anchorWidth, MinWidth), Pad * 2f + RowH + viewH);
+    }
+
+    static void ListMetrics(int itemCount, out float contentH, out float viewH)
+    {
+        contentH = itemCount * RowH;
+        viewH = Mathf.Min(contentH, MaxListHeight);
+    }
+
+    public static void Layout(Rect anchor, int itemCount, out Rect popupRect, out Rect scrollOuter, out float viewH)
+    {
+        ListMetrics(itemCount, out _, out viewH);
+        var size = CalcSize(itemCount, anchor.width);
+        popupRect = new Rect(anchor.x, anchor.y - size.y - Gap, size.x, size.y);
+        scrollOuter = new Rect(popupRect.x + Pad, popupRect.y + Pad + RowH, popupRect.width - Pad * 2f, viewH);
+    }
+
+    public static bool TryPick(Rect popupRect, int itemCount, Vector2 scroll, Vector2 mouse, out int index)
+    {
+        index = -1;
+        if (itemCount == 0 || popupRect.width < 2f || !popupRect.Contains(mouse)) return false;
+        ListMetrics(itemCount, out _, out float viewH);
+        var scrollOuter = new Rect(
+            popupRect.x + Pad,
+            popupRect.y + Pad + RowH,
+            popupRect.width - Pad * 2f,
+            viewH);
+        if (!scrollOuter.Contains(mouse)) return false;
+        index = Mathf.FloorToInt((mouse.y - scrollOuter.y + scroll.y) / RowH);
+        return index >= 0 && index < itemCount;
+    }
+
+    public static void ScrollToIndex(ref Vector2 scroll, int index, int itemCount)
+    {
+        ListMetrics(itemCount, out float contentH, out float viewH);
+        float rowTop = index * RowH;
+        float rowBottom = rowTop + RowH;
+        if (rowTop < scroll.y)
+            scroll.y = rowTop;
+        else if (rowBottom > scroll.y + viewH)
+            scroll.y = rowBottom - viewH;
+        scroll.y = Mathf.Clamp(scroll.y, 0f, Mathf.Max(0f, contentH - viewH));
+    }
+
+    public static void ClampScroll(ref Vector2 scroll, int itemCount)
+    {
+        ListMetrics(itemCount, out float contentH, out float viewH);
+        scroll.y = Mathf.Clamp(scroll.y, 0f, Mathf.Max(0f, contentH - viewH));
+    }
+
+    public static void ApplyScrollWheel(ref Vector2 scroll, int itemCount, float deltaY)
+    {
+        ListMetrics(itemCount, out float contentH, out float viewH);
+        float maxScroll = Mathf.Max(0f, contentH - viewH);
+        scroll.y = Mathf.Clamp(scroll.y + deltaY * RowH, 0f, maxScroll);
+    }
+
+    /// <summary>Repaint-only styled popup anchored above <paramref name="anchor"/>.</summary>
+    public static void PaintPopup(
+        Rect anchor,
+        string header,
+        IReadOnlyList<(int start, int len, string text)> items,
+        Vector2 scroll,
+        out Rect popupRect,
+        int selectedIndex = -1)
+    {
+        popupRect = Rect.zero;
+        if (items == null || items.Count == 0 || Event.current.type != EventType.Repaint) return;
+
+        Layout(anchor, items.Count, out popupRect, out _, out float viewH);
+        ListMetrics(items.Count, out float contentH, out _);
+        float headerH = RowH;
+        var headerRect = new Rect(popupRect.x + Pad, popupRect.y + Pad, popupRect.width - Pad * 2f, headerH);
+        var scrollOuter = new Rect(popupRect.x + Pad, headerRect.yMax, popupRect.width - Pad * 2f, viewH);
+        bool scrollable = contentH > viewH;
+
+        int hover = -1;
+        if (scrollOuter.Contains(Event.current.mousePosition))
+        {
+            hover = Mathf.FloorToInt((Event.current.mousePosition.y - scrollOuter.y + scroll.y) / RowH);
+            if (hover < 0 || hover >= items.Count) hover = -1;
+        }
+        int highlight = hover >= 0 ? hover : selectedIndex;
+
+        Paint(popupRect, header, items, scroll, headerRect, scrollOuter, viewH, contentH, scrollable, highlight);
+    }
+
+    /// <summary>Repaint-only styled popup inside a precomputed <paramref name="rect"/>.</summary>
+    public static void PaintInRect(
+        Rect rect,
+        string header,
+        IReadOnlyList<(int start, int len, string text)> items,
+        Vector2 scroll,
+        int selectedIndex = -1)
+    {
+        if (items == null || items.Count == 0 || Event.current.type != EventType.Repaint) return;
+
+        ListMetrics(items.Count, out float contentH, out float viewH);
+        float headerH = RowH;
+        var headerRect = new Rect(rect.x + Pad, rect.y + Pad, rect.width - Pad * 2f, headerH);
+        var scrollOuter = new Rect(rect.x + Pad, headerRect.yMax, rect.width - Pad * 2f, viewH);
+        bool scrollable = contentH > viewH;
+
+        int hover = -1;
+        if (scrollOuter.Contains(Event.current.mousePosition))
+        {
+            hover = Mathf.FloorToInt((Event.current.mousePosition.y - scrollOuter.y + scroll.y) / RowH);
+            if (hover < 0 || hover >= items.Count) hover = -1;
+        }
+        int highlight = hover >= 0 ? hover : selectedIndex;
+
+        Paint(rect, header, items, scroll, headerRect, scrollOuter, viewH, contentH, scrollable, highlight);
+    }
+
+    /// <summary>Blocker box + Repaint overlay. Returns picked row index on click, else -1.</summary>
+    public static int Draw(
+        Rect anchor,
+        string header,
+        IReadOnlyList<(int start, int len, string text)> items,
+        ref Vector2 scroll,
+        out Rect popupRect,
+        int selectedIndex = -1)
+    {
+        popupRect = Rect.zero;
+        if (items == null || items.Count == 0) return -1;
+        Layout(anchor, items.Count, out popupRect, out _, out _);
+        return HandleInputAndPaint(popupRect, header, items, ref scroll, selectedIndex);
+    }
+
+    static int HandleInputAndPaint(
+        Rect rect,
+        string header,
+        IReadOnlyList<(int start, int len, string text)> items,
+        ref Vector2 scroll,
+        int selectedIndex)
+    {
+        if (items == null || items.Count == 0) return -1;
+
+        ListMetrics(items.Count, out float contentH, out float viewH);
+        float headerH = RowH;
+        var headerRect = new Rect(rect.x + Pad, rect.y + Pad, rect.width - Pad * 2f, headerH);
+        var scrollOuter = new Rect(rect.x + Pad, headerRect.yMax, rect.width - Pad * 2f, viewH);
+        bool scrollable = contentH > viewH;
+        float maxScroll = Mathf.Max(0f, contentH - viewH);
+        scroll.y = Mathf.Clamp(scroll.y, 0f, maxScroll);
+
+        var e = Event.current;
+
+        // Layer 1 — IMGUI blocker: eats hits so inspector fields underneath don't receive them.
+        GUI.Box(rect, GUIContent.none, GUIStyle.none);
+
+        if (e.type == EventType.ScrollWheel && rect.Contains(e.mousePosition))
+        {
+            scroll.y = Mathf.Clamp(scroll.y + e.delta.y * RowH, 0f, maxScroll);
+            e.Use();
+        }
+
+        int hover = -1;
+        if (scrollOuter.Contains(e.mousePosition))
+        {
+            hover = Mathf.FloorToInt((e.mousePosition.y - scrollOuter.y + scroll.y) / RowH);
+            if (hover < 0 || hover >= items.Count) hover = -1;
+        }
+
+        int highlight = hover >= 0 ? hover : selectedIndex;
+
+        // Layer 2 — styled popup drawn on Repaint only (on top of the blocker).
+        if (e.type == EventType.Repaint)
+            Paint(rect, header, items, scroll, headerRect, scrollOuter, viewH, contentH, scrollable, highlight);
+        else if (e.type == EventType.MouseDown && e.button == 0 && rect.Contains(e.mousePosition))
+        {
+            e.Use();
+            if (hover >= 0)
+                return hover;
+        }
+
+        return -1;
+    }
+
+    static void Paint(
+        Rect rect,
+        string header,
+        IReadOnlyList<(int start, int len, string text)> items,
+        Vector2 scroll,
+        Rect headerRect,
+        Rect scrollOuter,
+        float viewH,
+        float contentH,
+        bool scrollable,
+        int highlight)
+    {
+        bool dark = EditorGUIUtility.isProSkin;
+        var back = dark ? BackDark : BackLight;
+        var headerBack = dark ? HeaderDark : HeaderLight;
+        var select = dark ? SelectDark : SelectLight;
+
+        EditorGUI.DrawRect(rect, back);
+        DrawBorder(rect, Border);
+        EditorGUI.DrawRect(headerRect, headerBack);
+        GUI.Label(headerRect, string.IsNullOrEmpty(header) ? "Formula" : header, HeaderStyle);
+
+        float contentW = scrollOuter.width - (scrollable ? 14f : 0f);
+        EditorGUI.DrawRect(scrollOuter, back);
+        GUI.BeginClip(scrollOuter);
+        int first = Mathf.Max(0, Mathf.FloorToInt(scroll.y / RowH));
+        int last = Mathf.Min(items.Count - 1, Mathf.CeilToInt((scroll.y + viewH) / RowH));
+        for (int i = first; i <= last; i++)
+        {
+            var row = new Rect(0f, i * RowH - scroll.y, contentW, RowH);
+            if (i == highlight)
+                EditorGUI.DrawRect(row, select);
+            GUI.Label(row, items[i].text, ItemStyle);
+        }
+        GUI.EndClip();
+
+        if (scrollable)
+            DrawScrollbar(scrollOuter, scroll.y, contentH, viewH, dark);
+    }
+
+    /// <summary>Draw popup contents inside <paramref name="rect"/> (local 0,0 origin). Returns picked item index on click, else -1.</summary>
+    public static int DrawInRect(
+        Rect rect,
+        string header,
+        IReadOnlyList<(int start, int len, string text)> items,
+        ref Vector2 scroll,
+        out int picked,
+        int selectedIndex = -1)
+    {
+        picked = -1;
+        int idx = HandleInputAndPaint(rect, header, items, ref scroll, selectedIndex);
+        if (idx >= 0) picked = idx;
+        return idx;
+    }
+
+    static void DrawScrollbar(Rect area, float scrollY, float contentH, float viewH, bool dark)
+    {
+        const float barW = 14f;
+        var track = new Rect(area.xMax - barW, area.y, barW, area.height);
+        var trackColor = dark ? new Color(0.12f, 0.12f, 0.12f) : new Color(0.55f, 0.55f, 0.55f);
+        var thumbColor = dark ? new Color(0.45f, 0.45f, 0.45f) : new Color(0.35f, 0.35f, 0.35f);
+        EditorGUI.DrawRect(track, trackColor);
+        float thumbH = Mathf.Max(RowH, viewH * (viewH / contentH));
+        float travel = Mathf.Max(1f, track.height - thumbH);
+        float thumbY = track.y + (scrollY / Mathf.Max(1f, contentH - viewH)) * travel;
+        EditorGUI.DrawRect(new Rect(track.x + 3f, thumbY, track.width - 6f, thumbH), thumbColor);
+    }
+
+    static void DrawBorder(Rect r, Color c)
+    {
+        EditorGUI.DrawRect(new Rect(r.x, r.y, r.width, 1f), c);
+        EditorGUI.DrawRect(new Rect(r.x, r.yMax - 1f, r.width, 1f), c);
+        EditorGUI.DrawRect(new Rect(r.x, r.y, 1f, r.height), c);
+        EditorGUI.DrawRect(new Rect(r.xMax - 1f, r.y, 1f, r.height), c);
+    }
+}
 
 /// <summary>Searchable dropdown of PropertyMapper names for the PropertyEffect intellisense button.</summary>
 class PropertyNameDropdown : AdvancedDropdown

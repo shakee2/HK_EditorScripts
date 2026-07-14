@@ -6,7 +6,7 @@ This document maps each user-facing editor window (`EditorWindow` subclass or `[
 
 ## Existing Export Package (per `ExportModEditorScriptsPackage.cs`)
 
-The existing `Tools/Export Mod Editor Scripts Package` already exports these 7 files together:
+The existing `Tools/Export Mod Editor Scripts Package` already exports these 9 files together:
 - `VanillaDatabaseMount.cs`
 - `ArchiveTranslations.cs`
 - `TechTreeData.cs`
@@ -14,6 +14,8 @@ The existing `Tools/Export Mod Editor Scripts Package` already exports these 7 f
 - `DatabaseBrowser.cs`
 - `DescriptorPropertyIndex.cs`
 - `AssetExplorer.cs`
+- `DescriptorMapperPreview.cs`
+- `PropertyEffectDrawer.cs`
 
 This group is designed to work standalone — all mutual dependencies are included.
 
@@ -91,6 +93,7 @@ These are `[InitializeOnLoad]` hooks that layer into every inspector, not separa
 | Hook Class | Files | Notes |
 |------------|-------|-------|
 | `DescriptorMapperPreview` | `DescriptorMapperPreview.cs`, `ArchiveTranslations.cs`, `VanillaDatabaseMount.cs` | Tooltip breakdown preview in descriptor inspectors |
+| `PropertyEffectOdinDrawer` | `PropertyEffectDrawer.cs`, `DescriptorMapperPreview.cs` | Odin drawer on `PropertyEffect`: formula autocomplete + inline in-game render HelpBox |
 | `InspectorDiagnostics` | `InspectorDiagnostics.cs`, `DescriptorMapperPreview.cs`, `ArchiveTranslations.cs`, `VanillaDatabaseMount.cs` | Diagnostics panel in datatable element inspectors |
 | `DescriptorPropertyIndex` | `DescriptorPropertyIndex.cs`, `VanillaDatabaseMount.cs`, `UnityYaml.cs` | Has its own window at `Tools/Descriptor Property Browser` |
 
@@ -115,7 +118,7 @@ These are static methods with `[MenuItem]` entries, not `EditorWindow` subclasse
 
 ## Quick Reference Groups for Export
 
-1. **Existing Package Group (ExportModEditorScriptsPackage):** `VanillaDatabaseMount.cs`, `ArchiveTranslations.cs`, `TechTreeData.cs`, `TechTreeWindow.cs`, `DatabaseBrowser.cs`, `DescriptorPropertyIndex.cs`, `AssetExplorer.cs`
+1. **Existing Package Group (ExportModEditorScriptsPackage):** `VanillaDatabaseMount.cs`, `ArchiveTranslations.cs`, `TechTreeData.cs`, `TechTreeWindow.cs`, `DatabaseBrowser.cs`, `DescriptorPropertyIndex.cs`, `AssetExplorer.cs`, `DescriptorMapperPreview.cs`, `PropertyEffectDrawer.cs`
 2. **CompatPatcher Group:** `CompatPatcherWindow.cs`, `CompatCompareWindow.cs`, `UnityYaml.cs`, `ModReader.cs`, `ConflictAnalyzer.cs`, `PatchBuilder.cs`, `Sidecar.cs`, `LoadOrderValidator.cs`
 3. **UnitVisualWorkflow Group:** `UnitVisualWorkflow.cs`, `FbxPrepPipeline.cs`, `BoneStructureMatcher.cs`, `PawnFragmentAuthor.cs`, `Tier1MeshBaker.cs`, `ModelRequirementsChecker.cs`, `AnimationManagerContent.cs`, `VanillaAssetResolver.cs`
 4. **Standalone utils:** `BundleContentProbe.cs`, `GuidLookup.cs`, `NarrativeEventDiagnostic.cs`, `ModBuildWindow.cs`
