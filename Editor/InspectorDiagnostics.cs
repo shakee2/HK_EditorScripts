@@ -61,7 +61,8 @@ public static class InspectorDiagnostics
         s_cache.Clear();
         s_nameIndex.Clear();
         s_locDict = null;
-        s_locEdit.Clear();
+        s_willDrawCache.Clear();
+        InlineLocalizationEditor.InvalidateCaches();
     }
 
     static readonly DiagFinding[] s_empty = Array.Empty<DiagFinding>();
@@ -327,6 +328,23 @@ public static class InspectorDiagnostics
     static bool s_active = true;
     const string ActiveKey = "InspectorDiagnostics.Active";
 
+    /// <summary>
+    /// Enabled state, owned by the small toggle container InspectorAnalysisPanel draws at the top of the
+    /// shared seam (above both this panel and DescriptorMapperPreview). InspectorAnalysisPanel gates the
+    /// Draw() call itself on this, so when false NOTHING from this panel renders — not even its title —
+    /// instead of the previous in-panel toggle that always left the title row behind.
+    /// </summary>
+    public static bool Active
+    {
+        get => s_active;
+        set
+        {
+            if (s_active == value) return;
+            s_active = value;
+            EditorPrefs.SetBool(ActiveKey, s_active);
+        }
+    }
+
     static InspectorDiagnostics()
     {
         s_active = EditorPrefs.GetBool(ActiveKey, true);
@@ -343,7 +361,26 @@ public static class InspectorDiagnostics
         var target = editor.target;
         if (target == null || !TryResolve()) return false;
         if (t_IDatatableElement == null || !t_IDatatableElement.IsInstanceOfType(target)) return false;
-        return Analyze(target).Count > 0 || GetLocModel(target).Count > 0;
+        return GetWillDrawCached(target);
+    }
+
+    sealed class WillDrawEntry { public int generation; public double builtAt; public bool value; }
+    static readonly Dictionary<int, WillDrawEntry> s_willDrawCache = new();
+
+    static bool GetWillDrawCached(UnityEngine.Object target)
+    {
+        int id = target.GetInstanceID();
+        double now = EditorApplication.timeSinceStartup;
+        if (s_willDrawCache.TryGetValue(id, out var e) && e.generation == s_generation && (now - e.builtAt) < TTL)
+            return e.value;
+
+        bool inGui = Event.current != null;
+        bool canRebuild = !inGui || Event.current.type == EventType.Layout;
+        if (!canRebuild && s_willDrawCache.TryGetValue(id, out e)) return e.value;
+
+        bool value = Analyze(target).Count > 0 || GetLocModel(target).Count > 0;
+        s_willDrawCache[id] = new WillDrawEntry { generation = s_generation, builtAt = now, value = value };
+        return value;
     }
 
     public static void Draw(Editor editor)
@@ -359,15 +396,9 @@ public static class InspectorDiagnostics
 
         EditorGUILayout.Space(2);
 
-        EditorGUILayout.BeginHorizontal();
+        // Enabled/disabled lives in InspectorAnalysisPanel's shared top toggle container now — this
+        // panel is only Draw()n at all when Active, so there's just the section label here.
         GUILayout.Label("Inspector Diagnostics", EditorStyles.miniBoldLabel);
-        GUILayout.FlexibleSpace();
-        EditorGUI.BeginChangeCheck();
-        s_active = GUILayout.Toggle(s_active, "Enabled", EditorStyles.miniButton, GUILayout.Width(60));
-        if (EditorGUI.EndChangeCheck()) EditorPrefs.SetBool(ActiveKey, s_active);
-        EditorGUILayout.EndHorizontal();
-
-        if (!s_active) return;
 
         if (findings.Count > 0)
         {
@@ -408,15 +439,22 @@ public static class InspectorDiagnostics
     struct LocField { public string key; public bool imported; public string text; }
     sealed class LocEntry { public int generation; public double builtAt; public List<LocField> fields; }
     static readonly Dictionary<int, LocEntry> s_locCache = new();
-    static readonly Dictionary<string, string> s_locEdit = new();   // key -> in-progress edit buffer
     static Dictionary<string, string> s_locDict;                    // %key -> text, per generation
 
     static Dictionary<string, string> LocDict => s_locDict ??= SafeBuildLocDict();
+    static int s_locMergedVersion = -1;
     static Dictionary<string, string> SafeBuildLocDict()
-    { try { return ArchiveTranslations.BuildKeyToTextDict(); } catch { return new Dictionary<string, string>(); } }
+    {
+        s_locMergedVersion = ArchiveTranslations.MergedDictVersion;
+        try { return ArchiveTranslations.BuildKeyToTextDict(); } catch { return new Dictionary<string, string>(); }
+    }
 
     static string ResolveText(string key)
-        => key != null && LocDict.TryGetValue(key, out var t) ? t : "";
+    {
+        if (s_locDict != null && s_locMergedVersion != ArchiveTranslations.MergedDictVersion)
+            s_locDict = null;
+        return key != null && LocDict.TryGetValue(key, out var t) ? t : "";
+    }
 
     static List<LocField> GetLocModel(UnityEngine.Object element)
     {
@@ -463,31 +501,7 @@ public static class InspectorDiagnostics
 
     static void DrawLocField(LocField lf)
     {
-        EditorGUILayout.BeginHorizontal();
-        EditorGUILayout.SelectableLabel(lf.key, EditorStyles.miniLabel, GUILayout.Height(EditorGUIUtility.singleLineHeight));
-        if (GUILayout.Button("Copy", EditorStyles.miniButton, GUILayout.Width(44)))
-            EditorGUIUtility.systemCopyBuffer = lf.key;
-        EditorGUILayout.EndHorizontal();
-
-        if (!lf.imported)
-        {
-            EditorGUILayout.LabelField(string.IsNullOrEmpty(lf.text) ? "(vanilla / unresolved)" : lf.text, EditorStyles.wordWrappedMiniLabel);
-            if (GUILayout.Button("Import for editing", EditorStyles.miniButton, GUILayout.Width(140)))
-            {
-                if (ArchiveTranslations.EnsureOverride(lf.key, lf.text) != null) { s_locEdit.Remove(lf.key); InvalidateAll(); }
-            }
-            EditorGUILayout.Space(3);
-            return;
-        }
-
-        if (!s_locEdit.TryGetValue(lf.key, out var buf)) { buf = lf.text; s_locEdit[lf.key] = buf; }
-        EditorGUI.BeginChangeCheck();
-        string edited = EditorGUILayout.TextArea(buf, EditorStyles.textArea, GUILayout.MinHeight(34));
-        if (EditorGUI.EndChangeCheck())
-        {
-            s_locEdit[lf.key] = edited;
-            try { ArchiveTranslations.SetOverrideText(lf.key, edited); } catch { }
-        }
-        EditorGUILayout.Space(3);
+        bool multi = lf.key.IndexOf("Description", StringComparison.OrdinalIgnoreCase) >= 0;
+        InlineLocalizationEditor.DrawLocField(lf.key, lf.text, lf.imported, multi);
     }
 }

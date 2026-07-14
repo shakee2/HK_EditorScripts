@@ -3,8 +3,9 @@ using UnityEditor;
 using UnityEngine;
 
 /// <summary>
-/// Hosts the two inspector analysis panels — DescriptorMapperPreview ("Tooltip Breakdown Preview")
-/// and InspectorDiagnostics — inside ONE height-capped, scrollable container drawn under the
+/// Hosts the DescriptorMapper generator toolbar (for Descriptors), plus the two inspector
+/// analysis panels — DescriptorMapperPreview ("Tooltip Breakdown Preview") and
+/// InspectorDiagnostics — inside ONE height-capped, scrollable container drawn under the
 /// datatable-element header (Editor.finishedDefaultHeaderGUI).
 ///
 /// Previously each panel subscribed to that seam itself and grew unbounded, shoving the inspected
@@ -19,6 +20,12 @@ using UnityEngine;
 /// diagnostics, no preview) draws inline; a tall one caps and scrolls. No per-panel pixel estimation to
 /// drift. A little hysteresis keeps it from flip-flopping when content sits right at the cap (adding the
 /// scrollbar narrows the content and re-wraps text, which would otherwise nudge the height back down).
+///
+/// This coordinator also owns a single small "Analysis" toggle row above both panels, holding each
+/// panel's Enabled toggle (DescriptorMapperPreview.Active / InspectorDiagnostics.Active). Each panel's
+/// own Draw() is only called when its toggle is on, so disabling one hides it completely — including its
+/// title — rather than leaving an empty title bar behind. The toggle row itself stays visible (and
+/// togglable) as long as the panel would otherwise have content, regardless of its current Active state.
 /// </summary>
 [InitializeOnLoad]
 public static class InspectorAnalysisPanel
@@ -41,9 +48,40 @@ public static class InspectorAnalysisPanel
         var target = editor.target;
         if (target == null) return;
 
-        bool willPreview = DescriptorMapperPreview.WillDraw(editor);
-        bool willDiag = InspectorDiagnostics.WillDraw(editor);
-        if (!willPreview && !willDiag) return;
+        // "Could apply" checks ignore each panel's Active flag, so its toggle stays visible (and usable
+        // to turn it back on) even while disabled — only the panel's own Draw() call below is gated on
+        // Active, which is what makes disabling hide the ENTIRE part (title included), not just its body.
+        bool showMapper = DescriptorMapperGenerator.WillDraw(editor);
+        bool canPreview = DescriptorMapperPreview.WillDraw(editor);
+        bool canDiag = InspectorDiagnostics.WillDraw(editor);
+        if (!showMapper && !canPreview && !canDiag) return;
+
+        if (showMapper)
+            DescriptorMapperGenerator.DrawToolbar(editor);
+
+        if (!canPreview && !canDiag) return;
+
+        EditorGUILayout.Space(2);
+        EditorGUILayout.BeginHorizontal(EditorStyles.helpBox);
+        GUILayout.Label("Analysis", EditorStyles.miniBoldLabel, GUILayout.Width(48));
+        GUILayout.FlexibleSpace();
+        if (canPreview)
+        {
+            EditorGUI.BeginChangeCheck();
+            bool on = GUILayout.Toggle(DescriptorMapperPreview.Active, "Tooltip Preview", EditorStyles.miniButton, GUILayout.Width(104));
+            if (EditorGUI.EndChangeCheck()) DescriptorMapperPreview.Active = on;
+        }
+        if (canDiag)
+        {
+            EditorGUI.BeginChangeCheck();
+            bool on = GUILayout.Toggle(InspectorDiagnostics.Active, "Diagnostics", EditorStyles.miniButton, GUILayout.Width(80));
+            if (EditorGUI.EndChangeCheck()) InspectorDiagnostics.Active = on;
+        }
+        EditorGUILayout.EndHorizontal();
+
+        bool willPreview = canPreview && DescriptorMapperPreview.Active;
+        bool willDiag = canDiag && InspectorDiagnostics.Active;
+        if (!willPreview && !willDiag) return;   // both disabled — nothing left to draw below the toggle row
 
         int id = target.GetInstanceID();
         float last = s_contentHeight.TryGetValue(id, out var h) ? h : 0f;

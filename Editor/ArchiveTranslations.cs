@@ -31,6 +31,20 @@ public static class ArchiveTranslations
     static IAssetProvider s_provider;
     static string s_lastError;
     static Dictionary<string, string> s_vanillaCache;  // vanilla bundle only — built once, never changes mid-session
+    static Dictionary<string, string> s_mergedDictCache; // vanilla + project overrides — invalidated on edits / import
+    public static int MergedDictVersion { get; private set; }
+
+    static ArchiveTranslations()
+    {
+        UnityEditor.EditorApplication.projectChanged += InvalidateMergedDict;
+        UnityEditor.Undo.undoRedoPerformed += InvalidateMergedDict;
+    }
+
+    public static void InvalidateMergedDict()
+    {
+        s_mergedDictCache = null;
+        MergedDictVersion++;
+    }
 
     // After a failed/stuck mount we must not re-attempt on every single call: callers like the
     // inspector preview hit BuildKeyToTextDict on every element switch, and a stuck provider
@@ -169,6 +183,8 @@ public static class ArchiveTranslations
     /// </summary>
     public static Dictionary<string, string> BuildKeyToTextDict()
     {
+        if (s_mergedDictCache != null) return s_mergedDictCache;
+
         var result = new Dictionary<string, string>(BuildVanillaCache());
 
         // Don't walk the project translation collections unless the archive bundle is
@@ -196,6 +212,7 @@ public static class ArchiveTranslations
                 if (!string.IsNullOrEmpty(key)) result[key] = translation.LocalizationLine.Body;
             }
         }
+        s_mergedDictCache = result;
         return result;
     }
 
@@ -337,6 +354,7 @@ public static class ArchiveTranslations
         // registered, so the change takes effect immediately regardless of when the disk
         // write happens.
         UnityEditor.EditorUtility.SetDirty(coll);
+        InvalidateMergedDict();
         return row;
     }
 
@@ -346,6 +364,7 @@ public static class ArchiveTranslations
         if (!TryGetOverride(key, out var row, out var owner)) return;
         row.LocalizationLine.Body = text ?? "";
         UnityEditor.EditorUtility.SetDirty(owner);
+        InvalidateMergedDict();
     }
 
     static Dictionary<string, string> BuildVanillaCache()

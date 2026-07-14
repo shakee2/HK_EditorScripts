@@ -63,6 +63,26 @@ public static class DescriptorMapperPreview
     /// <summary>When false, the header panel and the PropertyEffectDrawer inline content are suppressed.</summary>
     public static bool IsActive => s_active;
 
+    /// <summary>
+    /// Enabled state, owned by the small toggle container InspectorAnalysisPanel draws at the top of the
+    /// shared seam (above both this panel and InspectorDiagnostics). Setting this persists the pref and
+    /// invalidates caches so PropertyEffectDrawer's inline render picks it up immediately. InspectorAnalysisPanel
+    /// gates the Draw() call itself on this, so when false NOTHING from this panel renders — not even its
+    /// title — instead of the previous in-panel toggle that always left the title row behind.
+    /// </summary>
+    public static bool Active
+    {
+        get => s_active;
+        set
+        {
+            if (s_active == value) return;
+            s_active = value;
+            EditorPrefs.SetBool(ActiveKey, s_active);
+            s_generation++;   // invalidate PropertyEffectDrawer cache so it honours the toggle
+            s_previewCache.Clear();
+        }
+    }
+
     // ── Render cache ─────────────────────────────────────────────────────────
     // finishedDefaultHeaderGUI fires for every inspector event (every Layout + every
     // Repaint — mouse-move, hover, etc.), many times per second. The preview is a pure
@@ -309,19 +329,10 @@ public static class DescriptorMapperPreview
         UnityEngine.Object mapperObj = isMapper ? target : FindPairedAsset(t_DescriptorMapper, target.name);
 
         EditorGUILayout.Space(2);
-        EditorGUILayout.BeginHorizontal();
+        // Enabled/disabled lives in InspectorAnalysisPanel's shared top toggle container now — this
+        // panel is only Draw()n at all when Active, so there's just the expand/collapse foldout here.
         s_expanded = EditorGUILayout.Foldout(s_expanded, "Tooltip Breakdown Preview", true);
-        GUILayout.FlexibleSpace();
-        EditorGUI.BeginChangeCheck();
-        s_active = GUILayout.Toggle(s_active, "Enabled", EditorStyles.miniButton, GUILayout.Width(60));
-        if (EditorGUI.EndChangeCheck())
-        {
-            EditorPrefs.SetBool(ActiveKey, s_active);
-            s_generation++;   // invalidate PropertyEffectDrawer cache so it honours the toggle
-            s_previewCache.Clear();
-        }
-        EditorGUILayout.EndHorizontal();
-        if (!s_expanded || !s_active) return;
+        if (!s_expanded) return;
 
         var ops = GetOrBuildOps(target.GetInstanceID(), descriptorObj, mapperObj, target.name);
         EditorGUI.indentLevel++;
@@ -335,6 +346,12 @@ public static class DescriptorMapperPreview
     {
         int hash = ComputeDataHash(descriptorObj, mapperObj, name);
         if (s_previewCache.TryGetValue(key, out var cached) && cached.generation == s_generation && cached.hash == hash)
+            return cached.ops;
+
+        // Never build the expensive preview graph on Repaint — wait for Layout (or outside GUI).
+        bool inGui = Event.current != null;
+        bool canRebuild = !inGui || Event.current.type == EventType.Layout;
+        if (!canRebuild && s_previewCache.TryGetValue(key, out cached))
             return cached.ops;
 
         if (s_previewCache.Count > 64) s_previewCache.Clear();   // bound growth across a long session
@@ -836,6 +853,13 @@ public static class DescriptorMapperPreview
 
     static UnityEngine.Object FindPairedAsset(Type type, string name) => FindAssetByName(type, name);
 
+    /// <summary>DescriptorMapper lookup by element name (project rows win over vanilla). Uses <see cref="s_byNameCache"/>.</summary>
+    public static UnityEngine.Object FindMapperByName(string name)
+    {
+        if (!TryResolve() || string.IsNullOrEmpty(name)) return null;
+        return FindAssetByName(t_DescriptorMapper, name);
+    }
+
     static UnityEngine.Object FindAssetByName(Type type, string name)
     {
         if (type == null || string.IsNullOrEmpty(name)) return null;
@@ -867,15 +891,26 @@ public static class DescriptorMapperPreview
         return VanillaDatabaseMount.LoadAllOfType(type).FirstOrDefault();
     }
 
+    /// <summary>Bumps the generation counter so cached previews and inline renders pick up translation edits.</summary>
+    public static void InvalidateTranslationCaches()
+    {
+        s_previewCache.Clear();
+        s_generation++;
+    }
+
+    /// <summary>Clears name lookups and preview caches (e.g. after creating a new DescriptorMapper).</summary>
+    public static void InvalidateNameCache()
+    {
+        s_byNameCache.Clear();
+        InvalidateTranslationCaches();
+    }
+
     [MenuItem("Tools/shakee's Tools/Debug/Descriptor Mapper Preview/Clear Name Cache")]
     static void ClearCache()
     {
-        s_byNameCache.Clear();
         s_effectMapperConfig = null;
         s_effectMapperConfigSearched = false;
-        // Rendered previews may embed now-stale asset/translation lookups; force a rebuild.
-        s_previewCache.Clear();
-        s_generation++;
+        InvalidateNameCache();
         Debug.Log("[DescriptorMapperPreview] Name lookup cache cleared.");
     }
 

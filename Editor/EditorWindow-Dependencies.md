@@ -93,8 +93,10 @@ These are `[InitializeOnLoad]` hooks that layer into every inspector, not separa
 | Hook Class | Files | Notes |
 |------------|-------|-------|
 | `DescriptorMapperPreview` | `DescriptorMapperPreview.cs`, `ArchiveTranslations.cs`, `VanillaDatabaseMount.cs` | Tooltip breakdown preview in descriptor inspectors |
+| `DescriptorMapperGenerator` | `DescriptorMapperGenerator.cs`, `DescriptorMapperPreview.cs`, `VanillaDatabaseMount.cs` | Generate/select paired DescriptorMapper from Descriptor inspector header |
+| `LocalizationKeyStringDrawer` | `LocalizationKeyDrawer.cs`, `InlineLocalizationEditor.cs`, `ArchiveTranslations.cs`, `DescriptorMapperPreview.cs` | Inline translation editor below `%key` fields on UIMapper/DescriptorMapper |
 | `PropertyEffectOdinDrawer` | `PropertyEffectDrawer.cs`, `DescriptorMapperPreview.cs` | Odin drawer on `PropertyEffect`: formula autocomplete + inline in-game render HelpBox |
-| `InspectorDiagnostics` | `InspectorDiagnostics.cs`, `DescriptorMapperPreview.cs`, `ArchiveTranslations.cs`, `VanillaDatabaseMount.cs` | Diagnostics panel in datatable element inspectors |
+| `InspectorDiagnostics` | `InspectorDiagnostics.cs`, `DescriptorMapperPreview.cs`, `InlineLocalizationEditor.cs`, `ArchiveTranslations.cs`, `VanillaDatabaseMount.cs` | Diagnostics panel in datatable element inspectors |
 | `DescriptorPropertyIndex` | `DescriptorPropertyIndex.cs`, `VanillaDatabaseMount.cs`, `UnityYaml.cs` | Has its own window at `Tools/Descriptor Property Browser` |
 
 ---

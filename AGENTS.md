@@ -36,8 +36,9 @@ All menu items live under **`Tools/…`**. Grouped by area — see the README ta
   `Tier1MeshBaker.cs`, `BoneStructureMatcher.cs`, `FbxPrepPipeline.cs`, `ModelRequirementsChecker.cs`,
   `AnimationManagerContent.cs`.
 - **Database browsing/editing**: `DatabaseBrowser.cs`, `DescriptorPropertyIndex.cs`, `TechTreeWindow.cs`
-  / `TechTreeData.cs`, `DescriptorMapperPreview.cs`, `PropertyEffectDrawer.cs`, `InspectorAnalysisPanel.cs`,
-  `ArchiveTranslations.cs`.
+  / `TechTreeData.cs`, `DescriptorMapperPreview.cs`, `DescriptorMapperGenerator.cs`,
+  `PropertyEffectDrawer.cs`, `InspectorAnalysisPanel.cs`, `LocalizationKeyDrawer.cs`,
+  `InlineLocalizationEditor.cs`, `ArchiveTranslations.cs`.
 - **Vanilla bundle infrastructure**: `VanillaDatabaseMount.cs`, `VanillaAssetResolver.cs`,
   `AssetExplorer.cs`, `GuidLookup.cs`, `BundleContentProbe.cs`.
 - **Build/export**: `ModBuildWindow.cs`, `ExportModEditorScriptsPackage.cs`.
@@ -61,10 +62,27 @@ All menu items live under **`Tools/…`**. Grouped by area — see the README ta
 - **Validate in the consuming project, not here** — this repo has no compile target of its own; after
   editing, open/reload `HK_Re-Imagined` (or whichever project references this package) to confirm the
   scripts compile and the window(s) behave correctly.
-- **New untracked files still need README/dependency-doc entries** — `FormulaAutocompleteProbe.cs`,
-  `InspectorAnalysisPanel.cs`, and `PropertyEffectDrawer.cs` exist in the working tree but may not yet
-  be reflected in `README.md` / `Editor/EditorWindow-Dependencies.md`; reconcile those docs when you
-  touch this area.
+- **Inspector IMGUI: avoid Repaint-driven work** — hooks like `Editor.finishedDefaultHeaderGUI` and
+  Odin drawers run on *every* inspector GUI pass (Layout **and** Repaint, including mouse-move). Calling
+  expensive logic there (`AssetDatabase.FindAssets`, `BuildKeyToTextDict`, full validation passes,
+  reflection walks) on each pass will tank the whole editor, not just the inspector. Pattern used here:
+  - **Rebuild only when something actually changed** — selection change (`Selection.selectionChanged`),
+    a button the user clicked (e.g. Generate), `EditorApplication.projectChanged`, `Undo.undoRedoPerformed`,
+    or an explicit cache-bump after an edit.
+  - **On Repaint, read cache only** — replay prebuilt draw ops (`DescriptorMapperPreview`), return a
+    memoized status (`DescriptorMapperGenerator.EnsureStatus`), or reuse stale results until the next
+    allowed rebuild (often Layout-only for graph builds, or generation-keyed caches elsewhere).
+  - **Do not use TTL polling as a substitute** — if state is stable until selection/assets change, a
+    timer just hides the bug. Ask "what event invalidates this?" before adding per-frame checks.
+- **Inline `%key` localization on mapper fields** — `LocalizationKeyStringDrawer` + `InlineLocalizationEditor`
+  draw Import/edit translation boxes directly under `%key` string fields in the inspector (no Mod Editor
+  Localization Window). Applies to **UIMapper** subclasses (**Title**, **Description**, facet titles — the
+  UI labels) and **DescriptorMapper** (**LocalizedName**, **EffectLocalization**, …). Same helpers power
+  the aggregate Localization foldout in `InspectorDiagnostics`. Full behaviour: [README.md § Inline
+  Localization Editing](README.md#inline-localization-editing). **UIMapper auto-generation** is still
+  out of scope (`DescriptorMapperGenerator` only pairs Descriptor → DescriptorMapper).
+- **New untracked files still need README/dependency-doc entries** — reconcile `README.md` and
+  `Editor/EditorWindow-Dependencies.md` when adding inspector hooks or cross-file dependencies.
 
 ## Commit conventions
 - Commit/PR only when asked; branch off `main` first. Co-author trailer per repo norm.
