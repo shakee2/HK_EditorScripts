@@ -6,7 +6,7 @@ This document maps each user-facing editor window (`EditorWindow` subclass or `[
 
 ## Existing Export Package (per `ExportModEditorScriptsPackage.cs`)
 
-The existing `Tools/Export Mod Editor Scripts Package` already exports these 9 files together:
+The existing `Tools/Export Mod Editor Scripts Package` exports these **14 scripts** plus **`Docs/manual.md`**:
 - `VanillaDatabaseMount.cs`
 - `ArchiveTranslations.cs`
 - `TechTreeData.cs`
@@ -16,6 +16,11 @@ The existing `Tools/Export Mod Editor Scripts Package` already exports these 9 f
 - `AssetExplorer.cs`
 - `DescriptorMapperPreview.cs`
 - `PropertyEffectDrawer.cs`
+- `InspectorAnalysisPanel.cs`
+- `InspectorDiagnostics.cs`
+- `DescriptorMapperGenerator.cs`
+- `LocalizationKeyDrawer.cs`
+- `InlineLocalizationEditor.cs`
 
 This group is designed to work standalone — all mutual dependencies are included.
 
@@ -120,7 +125,7 @@ These are static methods with `[MenuItem]` entries, not `EditorWindow` subclasse
 
 ## Quick Reference Groups for Export
 
-1. **Existing Package Group (ExportModEditorScriptsPackage):** `VanillaDatabaseMount.cs`, `ArchiveTranslations.cs`, `TechTreeData.cs`, `TechTreeWindow.cs`, `DatabaseBrowser.cs`, `DescriptorPropertyIndex.cs`, `AssetExplorer.cs`, `DescriptorMapperPreview.cs`, `PropertyEffectDrawer.cs`
+1. **Existing Package Group (ExportModEditorScriptsPackage):** `VanillaDatabaseMount.cs`, `ArchiveTranslations.cs`, `TechTreeData.cs`, `TechTreeWindow.cs`, `DatabaseBrowser.cs`, `DescriptorPropertyIndex.cs`, `AssetExplorer.cs`, `DescriptorMapperPreview.cs`, `PropertyEffectDrawer.cs`, `InspectorAnalysisPanel.cs`, `InspectorDiagnostics.cs`, `DescriptorMapperGenerator.cs`, `LocalizationKeyDrawer.cs`, `InlineLocalizationEditor.cs`
 2. **CompatPatcher Group:** `CompatPatcherWindow.cs`, `CompatCompareWindow.cs`, `UnityYaml.cs`, `ModReader.cs`, `ConflictAnalyzer.cs`, `PatchBuilder.cs`, `Sidecar.cs`, `LoadOrderValidator.cs`
 3. **UnitVisualWorkflow Group:** `UnitVisualWorkflow.cs`, `FbxPrepPipeline.cs`, `BoneStructureMatcher.cs`, `PawnFragmentAuthor.cs`, `Tier1MeshBaker.cs`, `ModelRequirementsChecker.cs`, `AnimationManagerContent.cs`, `VanillaAssetResolver.cs`
 4. **Standalone utils:** `BundleContentProbe.cs`, `GuidLookup.cs`, `NarrativeEventDiagnostic.cs`, `ModBuildWindow.cs`

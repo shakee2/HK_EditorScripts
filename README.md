@@ -21,15 +21,15 @@ Unity Editor tools for Humankind modding — database editing, custom unit visua
 ### Database Browsing & Editing
 | Tool | Menu | Description |
 |------|------|-------------|
-| **DatabaseBrowser** | `Tools/shakee's Tools/Database Browser` | Searchable list of all database elements with Unity inspector integration |
-| **DescriptorPropertyIndex** | `Tools/shakee's Tools/Descriptor Property Browser` | Searchable index of Descriptor/DescriptorMapper rows with formula, scope, and duplicate detection |
-| **TechTreeWindow** | `Tools/shakee's Tools/Tech Tree Viewer` | Tech tree viewer/editor with drag-to-reposition, prerequisite editing, and copy-on-write save |
-| **TechTreeData** | `Tools/shakee's Tools/Debug/Tech Tree/Diagnose Mod Split`, `.../Dump Data` | Tech tree data layer backing the viewer; debug dumps for mod-split diagnosis and raw data inspection |
-| **DescriptorMapperPreview** | `Tools/shakee's Tools/Debug/Descriptor Mapper Preview/Clear Name Cache` | Live tooltip-breakdown preview for Descriptor/DescriptorMapper assets, drawn via `InspectorAnalysisPanel`. Also feeds `PropertyEffectDrawer`'s inline "in-game render" and `InspectorDiagnostics`' structural checks |
-| **DescriptorMapperGenerator** | — | Toolbar on Descriptor inspectors: generate or select a paired DescriptorMapper (UIMapper generation deferred — many definition-specific subclasses) |
-| **LocalizationKeyStringDrawer** | — | Inline translation editor below `%key` fields on UIMapper and DescriptorMapper assets (Odin drawer) |
-| **PropertyEffectDrawer** | — | Inspector drawer for `PropertyEffect` rows — see [PropertyEffect Editing](#propertyeffect-editing) below |
-| **InspectorAnalysisPanel** | — | Hosts `DescriptorMapperPreview` and `InspectorDiagnostics` in one height-capped, scrollable container under the inspector header, with a shared "Analysis" toggle row (see below) |
+| **DatabaseBrowser** | `Tools/shakee's Tools/Database Browser` | Searchable list of all database elements with Unity inspector integration **📦** |
+| **DescriptorPropertyIndex** | `Tools/shakee's Tools/Descriptor Property Browser` | Searchable index of Descriptor/DescriptorMapper rows with formula, scope, and duplicate detection **📦** |
+| **TechTreeWindow** | `Tools/shakee's Tools/Tech Tree Viewer` | Tech tree viewer/editor with drag-to-reposition, prerequisite editing, and copy-on-write save **📦** |
+| **TechTreeData** | `Tools/shakee's Tools/Debug/Tech Tree/Diagnose Mod Split`, `.../Dump Data` | Tech tree data layer backing the viewer; debug dumps for mod-split diagnosis and raw data inspection **📦** |
+| **DescriptorMapperPreview** | `Tools/shakee's Tools/Debug/Descriptor Mapper Preview/Clear Name Cache` | Live tooltip-breakdown preview for Descriptor/DescriptorMapper assets, drawn via `InspectorAnalysisPanel`. Also feeds `PropertyEffectDrawer`'s inline "in-game render" and `InspectorDiagnostics`' structural checks **📦** |
+| **DescriptorMapperGenerator** | — | Toolbar on Descriptor inspectors: generate or select a paired DescriptorMapper (UIMapper generation deferred — many definition-specific subclasses) **📦** |
+| **LocalizationKeyStringDrawer** | — | Inline translation editor below `%key` fields on UIMapper and DescriptorMapper assets (Odin drawer) **📦** |
+| **PropertyEffectDrawer** | — | Inspector drawer for `PropertyEffect` rows — see [PropertyEffect Editing](#propertyeffect-editing) below **📦** |
+| **InspectorAnalysisPanel** | — | Hosts `DescriptorMapperPreview` and `InspectorDiagnostics` in one height-capped, scrollable container under the inspector header, with a shared "Analysis" toggle row (see below) **📦** |
 
 ### Custom Unit Visuals
 | Tool | Menu | Description |
@@ -45,18 +45,46 @@ Unity Editor tools for Humankind modding — database editing, custom unit visua
 ### Asset & Bundle Tools
 | Tool | Menu | Description |
 |------|------|-------------|
-| **AssetExplorer** | `Tools/shakee's Tools/Asset Explorer` | Mount vanilla `.assetbundle` files, list descriptors, preview assets, import into project |
+| **AssetExplorer** | `Tools/shakee's Tools/Asset Explorer` | Mount vanilla `.assetbundle` files, list descriptors, preview assets, import into project **📦** |
 | **GuidLookup** | `Tools/shakee's Tools/Debug/Find GUID In Vanilla Bundles` | Resolve an Amplitude GUID against all vanilla bundles |
 | **BundleContentProbe** | `Tools/shakee's Tools/Debug/Inspect Built Mod Bundle` | Inspect the mod's built assetbundle to confirm what shipped |
 | **VanillaAssetResolver** | — | Load any asset by GUID from vanilla bundles (used by wizard) |
-| **VanillaDatabaseMount** | `Tools/shakee's Tools/Debug/Tech Tree/Vanilla Mount`, `.../Force Re-mount Vanilla Database` | Mount vanilla database bundle for browsing without copying into project |
-| **ArchiveTranslations** | — | Mount Mod Editor translations bundle for vanilla localization lookup |
+| **VanillaDatabaseMount** | `Tools/shakee's Tools/Debug/Tech Tree/Vanilla Mount`, `.../Force Re-mount Vanilla Database` | Mount vanilla database bundle for browsing without copying into project **📦** |
+| **ArchiveTranslations** | — | Mount Mod Editor translations bundle for vanilla localization lookup **📦** |
 
 ### Build & Export
 | Tool | Menu | Description |
 |------|------|-------------|
 | **ModBuildWindow** | `Tools/shakee's Tools/Build And Deploy Mod` | Lightweight build + deploy to Community folder (alternative to Mod Editor) |
-| **ExportModEditorScriptsPackage** | `Tools/shakee's Tools/Export Mod Editor Scripts Package` | Export the core editor scripts as a `.unitypackage` for sharing |
+| **ExportModEditorScriptsPackage** | `Tools/shakee's Tools/Export Mod Editor Scripts Package` | Export the core editor scripts + [`Docs/manual.md`](Docs/manual.md) as `ModEditorScripts.unitypackage` (see [Export package](#export-package-modeditorscriptsunitypackage) below) |
+
+#### Export package (`ModEditorScripts.unitypackage`)
+
+`ExportModEditorScriptsPackage.cs` ships **fourteen** `.cs` files, **`Docs/manual.md`** (user manual), and their `.meta` GUIDs. Everything else in this repo stays package-local and is **not** in the `.unitypackage`:
+
+| `.cs` file | Tool / role |
+|------------|-------------|
+| `VanillaDatabaseMount.cs` | Shared vanilla-database bundle mount (foundation for the browsers below) |
+| `ArchiveTranslations.cs` | Mod Editor translations bundle mount + project override read/write |
+| `TechTreeData.cs` | Tech tree data layer |
+| `TechTreeWindow.cs` | Tech tree viewer/editor window |
+| `DatabaseBrowser.cs` | Database Browser window |
+| `DescriptorPropertyIndex.cs` | Descriptor Property Browser window |
+| `AssetExplorer.cs` | Asset Explorer window |
+| `DescriptorMapperPreview.cs` | Tooltip breakdown preview + `PropertyEffectDrawer` / diagnostics backend |
+| `PropertyEffectDrawer.cs` | PropertyEffect Odin drawer (formula autocomplete + inline render) |
+| `InspectorAnalysisPanel.cs` | Inspector header host (mapper toolbar + preview + diagnostics) |
+| `InspectorDiagnostics.cs` | Diagnostics engine, aggregate loc foldout, Database Browser badges |
+| `DescriptorMapperGenerator.cs` | Generate/select paired DescriptorMapper |
+| `LocalizationKeyDrawer.cs` | Inline `%key` translation on UIMapper / DescriptorMapper |
+| `InlineLocalizationEditor.cs` | Shared loc Import/edit helpers (dep of drawer + diagnostics) |
+| `Docs/manual.md` | User manual: handling, limits, per-tool summary |
+
+Not exported (examples): Compatibility Patcher, unit-visual workflow, probes. Update `ExportModEditorScriptsPackage.cs`, **`Docs/manual.md`**, and this table together when the export set changes.
+
+The translations bundle (`Assets/Editor/Resources/Translations/…`) ships with Mod Tools, not in this package.
+
+In the tables above, **📦** = included in `ModEditorScripts.unitypackage`.
 
 ### Debug & Diagnostics
 | Tool | Menu | Description |
@@ -65,7 +93,7 @@ Unity Editor tools for Humankind modding — database editing, custom unit visua
 | **FormulaProbe** | `Tools/shakee's Tools/Debug/Probes/Resolve Types + Test ToString` | Resolve Descriptor/Effect types and test formula/RPN serialization |
 | **FormulaAutocompleteProbe** | `Tools/shakee's Tools/Debug/Probes/Formula Compiler Probe` | Tests the formula-autocomplete DATA path (entity types, `RpnTextCompiler.GetTypeFieldLabels`, Parse/Validate/Compile round-trip) independent of the inspector UI |
 | **NarrativeEventDiagnostic** | `Tools/shakee's Tools/Debug/Find Bad NarrativeEventDefinition` | Find the vanilla narrative event that throws NRE from OnValidate |
-| **InspectorDiagnostics** | — | Inline diagnostics panel for `IDatatableElement` assets (crash risks, broken refs, malformed RPN — reuses `DescriptorMapperPreview.CollectFindings`), plus an inline `%key` localization editor. Drawn by `InspectorAnalysisPanel` |
+| **InspectorDiagnostics** | — | Inline diagnostics panel for `IDatatableElement` assets (crash risks, broken refs, malformed RPN — reuses `DescriptorMapperPreview.CollectFindings`), plus an inline `%key` localization editor. Drawn by `InspectorAnalysisPanel` **📦** |
 
 ## Inline Localization Editing
 

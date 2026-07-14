@@ -25,6 +25,7 @@ the linked doc wins — fix this file. Verify any file/line ref before relying o
 | [Docs/CompatPatcher.md](Docs/CompatPatcher.md) | Design spec for the mod Compatibility Patcher. |
 | [Docs/CompatPatcher-LoadValidations.md](Docs/CompatPatcher-LoadValidations.md) | Which load-time validations can reset a retail game (only ~15; the rest are DEBUG-only) — read before changing `LoadOrderValidator.cs`. |
 | [Docs/CompatPatcher-Manual.md](Docs/CompatPatcher-Manual.md) | User manual for the Compatibility Patcher. |
+| [Docs/manual.md](Docs/manual.md) | User manual for the **export package** scripts (`ModEditorScripts.unitypackage`). |
 
 ## Layout (`Editor/`)
 All menu items live under **`Tools/…`**. Grouped by area — see the README table for full descriptions:
@@ -52,9 +53,8 @@ All menu items live under **`Tools/…`**. Grouped by area — see the README ta
   `Editor/EditorWindow-Dependencies.md` before assuming a file is self-contained, and update it when
   you add a new cross-file dependency.
 - **`ExportModEditorScriptsPackage.cs`** exports a fixed subset of files as a `.unitypackage` for
-  sharing outside this repo. If you rename/move/add a dependency to one of the exported windows
-  (currently: `VanillaDatabaseMount`, `ArchiveTranslations`, `TechTreeData`, `TechTreeWindow`,
-  `DatabaseBrowser`, `DescriptorPropertyIndex`, `AssetExplorer`), update the file list there too.
+  sharing outside this repo (full list: [README.md § Export package](README.md#export-package-modeditorscriptsunitypackage)).
+  If you add a dependency to an exported script, update `SCRIPT_NAMES` there and the README table.
 - **Editor-only, no engine assumptions beyond Editor APIs** — the asmdef restricts to `includePlatforms:
   ["Editor"]` with no assembly references, so avoid adding runtime-only dependencies; anything reused
   from the game's decompiled types goes through Mercury's editor/runtime assemblies already available
