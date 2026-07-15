@@ -27,7 +27,7 @@ public static class UpdateChecker
 
     const string LastCheckPrefKey = "HKEditorScripts.UpdateChecker.LastCheckTicks";
     const string SkippedVersionPrefKey = "HKEditorScripts.UpdateChecker.SkippedVersion";
-    const double CheckIntervalHours = 24;
+    const double CheckIntervalHours = 24 * 14; // bi-weekly; manual "Check For Updates" menu item covers the rest
 
     static bool startupCheckDone;
 
