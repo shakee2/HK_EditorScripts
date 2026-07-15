@@ -2,7 +2,7 @@
   "name": "com.shakee.hk-editorscripts",
   "version": "1.0.0",
   "displayName": "HK Editor Scripts",
-  "description": "Editor tools for Humankind modding (CompatPatcher, TechTree, UnitVisuals, etc.)",
+  "description": "Editor tools for Humankind modding (database browsing, tech tree, mod build/export)",
   "unity": "2021.3",
   "type": "library",
   "keywords": [
