@@ -8,6 +8,18 @@ Unity Editor tools for Humankind modding — database editing, custom unit visua
 - Humankind Mod Tools installation
 - Referenced as a local UPM package in a Humankind modding project
 
+## Folder Layout
+
+`Editor/` is split into subfolders by role — see [`Editor/EditorWindow-Dependencies.md`](Editor/EditorWindow-Dependencies.md) for the full per-file breakdown:
+
+- **`Shared/`** — foundation mounts most other tools depend on.
+- **`Upgrades/`** — hooks that augment vanilla ModTools inspectors (inline localization, tooltip preview, diagnostics) rather than opening their own window.
+- **`ModTools/`** — standalone browsing/editing windows.
+- **`Debug/`** — standalone diagnostic probes.
+- **`UnitVisualWorkflow/`** — experimental custom-unit-visual pipeline, isolated so it can be excluded from release branches/tags.
+- **`CompatPatcher/`** — the Compatibility Patcher, isolated so it can be excluded until stable.
+- **`Editor/` root** — general package infrastructure not scoped to one domain.
+
 ## Tools Overview
 
 ### Compatibility Patcher
@@ -64,20 +76,20 @@ Unity Editor tools for Humankind modding — database editing, custom unit visua
 
 | `.cs` file | Tool / role |
 |------------|-------------|
-| `VanillaDatabaseMount.cs` | Shared vanilla-database bundle mount (foundation for the browsers below) |
-| `ArchiveTranslations.cs` | Mod Editor translations bundle mount + project override read/write |
-| `TechTreeData.cs` | Tech tree data layer |
-| `TechTreeWindow.cs` | Tech tree viewer/editor window |
-| `DatabaseBrowser.cs` | Database Browser window |
-| `DescriptorPropertyIndex.cs` | Descriptor Property Browser window |
-| `AssetExplorer.cs` | Asset Explorer window |
-| `DescriptorMapperPreview.cs` | Tooltip breakdown preview + `PropertyEffectDrawer` / diagnostics backend |
-| `PropertyEffectDrawer.cs` | PropertyEffect Odin drawer (formula autocomplete + inline render) |
-| `InspectorAnalysisPanel.cs` | Inspector header host (mapper toolbar + preview + diagnostics) |
-| `InspectorDiagnostics.cs` | Diagnostics engine, aggregate loc foldout, Database Browser badges |
-| `DescriptorMapperGenerator.cs` | Generate/select paired DescriptorMapper |
-| `LocalizationKeyDrawer.cs` | Inline `%key` translation on UIMapper / DescriptorMapper |
-| `InlineLocalizationEditor.cs` | Shared loc Import/edit helpers (dep of drawer + diagnostics) |
+| `Shared/VanillaDatabaseMount.cs` | Shared vanilla-database bundle mount (foundation for the browsers below) |
+| `Shared/ArchiveTranslations.cs` | Mod Editor translations bundle mount + project override read/write |
+| `ModTools/TechTreeData.cs` | Tech tree data layer |
+| `ModTools/TechTreeWindow.cs` | Tech tree viewer/editor window |
+| `ModTools/DatabaseBrowser.cs` | Database Browser window |
+| `ModTools/DescriptorPropertyIndex.cs` | Descriptor Property Browser window |
+| `ModTools/AssetExplorer.cs` | Asset Explorer window |
+| `Upgrades/DescriptorMapperPreview.cs` | Tooltip breakdown preview + `PropertyEffectDrawer` / diagnostics backend |
+| `Upgrades/PropertyEffectDrawer.cs` | PropertyEffect Odin drawer (formula autocomplete + inline render) |
+| `Upgrades/InspectorAnalysisPanel.cs` | Inspector header host (mapper toolbar + preview + diagnostics) |
+| `Upgrades/InspectorDiagnostics.cs` | Diagnostics engine, aggregate loc foldout, Database Browser badges |
+| `Upgrades/DescriptorMapperGenerator.cs` | Generate/select paired DescriptorMapper |
+| `Upgrades/LocalizationKeyDrawer.cs` | Inline `%key` translation on UIMapper / DescriptorMapper |
+| `Upgrades/InlineLocalizationEditor.cs` | Shared loc Import/edit helpers (dep of drawer + diagnostics) |
 | `Docs/manual.md` | User manual: handling, limits, per-tool summary |
 
 Not exported (examples): Compatibility Patcher, unit-visual workflow, probes. Update `ExportModEditorScriptsPackage.cs`, **`Docs/manual.md`**, and this table together when the export set changes.

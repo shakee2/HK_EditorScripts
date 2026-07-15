@@ -12,8 +12,12 @@ the linked doc wins — fix this file. Verify any file/line ref before relying o
   (that repo is where you playtest/validate; this repo just holds the tool source). See that repo's
   `AGENTS.md` for the broader modding context (decompiled game source location, Mod Tools editor DLLs,
   reset-gate gotchas, etc.) — don't duplicate that here.
-- Everything lives flat in `Editor/` (plus a `CompatPatcher/` subfolder). No `.sln`/`.csproj` committed;
-  validated by opening the consuming project in the Unity editor and letting it assemble the scripts.
+- `Editor/` is split into role-based subfolders: `Shared/` (foundation mounts), `Upgrades/` (inspector-hook
+  tools that augment vanilla ModTools windows), `ModTools/` (standalone browsing/editing windows), `Debug/`
+  (standalone diagnostic probes), `UnitVisualWorkflow/` (experimental, kept isolated for release exclusion),
+  and `CompatPatcher/` (also isolated, excluded until stable). General package infra with no single domain
+  (`ExportModEditorScriptsPackage.cs`) stays flat at `Editor/` root. No `.sln`/`.csproj` committed; validated
+  by opening the consuming project in the Unity editor and letting it assemble the scripts.
 - Two git repos are involved in most changes: this one (tool source) and `HK_Re-Imagined` (where the
   package is referenced/tested). Check status in both before committing.
 
@@ -28,23 +32,28 @@ the linked doc wins — fix this file. Verify any file/line ref before relying o
 | [Docs/manual.md](Docs/manual.md) | User manual for the **export package** scripts (`ModEditorScripts.unitypackage`). |
 
 ## Layout (`Editor/`)
-All menu items live under **`Tools/…`**. Grouped by area — see the README table for full descriptions:
+All menu items live under **`Tools/…`**. Grouped by physical subfolder (role-based, not feature-based —
+see the README table for feature-area descriptions):
 
-- **Compatibility Patcher** (`CompatPatcher/` subfolder): `CompatPatcherWindow.cs` (main window),
-  `CompatCompareWindow.cs`, `ModReader.cs`, `ConflictAnalyzer.cs`, `UnityYaml.cs`, `PatchBuilder.cs`,
-  `Sidecar.cs`, `LoadOrderValidator.cs`, `DiffGui.cs`.
-- **Custom unit visuals**: `UnitVisualWorkflow.cs` (wizard) + `PawnFragmentAuthor.cs`,
-  `Tier1MeshBaker.cs`, `BoneStructureMatcher.cs`, `FbxPrepPipeline.cs`, `ModelRequirementsChecker.cs`,
-  `AnimationManagerContent.cs`.
-- **Database browsing/editing**: `DatabaseBrowser.cs`, `DescriptorPropertyIndex.cs`, `TechTreeWindow.cs`
-  / `TechTreeData.cs`, `DescriptorMapperPreview.cs`, `DescriptorMapperGenerator.cs`,
-  `PropertyEffectDrawer.cs`, `InspectorAnalysisPanel.cs`, `LocalizationKeyDrawer.cs`,
-  `InlineLocalizationEditor.cs`, `ArchiveTranslations.cs`.
-- **Vanilla bundle infrastructure**: `VanillaDatabaseMount.cs`, `VanillaAssetResolver.cs`,
-  `AssetExplorer.cs`, `GuidLookup.cs`, `BundleContentProbe.cs`.
-- **Build/export**: `ModBuildWindow.cs`, `ExportModEditorScriptsPackage.cs`.
-- **Debug/diagnostics**: `Probing.cs`, `FormulaProbe.cs`, `FormulaAutocompleteProbe.cs`,
-  `NarrativeEventDiagnostic.cs`, `InspectorDiagnostics.cs`.
+- **`Shared/`** — foundation mounts nearly everything else depends on: `VanillaDatabaseMount.cs`,
+  `ArchiveTranslations.cs`.
+- **`Upgrades/`** — hooks that augment vanilla ModTools inspectors rather than open their own window:
+  `DescriptorMapperPreview.cs`, `DescriptorMapperGenerator.cs`, `PropertyEffectDrawer.cs`,
+  `InspectorAnalysisPanel.cs`, `InspectorDiagnostics.cs`, `LocalizationKeyDrawer.cs`,
+  `InlineLocalizationEditor.cs`.
+- **`ModTools/`** — standalone browsing/editing windows: `DatabaseBrowser.cs`,
+  `DescriptorPropertyIndex.cs`, `TechTreeWindow.cs`, `TechTreeData.cs`, `AssetExplorer.cs`,
+  `ModBuildWindow.cs`.
+- **`Debug/`** — standalone diagnostic probes: `Probing.cs`, `FormulaProbe.cs`,
+  `FormulaAutocompleteProbe.cs`, `NarrativeEventDiagnostic.cs`, `GuidLookup.cs`, `BundleContentProbe.cs`.
+- **`UnitVisualWorkflow/`** (experimental, isolated for release exclusion — see Conventions below):
+  `UnitVisualWorkflow.cs` (wizard), `PawnFragmentAuthor.cs`, `Tier1MeshBaker.cs`,
+  `BoneStructureMatcher.cs`, `FbxPrepPipeline.cs`, `ModelRequirementsChecker.cs`,
+  `AnimationManagerContent.cs`, `VanillaAssetResolver.cs`.
+- **`CompatPatcher/`** (isolated, excluded from releases until stable): `CompatPatcherWindow.cs` (main
+  window), `CompatCompareWindow.cs`, `ModReader.cs`, `ConflictAnalyzer.cs`, `UnityYaml.cs`,
+  `PatchBuilder.cs`, `Sidecar.cs`, `LoadOrderValidator.cs`, `DiffGui.cs`.
+- **`Editor/` root** — general package infra, not scoped to one domain: `ExportModEditorScriptsPackage.cs`.
 
 ## Conventions & gotchas
 - **No local `.cs` dependencies unless noted** — most tools are standalone; the ones that share
@@ -83,6 +92,11 @@ All menu items live under **`Tools/…`**. Grouped by area — see the README ta
   out of scope (`DescriptorMapperGenerator` only pairs Descriptor → DescriptorMapper).
 - **New untracked files still need README/dependency-doc entries** — reconcile `README.md` and
   `Editor/EditorWindow-Dependencies.md` when adding inspector hooks or cross-file dependencies.
+- **`UnitVisualWorkflow/` and `CompatPatcher/` are physically isolated so they can be excluded wholesale
+  from a release branch/tag** (e.g. `git rm -r Editor/UnitVisualWorkflow`) while they're experimental/kinked
+  — confirmed nothing outside either folder references their types, so removing either doesn't break the
+  rest of the package. Keep new WIP/unstable tools in their own subfolder for the same reason rather than
+  dropping them flat into `Editor/` root or an existing stable folder.
 
 ## Commit conventions
 - Commit/PR only when asked; branch off `main` first. Co-author trailer per repo norm.

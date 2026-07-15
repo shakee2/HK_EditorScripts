@@ -6,22 +6,21 @@ using UnityEngine;
 /// <summary>
 /// One-shot exporter for the core interconnected editor scripts as a Unity package. Run via
 /// "Tools/Export Mod Editor Scripts Package". The package contains ONLY these files (cs + meta),
-/// not the unrelated tools (FormulaProbe, Probing, AnimationManagerContent, PawnFragmentAuthor,
-/// ModBuildWindow):
-///   - VanillaDatabaseMount.cs    (shared vanilla-bundle mount — foundation for the other four)
-///   - ArchiveTranslations.cs     (translations-bundle mount + project-override read/write)
-///   - TechTreeData.cs            (tech-tree data layer)
-///   - TechTreeWindow.cs          (tech-tree viewer/editor window)
-///   - DatabaseBrowser.cs         (generic database browser window)
-///   - DescriptorPropertyIndex.cs (descriptor property browser window)
-///   - AssetExplorer.cs           (browse + import any vanilla asset bundle)
-///   - DescriptorMapperPreview.cs (in-game tooltip render preview — PropertyEffectDrawer dep)
-///   - PropertyEffectDrawer.cs    (PropertyEffect Odin drawer: formula autocomplete + inline render)
-///   - InspectorAnalysisPanel.cs  (header host: mapper toolbar + preview + diagnostics)
-///   - InspectorDiagnostics.cs    (diagnostics engine + aggregate loc foldout; DatabaseBrowser badges)
-///   - DescriptorMapperGenerator.cs (generate/select paired DescriptorMapper)
-///   - LocalizationKeyDrawer.cs   (inline %key translation on UIMapper / DescriptorMapper)
-///   - InlineLocalizationEditor.cs (shared loc Import/edit helpers — dep of drawer + diagnostics)
+/// not the unrelated tools (Debug/, UnitVisualWorkflow/, ModTools/ModBuildWindow.cs):
+///   - Shared/VanillaDatabaseMount.cs    (shared vanilla-bundle mount — foundation for the other four)
+///   - Shared/ArchiveTranslations.cs     (translations-bundle mount + project-override read/write)
+///   - ModTools/TechTreeData.cs            (tech-tree data layer)
+///   - ModTools/TechTreeWindow.cs          (tech-tree viewer/editor window)
+///   - ModTools/DatabaseBrowser.cs         (generic database browser window)
+///   - ModTools/DescriptorPropertyIndex.cs (descriptor property browser window)
+///   - ModTools/AssetExplorer.cs           (browse + import any vanilla asset bundle)
+///   - Upgrades/DescriptorMapperPreview.cs (in-game tooltip render preview — PropertyEffectDrawer dep)
+///   - Upgrades/PropertyEffectDrawer.cs    (PropertyEffect Odin drawer: formula autocomplete + inline render)
+///   - Upgrades/InspectorAnalysisPanel.cs  (header host: mapper toolbar + preview + diagnostics)
+///   - Upgrades/InspectorDiagnostics.cs    (diagnostics engine + aggregate loc foldout; DatabaseBrowser badges)
+///   - Upgrades/DescriptorMapperGenerator.cs (generate/select paired DescriptorMapper)
+///   - Upgrades/LocalizationKeyDrawer.cs   (inline %key translation on UIMapper / DescriptorMapper)
+///   - Upgrades/InlineLocalizationEditor.cs (shared loc Import/edit helpers — dep of drawer + diagnostics)
 ///   - Docs/manual.md               (user manual — shipped with the package)
 /// The translations bundle itself (Assets/Editor/Resources/Translations/...) ships with
 /// ModTools and is NOT included.
@@ -32,20 +31,20 @@ public static class ExportModEditorScriptsPackage
 
     static readonly string[] SCRIPT_NAMES =
     {
-        "VanillaDatabaseMount.cs",
-        "ArchiveTranslations.cs",
-        "TechTreeData.cs",
-        "TechTreeWindow.cs",
-        "DatabaseBrowser.cs",
-        "DescriptorPropertyIndex.cs",
-        "AssetExplorer.cs",
-        "DescriptorMapperPreview.cs",
-        "PropertyEffectDrawer.cs",
-        "InspectorAnalysisPanel.cs",
-        "InspectorDiagnostics.cs",
-        "DescriptorMapperGenerator.cs",
-        "LocalizationKeyDrawer.cs",
-        "InlineLocalizationEditor.cs",
+        "Shared/VanillaDatabaseMount.cs",
+        "Shared/ArchiveTranslations.cs",
+        "ModTools/TechTreeData.cs",
+        "ModTools/TechTreeWindow.cs",
+        "ModTools/DatabaseBrowser.cs",
+        "ModTools/DescriptorPropertyIndex.cs",
+        "ModTools/AssetExplorer.cs",
+        "Upgrades/DescriptorMapperPreview.cs",
+        "Upgrades/PropertyEffectDrawer.cs",
+        "Upgrades/InspectorAnalysisPanel.cs",
+        "Upgrades/InspectorDiagnostics.cs",
+        "Upgrades/DescriptorMapperGenerator.cs",
+        "Upgrades/LocalizationKeyDrawer.cs",
+        "Upgrades/InlineLocalizationEditor.cs",
     };
 
     const string ManualRelative = "Docs/manual.md";
