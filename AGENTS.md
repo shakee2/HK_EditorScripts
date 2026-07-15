@@ -53,7 +53,9 @@ see the README table for feature-area descriptions):
 - **`CompatPatcher/`** (isolated, excluded from releases until stable): `CompatPatcherWindow.cs` (main
   window), `CompatCompareWindow.cs`, `ModReader.cs`, `ConflictAnalyzer.cs`, `UnityYaml.cs`,
   `PatchBuilder.cs`, `Sidecar.cs`, `LoadOrderValidator.cs`, `DiffGui.cs`.
-- **`Editor/` root** — general package infra, not scoped to one domain: `ExportModEditorScriptsPackage.cs`.
+- **`Editor/` root** — general package infra, not scoped to one domain: `ExportModEditorScriptsPackage.cs`,
+  `UpdateChecker.cs` (checks GitHub tags for a newer release than what's resolved via UPM and offers to
+  update in place via `Client.Add`; no-ops when consumed via a local `file:` reference).
 
 ## Conventions & gotchas
 - **No local `.cs` dependencies unless noted** — most tools are standalone; the ones that share

@@ -116,7 +116,7 @@ These are `[InitializeOnLoad]` hooks that layer into every inspector, not separa
 | `LocalizationKeyStringDrawer` | `Upgrades/LocalizationKeyDrawer.cs`, `Upgrades/InlineLocalizationEditor.cs`, `Shared/ArchiveTranslations.cs`, `Upgrades/DescriptorMapperPreview.cs` | Inline translation editor below `%key` fields on UIMapper/DescriptorMapper |
 | `PropertyEffectOdinDrawer` | `Upgrades/PropertyEffectDrawer.cs`, `Upgrades/DescriptorMapperPreview.cs` | Odin drawer on `PropertyEffect`: formula autocomplete + inline in-game render HelpBox |
 | `InspectorDiagnostics` | `Upgrades/InspectorDiagnostics.cs`, `Upgrades/DescriptorMapperPreview.cs`, `Upgrades/InlineLocalizationEditor.cs`, `Shared/ArchiveTranslations.cs`, `Shared/VanillaDatabaseMount.cs` | Diagnostics panel in datatable element inspectors |
-| `DescriptorPropertyIndex` | `ModTools/DescriptorPropertyIndex.cs`, `Shared/VanillaDatabaseMount.cs`, `CompatPatcher/UnityYaml.cs` | Has its own window at `Tools/Descriptor Property Browser` (lives in `ModTools/`, not `Upgrades/`, since it's a standalone window) |
+| `DescriptorPropertyIndex` | `ModTools/DescriptorPropertyIndex.cs`, `Shared/VanillaDatabaseMount.cs` | Has its own window at `Tools/Descriptor Property Browser` (lives in `ModTools/`, not `Upgrades/`, since it's a standalone window). Does **not** depend on `CompatPatcher/UnityYaml.cs` (stale claim removed — verified via grep, `UnityYaml` is only referenced within `CompatPatcher/` itself) |
 
 ---
 

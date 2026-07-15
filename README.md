@@ -69,6 +69,7 @@ Unity Editor tools for Humankind modding — database editing, custom unit visua
 |------|------|-------------|
 | **ModBuildWindow** | `Tools/shakee's Tools/Build And Deploy Mod` | Lightweight build + deploy to Community folder (alternative to Mod Editor) |
 | **ExportModEditorScriptsPackage** | `Tools/shakee's Tools/Export Mod Editor Scripts Package` | Export the core editor scripts + [`Docs/manual.md`](Docs/manual.md) as `ModEditorScripts.unitypackage` (see [Export package](#export-package-modeditorscriptsunitypackage) below) |
+| **UpdateChecker** | `Tools/shakee's Tools/Check For Updates` | Checks the GitHub repo's tags for a newer version than what's currently resolved, and offers to update in place via the Package Manager (see [Update Checker](#update-checker) below) |
 
 #### Export package (`ModEditorScripts.unitypackage`)
 
@@ -97,6 +98,25 @@ Not exported (examples): Compatibility Patcher, unit-visual workflow, probes. Up
 The translations bundle (`Assets/Editor/Resources/Translations/…`) ships with Mod Tools, not in this package.
 
 In the tables above, **📦** = included in `ModEditorScripts.unitypackage`.
+
+#### Update Checker
+
+`UpdateChecker.cs` runs a throttled background check (once every 24h, plus on-demand via
+`Tools/shakee's Tools/Check For Updates`) against `github.com/shakee2/HK_EditorScripts`'s tags. Only
+does anything when the package is resolved via a git URL (`PackageSource.Git` — i.e. the consumer's
+`manifest.json` points at `https://github.com/shakee2/HK_EditorScripts.git#<tag>`, not a local `file:`
+reference); a local reference has nothing meaningful to compare against, so the check is skipped.
+
+- Compares the highest semver-parseable tag on the repo against the currently-resolved package's
+  `version` (read via `PackageInfo.GetAllRegisteredPackages()`), not the manifest.json text — this is
+  what's actually checked out, so it can't drift from reality.
+- On finding a newer tag, shows a dialog with **Update** / **Later** / **Skip This Version**. Update
+  calls `Client.Add("<repo>.git#<tag>")` — the same call the Package Manager UI itself makes when you
+  paste a git URL — which rewrites the manifest dependency *and* triggers the actual git
+  fetch/checkout; no separate `git pull` step is needed, and Unity recompiles automatically once the
+  new files land.
+- "Skip This Version" is remembered per-tag (`EditorPrefs`) so the background check won't re-prompt for
+  a release you've deliberately deferred, but a newer tag after that will still prompt.
 
 ### Debug & Diagnostics
 | Tool | Menu | Description |
