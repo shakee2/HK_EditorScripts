@@ -5,6 +5,7 @@ using UnityEditor;
 using UnityEditor.PackageManager;
 using UnityEngine;
 using UnityEngine.Networking;
+using PackageInfo = UnityEditor.PackageManager.PackageInfo;
 
 /// <summary>
 /// Checks the package's GitHub repo for a newer version tag than what's currently resolved via
