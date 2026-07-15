@@ -101,8 +101,9 @@ In the tables above, **📦** = included in `ModEditorScripts.unitypackage`.
 
 #### Update Checker
 
-`UpdateChecker.cs` runs a throttled background check (once every 24h, plus on-demand via
-`Tools/shakee's Tools/Check For Updates`) against `github.com/shakee2/HK_EditorScripts`'s tags. Only
+`UpdateChecker.cs` runs a throttled background check (once every 2 weeks, plus on-demand via
+`Tools/shakee's Tools/Check For Updates` any time in between) against `github.com/shakee2/HK_EditorScripts`'s
+tags. Only
 does anything when the package is resolved via a git URL (`PackageSource.Git` — i.e. the consumer's
 `manifest.json` points at `https://github.com/shakee2/HK_EditorScripts.git#<tag>`, not a local `file:`
 reference); a local reference has nothing meaningful to compare against, so the check is skipped.
