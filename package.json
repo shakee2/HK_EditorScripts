@@ -1,6 +1,6 @@
 {
   "name": "com.shakee.hk-editorscripts",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "displayName": "HK Editor Scripts",
   "description": "Editor tools for Humankind modding (database browsing, tech tree, mod build/export)",
   "unity": "2021.3",
