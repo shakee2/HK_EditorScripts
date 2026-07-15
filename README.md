@@ -6,7 +6,31 @@ Unity Editor tools for Humankind modding — database editing, custom unit visua
 
 - Unity 2021.3+
 - Humankind Mod Tools installation
-- Referenced as a local UPM package in a Humankind modding project
+- Referenced as a UPM package (git URL or local `file:` reference) in a Humankind modding project
+
+## Installing as a UPM Package
+
+1. In your modding project, open **Window → Package Manager**.
+2. Click the **+** button (top-left) → **Add package from git URL...**
+3. Paste:
+   ```
+   https://github.com/shakee2/HK_EditorScripts.git#1.0.2
+   ```
+   (swap `1.0.2` for whichever [tag](https://github.com/shakee2/HK_EditorScripts/tags) you want — always pin
+   to a tag rather than a branch name, so your project doesn't silently change behavior on a future push.)
+4. Click **Add**. Unity clones/checks out that tag and compiles the package's editor scripts; menu items
+   appear under `Tools/shakee's Tools/...` after the next domain reload.
+
+To get a later release, repeat step 2–4 with the new tag (or use the built-in
+[Update Checker](#update-checker) — `Tools/shakee's Tools/Check For Updates` — which does this for you and
+also prompts automatically every couple of weeks). Editing the `#<tag>` suffix directly in
+`Packages/manifest.json` and letting Unity notice the change works too, but going through the Package
+Manager UI (or the Update Checker) is more deterministic about when the re-resolve actually happens.
+
+If you're developing this package itself (not just consuming it), reference it with a local path instead —
+`"com.shakee.hk-editorscripts": "file:../relative/path/to/HK_EditorScripts"` in `manifest.json` — so edits
+are picked up live without needing a tag. The Update Checker no-ops in that case since there's nothing
+meaningful to compare a local checkout against.
 
 ## Folder Layout
 
