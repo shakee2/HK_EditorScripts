@@ -312,9 +312,16 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
         _acSel = _acItems.Count > 0 ? Mathf.Clamp(_acSel, 0, _acItems.Count - 1) : -1;
     }
 
+    // Rebindable via Tools/shakee's Tools/Options — Formula Autocomplete section. These are raw
+    // KeyDown checks inside the drawer, not [MenuItem]s, so Unity's Shortcuts manager can't see or
+    // rebind them; ToolsOptionsWindow (a different assembly) reads/writes the same EditorPrefs keys
+    // by string literal rather than referencing this class.
+    internal const string PrefRightArrowConfirms = "HKModTools.Autocomplete.RightArrowConfirms";
+    internal const string PrefCtrlEDConfirms = "HKModTools.Autocomplete.CtrlEDConfirms";
+
     static bool IsConfirmShortcut(Event e) =>
-        e.keyCode == KeyCode.RightArrow
-        || (e.control && (e.keyCode == KeyCode.E || e.keyCode == KeyCode.D));
+        (EditorPrefs.GetBool(PrefRightArrowConfirms, true) && e.keyCode == KeyCode.RightArrow)
+        || (EditorPrefs.GetBool(PrefCtrlEDConfirms, true) && e.control && (e.keyCode == KeyCode.E || e.keyCode == KeyCode.D));
 
     // Returns true when → / Ctrl+E / Ctrl+D confirms an insert; sets pick to the chosen index.
     static bool HandleListKeyboard(Event e, int count, ref int sel, ref Vector2 scroll, out int pick)

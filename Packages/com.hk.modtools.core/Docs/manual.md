@@ -215,6 +215,8 @@ Intellisense for the **formula** box on each Descriptor **Effect** row: type `So
 | **↑** / **↓** (Arrow Keys)| Move selection. |
 | **→** (Arrow Key), or **Ctrl+E** / **Ctrl+D** | Accept the highlighted suggestion. |
 
+Each accept binding can be turned off individually in **Tools/shakee's Tools/Options** → Formula Autocomplete (e.g. if **→** fights with normal cursor movement for your workflow, disable it and keep **Ctrl+E**/**Ctrl+D**).
+
 **Limits:** Autocomplete requires Odin. The Rendered preview is suppressed when **Tooltip Preview** is off.
 
 ---
