@@ -472,7 +472,6 @@ public static class DescriptorMapperPreview
         string formula = BuildFormula(pe);
         int toTargetOp = Convert.ToInt32(f_toTargetOp.GetValue(pe));
         OpTwo(ops, "Formula", formula);
-        OpTwo(ops, "In-game render", BuildResolvedFormula(pe, toTargetOp, targetProperty));
         string note = f_note?.GetValue(pe) as string;
         if (!string.IsNullOrEmpty(note))
             OpTwo(ops, "Note", note);
@@ -597,6 +596,59 @@ public static class DescriptorMapperPreview
             int i = int.Parse(m.Groups[1].Value);
             return i >= 0 && i < prms.Count ? prms[i].value : m.Value;
         });
+    }
+
+    // Same "Rendered" string the preview panel shows: template with ordered params substituted.
+    // Returns null when the row is exotic-empty, unrenderable, or has no matching template key.
+    static string TryBuildRendered(
+        object pe, object effect, UnityEngine.Object descriptorObj, object policy,
+        string formula, string targetProperty, int toTargetOp)
+    {
+        int declaredFlags = policy != null ? Convert.ToInt32(f_pol_flags.GetValue(policy)) : FLAG_None;
+        string explicitLoc = policy != null ? f_pol_localization.GetValue(policy) as string : null;
+        bool solveRpn = policy != null && f_pol_solveRpn != null && (bool)f_pol_solveRpn.GetValue(policy);
+        bool isExotic = !string.IsNullOrEmpty(explicitLoc) && declaredFlags == FLAG_None;
+
+        if (isExotic)
+            return Resolve(explicitLoc);
+
+        PropShape shape = solveRpn ? default : AnalyzePropertyEffectShape(pe, toTargetOp);
+        if (!solveRpn && !shape.valid)
+            return null;
+
+        bool applyOnSource = f_applyOnSource != null && (bool)f_applyOnSource.GetValue(effect);
+        bool isSynergy = string.Equals(f_desc_category?.GetValue(descriptorObj) as string, "District_Synergy", StringComparison.Ordinal);
+        PathInfo pathInfo; int pathFlags;
+        if (isSynergy)
+        {
+            pathInfo = ClassifySynergyPath(effect, out _);
+            pathFlags = string.IsNullOrEmpty(pathInfo.synergySource) ? 0 : FLAG_SynergySource;
+        }
+        else
+        {
+            pathInfo = ClassifyPath(effect, applyOnSource);
+            pathFlags = ComputePathFlags(pathInfo);
+        }
+
+        int flags; string specificKey;
+        if (solveRpn)
+        {
+            flags = FLAG_Value | FLAG_Property;
+            specificKey = null;
+        }
+        else
+        {
+            int autoFlags = shape.propFlags | pathFlags;
+            bool hasLoc = policy != null && (declaredFlags != FLAG_None || !string.IsNullOrEmpty(explicitLoc));
+            bool subsetValid = !hasLoc || (declaredFlags & ~autoFlags) == 0;
+            flags = (hasLoc && subsetValid) ? declaredFlags : autoFlags;
+            specificKey = (hasLoc && subsetValid && !string.IsNullOrEmpty(explicitLoc)) ? explicitLoc : null;
+        }
+
+        var prms = BuildOrderedParams(flags, shape, solveRpn, formula, targetProperty, pathInfo);
+        string templateKey = specificKey ?? LookupTemplateKey(flags);
+        if (templateKey == null) return null;
+        return Substitute(Resolve(templateKey), prms);
     }
 
     // ── PropertyEffect shape (mirrors SimulationEvaluatorHelper.FillPropertyEffectEvaluation) ──
@@ -1077,59 +1129,6 @@ public static class DescriptorMapperPreview
 
     static string NextName(string[] names, ref int idx) => names != null && idx < names.Length ? names[idx++] : $"p{idx++}";
 
-    // Like BuildFormula, but resolves property names through PropertyMapper (display names) and
-    // formats the leading constant with sign/percent per the PropertyMapper. Used both in the
-    // preview panel and by the PropertyEffectDrawer for inline display.
-    static string BuildResolvedFormula(object pe, int toTargetOp, string targetProperty)
-    {
-        var rpn = f_rpnStack?.GetValue(pe) as Array;
-        var constants = f_constantStack?.GetValue(pe) as Array;
-        var names = f_propertyLocalNames?.GetValue(pe) as string[];
-
-        if (rpn == null || rpn.Length == 0)
-        {
-            if (constants != null && constants.Length > 0)
-            {
-                double value = RawToDouble(constants.GetValue(0));
-                return FormatValueString(value, toTargetOp, targetProperty);
-            }
-            return "0";
-        }
-
-        var stack = new Stack<string>(); int propIdx = 0, constIdx = 0;
-        foreach (var opObj in rpn)
-        {
-            int op = Convert.ToInt32(opObj);
-            if (op == OP_GetConst)
-            {
-                double value = constants != null && constIdx < constants.Length ? RawToDouble(constants.GetValue(constIdx++)) : 0;
-                stack.Push(FormatValueString(value, toTargetOp, targetProperty));
-            }
-            else if (op == OP_GetTarget || op == OP_GetSource || op == OP_GetWorld)
-                stack.Push(ResolvePropertyLabel(NextName(names, ref propIdx)));
-            else if (op == OP_GetVariable)
-                stack.Push("var:" + NextName(names, ref propIdx));
-            else
-            {
-                if (stack.Count < 2) { stack.Push("?op" + op); continue; }
-                string b = stack.Pop(), a = stack.Pop();
-                stack.Push("(" + a + " " + BinSymResolved(op) + " " + b + ")");
-            }
-        }
-        string result = stack.Count > 0 ? stack.Peek() : "?";
-        if (result.Length > 1 && result[0] == '(' && result[^1] == ')') result = result.Substring(1, result.Length - 2);
-        return result;
-    }
-
-    static string BinSymResolved(int op)
-    {
-        if (op == OP_Add) return "+"; if (op == OP_Sub) return "-";
-        if (op == OP_Mult) return "×"; if (op == OP_Div) return "÷";
-        if (op == OP_Pow) return "^"; if (op == OP_Percent) return "% of";
-        if (op == OP_Max) return "max"; if (op == OP_Min) return "min";
-        return "op" + op;
-    }
-
     static string BinSym(int op)
     {
         if (op == OP_Add) return "+"; if (op == OP_Sub) return "-";
@@ -1250,15 +1249,16 @@ public static class DescriptorMapperPreview
         return null;
     }
 
-    // ── Public API for PropertyEffectDrawer (inline in-game render) ────────
-    // Resolves one PropertyEffect into a display-ready formula + warnings, fetching the
-    // DescriptorMapper (from project or vanilla) for policy context. Accepts either a
-    // Descriptor or a DescriptorMapper as the root (the paired asset is found by name).
-    // Safe no-op if reflection isn't ready or the target isn't either type.
+    // ── Public API for PropertyEffectDrawer (inline Rendered preview) ─────
+    // Resolves one PropertyEffect into the same "Rendered" tooltip string the header
+    // preview shows, plus warnings. Fetches the DescriptorMapper (project or vanilla)
+    // for policy context. Accepts either a Descriptor or a DescriptorMapper as the
+    // root (the paired asset is found by name). Safe no-op if reflection isn't ready
+    // or the target isn't either type.
     public struct PropertyEffectResolution
     {
         public string rawFormula;           // infix with raw names: "3 * Target.Industry"
-        public string resolvedFormula;      // infix with resolved names + formatted constant: "+3 × Industry"
+        public string rendered;             // template with params substituted (tooltip line)
         public string note;                 // PropertyEffect.Note (may be empty)
         public bool foundDescriptorMapper;
         public bool solveRPNFormula;
@@ -1305,12 +1305,14 @@ public static class DescriptorMapperPreview
         string targetProperty = f_targetProperty.GetValue(pe) as string ?? "";
         int toTargetOp = Convert.ToInt32(f_toTargetOp.GetValue(pe));
         r.rawFormula = BuildFormula(pe);
-        r.resolvedFormula = BuildResolvedFormula(pe, toTargetOp, targetProperty);
         r.note = f_note?.GetValue(pe) as string ?? "";
 
         object policy = FindPolicy(mapperObj, effectIndex, peIndex);
         r.hidden = policy != null && (bool)f_pol_hide.GetValue(policy);
         r.solveRPNFormula = policy != null && f_pol_solveRpn != null && (bool)f_pol_solveRpn.GetValue(policy);
+
+        if (!r.hidden)
+            r.rendered = TryBuildRendered(pe, effect, descriptorObj, policy, r.rawFormula, targetProperty, toTargetOp);
 
         // Warnings
         if (!r.foundDescriptorMapper)

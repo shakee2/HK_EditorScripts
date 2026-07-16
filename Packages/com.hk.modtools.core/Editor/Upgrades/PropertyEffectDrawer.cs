@@ -19,8 +19,8 @@ using Amplitude.Mercury.Production.Extensions;     // InspectorProperty.Serializ
 /// Inspector drawer for <see cref="Amplitude.Framework.Simulation.Description.PropertyEffect"/>.
 /// Draws Amplitude's own PropertyEffect editor untouched (compact formula field, operation/property
 /// dropdowns, and the type-aware Source/Target property browser), then appends the one thing Amplitude
-/// doesn't provide: an "In-game render" HelpBox showing how the formula renders in-game (names resolved
-/// through PropertyMapper, constant formatted signed/percent) with any applicable warnings. Property
+/// doesn't provide: a "Rendered" HelpBox showing the same tooltip line the header preview computes
+/// (template with ordered params substituted) with any applicable warnings. Property
 /// selection/autocomplete is left to Amplitude's formula field, which already knows the valid properties.
 ///
 /// IMPORTANT — why this is an Odin drawer, not a [CustomPropertyDrawer]:
@@ -679,7 +679,7 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
         _acDirty = true;
     }
 
-    // ── Inline in-game render ───────────────────────────────────────────────────
+    // ── Inline Rendered preview ────────────────────────────────────────────────
     void DrawInlineRender()
     {
         string text = GetRenderTextCached();
@@ -720,7 +720,7 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
             if (root == null || ei < 0 || pi < 0) return "";
             var res = DescriptorMapperPreview.ResolvePropertyEffect(root, ei, pi);
             var lines = new List<string>();
-            if (!string.IsNullOrEmpty(res.resolvedFormula)) lines.Add("In-game render:  " + res.resolvedFormula);
+            if (!string.IsNullOrEmpty(res.rendered)) lines.Add("Rendered:  " + res.rendered);
             if (res.warnings != null) foreach (var w in res.warnings) lines.Add("⚠ " + w);
             return string.Join("\n", lines);
         }
@@ -941,7 +941,7 @@ public class PropertyEffectDrawer : PropertyDrawer
 
             var res = DescriptorMapperPreview.ResolvePropertyEffect(target, ei, pi);
             var lines = new List<string>();
-            if (!string.IsNullOrEmpty(res.resolvedFormula)) lines.Add("In-game render:  " + res.resolvedFormula);
+            if (!string.IsNullOrEmpty(res.rendered)) lines.Add("Rendered:  " + res.rendered);
             if (res.warnings != null) foreach (var w in res.warnings) lines.Add("⚠ " + w);
             return string.Join("\n", lines);
         }

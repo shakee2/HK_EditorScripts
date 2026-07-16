@@ -206,7 +206,7 @@ On **UIMapper** (Title, Description, facet titles) and **DescriptorMapper** (`Lo
 
 ### Editing descriptor effects (formula field)
 
-Intellisense for the **formula** box on each Descriptor **Effect** row: type `Source.`, `Target.`, or `World.` and get an autocomplete list of valid property names, instead of guessing/checking against the docs. Also adds an **In-game render** preview below the row (shows how the effect resolves in a tooltip) when **Tooltip Preview** is on.
+Intellisense for the **formula** box on each Descriptor **Effect** row: type `Source.`, `Target.`, or `World.` and get an autocomplete list of valid property names, instead of guessing/checking against the docs. Also adds a **Rendered** preview below the row (the same substituted tooltip line as the header Tooltip Breakdown Preview) when **Tooltip Preview** is on.
 
 **Inputs (while the suggestion list is open):**
 
@@ -215,7 +215,7 @@ Intellisense for the **formula** box on each Descriptor **Effect** row: type `So
 | **↑** / **↓** (Arrow Keys)| Move selection. |
 | **→** (Arrow Key), or **Ctrl+E** / **Ctrl+D** | Accept the highlighted suggestion. |
 
-**Limits:** Autocomplete requires Odin. The in-game render preview is suppressed when **Tooltip Preview** is off.
+**Limits:** Autocomplete requires Odin. The Rendered preview is suppressed when **Tooltip Preview** is off.
 
 ---
 

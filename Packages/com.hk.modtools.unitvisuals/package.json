@@ -1,0 +1,19 @@
+{
+  "name": "com.hk.modtools.unitvisuals",
+  "version": "0.1.0",
+  "displayName": "HK Mod Tools - Unit Visuals",
+  "description": "Step-based wizard for custom unit visuals: auto tier-detection, FBX prep, mesh baking, fragment authoring, and validation. Experimental — not yet tagged for release.",
+  "unity": "2021.3",
+  "type": "library",
+  "dependencies": {
+    "com.hk.modtools.shared": "1.0.0"
+  },
+  "keywords": [
+    "humankind",
+    "editor",
+    "modding"
+  ],
+  "author": {
+    "name": "shakee"
+  }
+}
