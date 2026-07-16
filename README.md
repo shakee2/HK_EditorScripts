@@ -2,47 +2,68 @@
 
 Unity Editor tools for Humankind modding — database editing, custom unit visuals, compatibility patching, and diagnostics.
 
+**One repo, several UPM packages.** Each tool area ships as its own package under [`Packages/`](Packages/),
+so you install only what you want — they all share one small foundation package:
+
+| Package | What it is |
+|---|---|
+| **`com.hk.modtools.shared`** | Foundation mounts (vanilla database + translations). **Install this first — everything below depends on it.** |
+| **`com.hk.modtools.core`** | The main toolset: Database Browser, Tech Tree viewer/editor, Descriptor Property Browser, Asset Explorer, inline localization, PropertyEffect autocomplete + tooltip preview, diagnostics, build window, debug probes. |
+| **`com.hk.modtools.compatpatcher`** | The mod Compatibility Patcher (experimental). |
+| **`com.hk.modtools.unitvisuals`** | The custom-unit-visual pipeline wizard (experimental). |
+
 ## Requirements
 
 - Unity 2021.3+
 - Humankind Mod Tools installation
-- Referenced as a UPM package (git URL or local `file:` reference) in a Humankind modding project
+- Installed as UPM packages (git URL or local `file:` reference) in a Humankind modding project
 
-## Installing as a UPM Package
+## Installing as UPM packages
 
 1. In your modding project, open **Window → Package Manager**.
 2. Click the **+** button (top-left) → **Add package from git URL...**
-3. Paste:
+3. **First**, install the shared foundation:
    ```
-   https://github.com/shakee2/HK_EditorScripts.git#1.0.2
+   https://github.com/shakee2/HK_EditorScripts.git?path=Packages/com.hk.modtools.shared#com.hk.modtools.shared/1.1.0
    ```
-   (swap `1.0.2` for whichever [tag](https://github.com/shakee2/HK_EditorScripts/tags) you want — always pin
-   to a tag rather than a branch name, so your project doesn't silently change behavior on a future push.)
-4. Click **Add**. Unity clones/checks out that tag and compiles the package's editor scripts; menu items
+4. Then add whichever tool packages you want the same way, e.g.:
+   ```
+   https://github.com/shakee2/HK_EditorScripts.git?path=Packages/com.hk.modtools.core#com.hk.modtools.core/1.1.0
+   ```
+   (Release tags are per package — `<package-name>/<version>` — see the
+   [tags list](https://github.com/shakee2/HK_EditorScripts/tags). Always pin to a tag rather than a branch
+   name, so your project doesn't silently change behavior on a future push.)
+5. Click **Add**. Unity clones/checks out that tag and compiles the package's editor scripts; menu items
    appear under `Tools/shakee's Tools/...` after the next domain reload.
 
-To get a later release, repeat step 2–4 with the new tag (or use the built-in
-[Update Checker](#update-checker) — `Tools/shakee's Tools/Check For Updates` — which does this for you and
-also prompts automatically every couple of weeks). Editing the `#<tag>` suffix directly in
-`Packages/manifest.json` and letting Unity notice the change works too, but going through the Package
-Manager UI (or the Update Checker) is more deterministic about when the re-resolve actually happens.
+Installing a tool package **without** shared fails with a clear *"com.hk.modtools.shared cannot be found"*
+message (UPM doesn't auto-fetch git dependencies) — just do step 3 and retry.
 
-If you're developing this package itself (not just consuming it), reference it with a local path instead —
-`"com.shakee.hk-editorscripts": "file:../relative/path/to/HK_EditorScripts"` in `manifest.json` — so edits
-are picked up live without needing a tag. The Update Checker no-ops in that case since there's nothing
-meaningful to compare a local checkout against.
+To get a later release, repeat with the new tag (or use the built-in
+[Update Checker](#update-checker) — `Tools/shakee's Tools/Check For Updates` — which checks every installed
+HK ModTools package and does this for you, plus prompts automatically every couple of weeks).
 
-## Folder Layout
+If you're developing this repo itself (not just consuming it), reference the packages with local paths
+instead — e.g. `"com.hk.modtools.core": "file:../relative/path/to/HK_EditorScripts/Packages/com.hk.modtools.core"`
+in `manifest.json` — so edits are picked up live without needing a tag. The Update Checker skips
+locally-referenced packages since there's nothing meaningful to compare a checkout against.
 
-`Editor/` is split into subfolders by role — see [`Editor/EditorWindow-Dependencies.md`](Editor/EditorWindow-Dependencies.md) for the full per-file breakdown:
+> **Upgrading from the single-package install (`com.shakee.hk-editorscripts` ≤ 1.0.x):** remove the old
+> package in the Package Manager first, then install per-package as above — the old and new packages contain
+> the same scripts and would conflict.
 
-- **`Shared/`** — foundation mounts most other tools depend on.
-- **`Upgrades/`** — hooks that augment vanilla ModTools inspectors (inline localization, tooltip preview, diagnostics) rather than opening their own window.
-- **`ModTools/`** — standalone browsing/editing windows.
-- **`Debug/`** — standalone diagnostic probes.
-- **`UnitVisualWorkflow/`** — experimental custom-unit-visual pipeline, isolated so it can be excluded from release branches/tags.
-- **`CompatPatcher/`** — the Compatibility Patcher, isolated so it can be excluded until stable.
-- **`Editor/` root** — general package infrastructure not scoped to one domain.
+## Repo Layout
+
+Each package's `Editor/` holds its scripts; `com.hk.modtools.core` keeps the role-based subfolders — see
+[`EditorWindow-Dependencies.md`](EditorWindow-Dependencies.md) for the full per-file dependency breakdown:
+
+- **`shared`** (`com.hk.modtools.shared`) — foundation mounts most other tools depend on.
+- **`core/Editor/Upgrades/`** — hooks that augment vanilla ModTools inspectors (inline localization, tooltip preview, diagnostics) rather than opening their own window.
+- **`core/Editor/ModTools/`** — standalone browsing/editing windows.
+- **`core/Editor/Debug/`** — standalone diagnostic probes.
+- **`unitvisuals`** (`com.hk.modtools.unitvisuals`) — experimental custom-unit-visual pipeline; ships only when tagged.
+- **`compatpatcher`** (`com.hk.modtools.compatpatcher`) — the Compatibility Patcher; ships only when tagged.
+- **`core/Editor/` root** — general infrastructure not scoped to one domain (Update Checker, exporter).
 
 ## Tools Overview
 
@@ -92,17 +113,17 @@ meaningful to compare a local checkout against.
 | Tool | Menu | Description |
 |------|------|-------------|
 | **ModBuildWindow** | `Tools/shakee's Tools/Build And Deploy Mod` | Lightweight build + deploy to Community folder (alternative to Mod Editor) |
-| **ExportModEditorScriptsPackage** | `Tools/shakee's Tools/Export Mod Editor Scripts Package` | Export the core editor scripts + [`Docs/manual.md`](Docs/manual.md) as `ModEditorScripts.unitypackage` (see [Export package](#export-package-modeditorscriptsunitypackage) below) |
+| **ExportModEditorScriptsPackage** | `Tools/shakee's Tools/Export Mod Editor Scripts Package` | Export the core editor scripts + [`Docs/manual.md`](Packages/com.hk.modtools.core/Docs/manual.md) as `ModEditorScripts.unitypackage` (see [Export package](#export-package-modeditorscriptsunitypackage) below) |
 | **UpdateChecker** | `Tools/shakee's Tools/Check For Updates` | Checks the GitHub repo's tags for a newer version than what's currently resolved, and offers to update in place via the Package Manager (see [Update Checker](#update-checker) below) |
 
 #### Export package (`ModEditorScripts.unitypackage`)
 
-`ExportModEditorScriptsPackage.cs` ships **fourteen** `.cs` files, **`Docs/manual.md`** (user manual), and their `.meta` GUIDs. Everything else in this repo stays package-local and is **not** in the `.unitypackage`:
+`ExportModEditorScriptsPackage.cs` ships **fourteen** `.cs` files (two from the `shared` package, twelve from `core`), **`Docs/manual.md`** (user manual), and their `.meta` GUIDs. Everything else in this repo stays package-local and is **not** in the `.unitypackage`:
 
 | `.cs` file | Tool / role |
 |------------|-------------|
-| `Shared/VanillaDatabaseMount.cs` | Shared vanilla-database bundle mount (foundation for the browsers below) |
-| `Shared/ArchiveTranslations.cs` | Mod Editor translations bundle mount + project override read/write |
+| `shared: VanillaDatabaseMount.cs` | Shared vanilla-database bundle mount (foundation for the browsers below) |
+| `shared: ArchiveTranslations.cs` | Mod Editor translations bundle mount + project override read/write |
 | `ModTools/TechTreeData.cs` | Tech tree data layer |
 | `ModTools/TechTreeWindow.cs` | Tech tree viewer/editor window |
 | `ModTools/DatabaseBrowser.cs` | Database Browser window |
@@ -125,23 +146,23 @@ In the tables above, **📦** = included in `ModEditorScripts.unitypackage`.
 
 #### Update Checker
 
-`UpdateChecker.cs` runs a throttled background check (once every 2 weeks, plus on-demand via
-`Tools/shakee's Tools/Check For Updates` any time in between) against `github.com/shakee2/HK_EditorScripts`'s
-tags. Only
-does anything when the package is resolved via a git URL (`PackageSource.Git` — i.e. the consumer's
-`manifest.json` points at `https://github.com/shakee2/HK_EditorScripts.git#<tag>`, not a local `file:`
-reference); a local reference has nothing meaningful to compare against, so the check is skipped.
+`UpdateChecker.cs` (ships in `core`) runs a throttled background check (once every 2 weeks, plus on-demand
+via `Tools/shakee's Tools/Check For Updates` any time in between) against
+`github.com/shakee2/HK_EditorScripts`'s tags — covering **every installed `com.hk.modtools.*` package** at
+once. Only packages resolved via a git URL (`PackageSource.Git`) are checked; a local `file:` reference has
+nothing meaningful to compare against, so it's skipped.
 
-- Compares the highest semver-parseable tag on the repo against the currently-resolved package's
-  `version` (read via `PackageInfo.GetAllRegisteredPackages()`), not the manifest.json text — this is
-  what's actually checked out, so it can't drift from reality.
-- On finding a newer tag, shows a dialog with **Update** / **Later** / **Skip This Version**. Update
-  calls `Client.Add("<repo>.git#<tag>")` — the same call the Package Manager UI itself makes when you
-  paste a git URL — which rewrites the manifest dependency *and* triggers the actual git
-  fetch/checkout; no separate `git pull` step is needed, and Unity recompiles automatically once the
-  new files land.
-- "Skip This Version" is remembered per-tag (`EditorPrefs`) so the background check won't re-prompt for
-  a release you've deliberately deferred, but a newer tag after that will still prompt.
+- Release tags are per package (`<package-name>/<version>`, e.g. `com.hk.modtools.core/1.2.0`); each
+  installed package is compared against the highest tag carrying its own prefix, using the
+  currently-resolved package `version` (read via `PackageInfo.GetAllRegisteredPackages()`), not the
+  manifest.json text — this is what's actually checked out, so it can't drift from reality.
+- On finding newer tags, shows one dialog listing them with **Update (All)** / **Later** /
+  **Skip These Versions**. Update calls `Client.Add("<repo>.git?path=Packages/<name>#<tag>")` per package
+  (sequentially — the Client API handles one request at a time) — the same call the Package Manager UI
+  itself makes, which rewrites the manifest dependency *and* triggers the actual git fetch/checkout; no
+  separate `git pull` step is needed, and Unity recompiles automatically once the new files land.
+- "Skip This Version" is remembered per package + tag (`EditorPrefs`) so the background check won't
+  re-prompt for a release you've deliberately deferred, but a newer tag after that will still prompt.
 
 ### Debug & Diagnostics
 | Tool | Menu | Description |

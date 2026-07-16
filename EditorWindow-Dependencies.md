@@ -2,6 +2,13 @@
 
 This document maps each user-facing editor window (`EditorWindow` subclass or `[MenuItem]` entry that opens one) to its `.cs` file dependencies for export/packaging purposes.
 
+> **Path note (multi-package layout):** paths below are written relative to the old single-package
+> `Editor/` root. Since the UPM split, `Shared/*` lives in `Packages/com.hk.modtools.shared/Editor/`,
+> `CompatPatcher/*` in `Packages/com.hk.modtools.compatpatcher/Editor/`, `UnitVisualWorkflow/*` in
+> `Packages/com.hk.modtools.unitvisuals/Editor/`, and everything else (`ModTools/`, `Upgrades/`,
+> `Debug/`, root infra) in `Packages/com.hk.modtools.core/Editor/`. The dependency *groups* documented
+> here are exactly the package boundaries.
+
 ## Folder layout
 
 Files are grouped into subfolders under `Editor/` by role:

@@ -5,19 +5,21 @@ each thing and only inlines facts that are always true. When a section here and 
 the linked doc wins — fix this file. Verify any file/line ref before relying on it; the code moves.
 
 ## What this is
-- A standalone **UPM package** (`com.shakee.hk-editorscripts`, editor-only asmdef `HK.EditorScripts`,
-  no runtime references) providing Unity Editor tools for Humankind modding: database editing, custom
-  unit visuals, compatibility patching, and diagnostics.
+- A **monorepo of UPM packages** under `Packages/` (editor-only asmdefs, no runtime references)
+  providing Unity Editor tools for Humankind modding: `com.hk.modtools.shared` (foundation mounts —
+  everything else depends on it), `com.hk.modtools.core` (the main toolset), `com.hk.modtools.compatpatcher`,
+  and `com.hk.modtools.unitvisuals`. Consumers install each via the git-URL subfolder form
+  (`…HK_EditorScripts.git?path=Packages/<name>#<name>/<version>`); release tags are per package.
 - Consumed by the mod project **`…/HK_Re-Imagined`** as a local package via its `Packages/manifest.json`
   (that repo is where you playtest/validate; this repo just holds the tool source). See that repo's
   `AGENTS.md` for the broader modding context (decompiled game source location, Mod Tools editor DLLs,
   reset-gate gotchas, etc.) — don't duplicate that here.
-- `Editor/` is split into role-based subfolders: `Shared/` (foundation mounts), `Upgrades/` (inspector-hook
-  tools that augment vanilla ModTools windows), `ModTools/` (standalone browsing/editing windows), `Debug/`
-  (standalone diagnostic probes), `UnitVisualWorkflow/` (experimental, kept isolated for release exclusion),
-  and `CompatPatcher/` (also isolated, excluded until stable). General package infra with no single domain
-  (`ExportModEditorScriptsPackage.cs`) stays flat at `Editor/` root. No `.sln`/`.csproj` committed; validated
-  by opening the consuming project in the Unity editor and letting it assemble the scripts.
+- Package layout: `shared/Editor/` holds the two foundation mounts; `core/Editor/` keeps the role-based
+  subfolders (`Upgrades/` inspector hooks, `ModTools/` standalone windows, `Debug/` probes, plus general
+  infra like `ExportModEditorScriptsPackage.cs` and `UpdateChecker.cs` flat at its root);
+  `compatpatcher/Editor/` and `unitvisuals/Editor/` are their own packages (experimental — they simply
+  don't get tagged until stable). No `.sln`/`.csproj` committed; validated by opening the consuming
+  project in the Unity editor and letting it assemble the scripts.
 - Two git repos are involved in most changes: this one (tool source) and `HK_Re-Imagined` (where the
   package is referenced/tested). Check status in both before committing.
 
@@ -25,43 +27,43 @@ the linked doc wins — fix this file. Verify any file/line ref before relying o
 | Doc | What it is |
 |---|---|
 | [README.md](README.md) | Full tool inventory: every window/class, its menu path, and a one-line description. **Check here first** for "what does X do". |
-| [Editor/EditorWindow-Dependencies.md](Editor/EditorWindow-Dependencies.md) | Maps each editor window to its local `.cs` dependencies — needed before exporting/packaging a subset of tools (see `ExportModEditorScriptsPackage.cs`). Update when adding a file with cross-dependencies. |
-| [Docs/CompatPatcher.md](Docs/CompatPatcher.md) | Design spec for the mod Compatibility Patcher. |
-| [Docs/CompatPatcher-LoadValidations.md](Docs/CompatPatcher-LoadValidations.md) | Which load-time validations can reset a retail game (only ~15; the rest are DEBUG-only) — read before changing `LoadOrderValidator.cs`. |
-| [Docs/CompatPatcher-Manual.md](Docs/CompatPatcher-Manual.md) | User manual for the Compatibility Patcher. |
-| [Docs/manual.md](Docs/manual.md) | User manual for the **export package** scripts (`ModEditorScripts.unitypackage`). |
+| [EditorWindow-Dependencies.md](EditorWindow-Dependencies.md) | Maps each editor window to its local `.cs` dependencies — needed before exporting/packaging a subset of tools (see `ExportModEditorScriptsPackage.cs`). Update when adding a file with cross-dependencies. |
+| [CompatPatcher.md](Packages/com.hk.modtools.compatpatcher/Docs/CompatPatcher.md) | Design spec for the mod Compatibility Patcher. |
+| [CompatPatcher-LoadValidations.md](Packages/com.hk.modtools.compatpatcher/Docs/CompatPatcher-LoadValidations.md) | Which load-time validations can reset a retail game (only ~15; the rest are DEBUG-only) — read before changing `LoadOrderValidator.cs`. |
+| [CompatPatcher-Manual.md](Packages/com.hk.modtools.compatpatcher/Docs/CompatPatcher-Manual.md) | User manual for the Compatibility Patcher. |
+| [manual.md](Packages/com.hk.modtools.core/Docs/manual.md) | User manual for the **export package** scripts (`ModEditorScripts.unitypackage`). |
 
-## Layout (`Editor/`)
-All menu items live under **`Tools/…`**. Grouped by physical subfolder (role-based, not feature-based —
-see the README table for feature-area descriptions):
+## Layout (per package)
+All menu items live under **`Tools/…`**. Grouped by package / physical subfolder (role-based, not
+feature-based — see the README table for feature-area descriptions):
 
-- **`Shared/`** — foundation mounts nearly everything else depends on: `VanillaDatabaseMount.cs`,
+- **`shared` package** — foundation mounts nearly everything else depends on: `VanillaDatabaseMount.cs`,
   `ArchiveTranslations.cs`.
-- **`Upgrades/`** — hooks that augment vanilla ModTools inspectors rather than open their own window:
+- **`core/Editor/Upgrades/`** — hooks that augment vanilla ModTools inspectors rather than open their own window:
   `DescriptorMapperPreview.cs`, `DescriptorMapperGenerator.cs`, `PropertyEffectDrawer.cs`,
   `InspectorAnalysisPanel.cs`, `InspectorDiagnostics.cs`, `LocalizationKeyDrawer.cs`,
   `InlineLocalizationEditor.cs`.
-- **`ModTools/`** — standalone browsing/editing windows: `DatabaseBrowser.cs`,
+- **`core/Editor/ModTools/`** — standalone browsing/editing windows: `DatabaseBrowser.cs`,
   `DescriptorPropertyIndex.cs`, `TechTreeWindow.cs`, `TechTreeData.cs`, `AssetExplorer.cs`,
   `ModBuildWindow.cs`.
-- **`Debug/`** — standalone diagnostic probes: `Probing.cs`, `FormulaProbe.cs`,
+- **`core/Editor/Debug/`** — standalone diagnostic probes: `Probing.cs`, `FormulaProbe.cs`,
   `FormulaAutocompleteProbe.cs`, `NarrativeEventDiagnostic.cs`, `GuidLookup.cs`, `BundleContentProbe.cs`.
-- **`UnitVisualWorkflow/`** (experimental, isolated for release exclusion — see Conventions below):
+- **`unitvisuals` package** (experimental — ships only when tagged; see Conventions below):
   `UnitVisualWorkflow.cs` (wizard), `PawnFragmentAuthor.cs`, `Tier1MeshBaker.cs`,
   `BoneStructureMatcher.cs`, `FbxPrepPipeline.cs`, `ModelRequirementsChecker.cs`,
   `AnimationManagerContent.cs`, `VanillaAssetResolver.cs`.
-- **`CompatPatcher/`** (isolated, excluded from releases until stable): `CompatPatcherWindow.cs` (main
+- **`compatpatcher` package** (experimental — ships only when tagged): `CompatPatcherWindow.cs` (main
   window), `CompatCompareWindow.cs`, `ModReader.cs`, `ConflictAnalyzer.cs`, `UnityYaml.cs`,
   `PatchBuilder.cs`, `Sidecar.cs`, `LoadOrderValidator.cs`, `DiffGui.cs`.
-- **`Editor/` root** — general package infra, not scoped to one domain: `ExportModEditorScriptsPackage.cs`,
-  `UpdateChecker.cs` (checks GitHub tags for a newer release than what's resolved via UPM and offers to
-  update in place via `Client.Add`; no-ops when consumed via a local `file:` reference).
+- **`core/Editor/` root** — general package infra, not scoped to one domain: `ExportModEditorScriptsPackage.cs`,
+  `UpdateChecker.cs` (checks the repo's per-package tags — `<package-name>/<version>` — for every installed
+  `com.hk.modtools.*` git package and offers to update each in place via `Client.Add` with the `?path=` URL; skips packages consumed via a local `file:` reference).
 
 ## Conventions & gotchas
 - **No local `.cs` dependencies unless noted** — most tools are standalone; the ones that share
   infrastructure lean on `VanillaDatabaseMount.cs` (shared vanilla bundle mount) and
   `ArchiveTranslations.cs` (shared localization mount). Check
-  `Editor/EditorWindow-Dependencies.md` before assuming a file is self-contained, and update it when
+  `EditorWindow-Dependencies.md` (repo root) before assuming a file is self-contained, and update it when
   you add a new cross-file dependency.
 - **`ExportModEditorScriptsPackage.cs`** exports a fixed subset of files as a `.unitypackage` for
   sharing outside this repo (full list: [README.md § Export package](README.md#export-package-modeditorscriptsunitypackage)).
@@ -93,12 +95,11 @@ see the README table for feature-area descriptions):
   Localization Editing](README.md#inline-localization-editing). **UIMapper auto-generation** is still
   out of scope (`DescriptorMapperGenerator` only pairs Descriptor → DescriptorMapper).
 - **New untracked files still need README/dependency-doc entries** — reconcile `README.md` and
-  `Editor/EditorWindow-Dependencies.md` when adding inspector hooks or cross-file dependencies.
-- **`UnitVisualWorkflow/` and `CompatPatcher/` are physically isolated so they can be excluded wholesale
-  from a release branch/tag** (e.g. `git rm -r Editor/UnitVisualWorkflow`) while they're experimental/kinked
-  — confirmed nothing outside either folder references their types, so removing either doesn't break the
-  rest of the package. Keep new WIP/unstable tools in their own subfolder for the same reason rather than
-  dropping them flat into `Editor/` root or an existing stable folder.
+  `EditorWindow-Dependencies.md` (repo root) when adding inspector hooks or cross-file dependencies.
+- **`unitvisuals` and `compatpatcher` are their own packages** precisely because they're experimental —
+  they ship only when someone tags them (`com.hk.modtools.compatpatcher/x.y.z`), so no release-branch
+  surgery is needed. Confirmed nothing outside either package references its types. Keep new WIP/unstable
+  tools in their own package for the same reason rather than dropping them into `core`.
 
 ## Commit conventions
 - Commit/PR only when asked; branch off `main` first. Co-author trailer per repo norm.

@@ -1,0 +1,11 @@
+{
+  "name": "com.hk.modtools.shared",
+  "version": "1.1.0",
+  "displayName": "HK ModTools - Shared",
+  "description": "Shared foundation for the HK ModTools packages: vanilla database bundle mount and Mod Editor translations mount. Install this FIRST - the other HK ModTools packages depend on it.",
+  "unity": "2021.3",
+  "type": "library",
+  "license": "MIT",
+  "keywords": [ "humankind", "editor", "modding" ],
+  "author": { "name": "shakee" }
+}

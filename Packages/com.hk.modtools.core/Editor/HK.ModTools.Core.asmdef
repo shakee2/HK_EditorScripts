@@ -1,7 +1,9 @@
 {
-  "name": "HK.EditorScripts",
+  "name": "HK.ModTools.Core",
   "rootNamespace": "",
-  "references": [],
+  "references": [
+    "HK.ModTools.Shared"
+  ],
   "includePlatforms": [
     "Editor"
   ],

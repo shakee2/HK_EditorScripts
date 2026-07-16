@@ -29,10 +29,19 @@ public static class ExportModEditorScriptsPackage
 {
     const string MENU = "Tools/shakee's Tools/Export Mod Editor Scripts Package";
 
+    // MULTI-PACKAGE: the shared mounts now live in their own package (com.hk.modtools.shared); the
+    // rest of the export set is in core. Names are "<Editor-relative path>" resolved per package.
+    const string CorePackage = "Packages/com.hk.modtools.core";
+    const string SharedPackage = "Packages/com.hk.modtools.shared";
+
+    static readonly string[] SHARED_SCRIPT_NAMES =
+    {
+        "VanillaDatabaseMount.cs",
+        "ArchiveTranslations.cs",
+    };
+
     static readonly string[] SCRIPT_NAMES =
     {
-        "Shared/VanillaDatabaseMount.cs",
-        "Shared/ArchiveTranslations.cs",
         "ModTools/TechTreeData.cs",
         "ModTools/TechTreeWindow.cs",
         "ModTools/DatabaseBrowser.cs",
@@ -49,10 +58,9 @@ public static class ExportModEditorScriptsPackage
 
     const string ManualRelative = "Docs/manual.md";
 
-    static string ResolveEditorScript(string fileName)
+    static string ResolveEditorScript(string packageRoot, string fileName)
     {
-        const string package = "Packages/com.shakee.hk-editorscripts/Editor";
-        string packagePath = $"{package}/{fileName}";
+        string packagePath = $"{packageRoot}/Editor/{fileName}";
         if (File.Exists(packagePath)) return packagePath;
         string assetsPath = $"Assets/Scripts/Editor/{fileName}";
         if (File.Exists(assetsPath)) return assetsPath;
@@ -61,8 +69,7 @@ public static class ExportModEditorScriptsPackage
 
     static string ResolveManual()
     {
-        const string package = "Packages/com.shakee.hk-editorscripts";
-        string packagePath = $"{package}/{ManualRelative}";
+        string packagePath = $"{CorePackage}/{ManualRelative}";
         if (File.Exists(packagePath)) return packagePath;
         string assetsPath = $"Assets/Scripts/{ManualRelative}";
         if (File.Exists(assetsPath)) return assetsPath;
@@ -72,7 +79,8 @@ public static class ExportModEditorScriptsPackage
     [MenuItem(MENU, false, 200)]
     static void Export()
     {
-        var scripts = SCRIPT_NAMES.Select(ResolveEditorScript).ToList();
+        var scripts = SHARED_SCRIPT_NAMES.Select(n => ResolveEditorScript(SharedPackage, n))
+            .Concat(SCRIPT_NAMES.Select(n => ResolveEditorScript(CorePackage, n))).ToList();
         scripts.Add(ResolveManual());
         var missing = scripts.Where(p => !File.Exists(p)).ToList();
         if (missing.Count > 0)
