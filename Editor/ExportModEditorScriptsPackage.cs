@@ -14,7 +14,7 @@ using UnityEngine;
 ///   - ModTools/DatabaseBrowser.cs         (generic database browser window)
 ///   - ModTools/DescriptorPropertyIndex.cs (descriptor property browser window)
 ///   - ModTools/AssetExplorer.cs           (browse + import any vanilla asset bundle)
-///   - Upgrades/DescriptorMapperPreview.cs (in-game tooltip render preview — PropertyEffectDrawer dep)
+///   - Upgrades/DescriptorMapperPreview.cs (tooltip breakdown preview — PropertyEffectDrawer dep)
 ///   - Upgrades/PropertyEffectDrawer.cs    (PropertyEffect Odin drawer: formula autocomplete + inline render)
 ///   - Upgrades/InspectorAnalysisPanel.cs  (header host: mapper toolbar + preview + diagnostics)
 ///   - Upgrades/InspectorDiagnostics.cs    (diagnostics engine + aggregate loc foldout; DatabaseBrowser badges)
