@@ -73,6 +73,23 @@ see the README table for feature-area descriptions):
 - **Validate in the consuming project, not here** — this repo has no compile target of its own; after
   editing, open/reload `HK_Re-Imagined` (or whichever project references this package) to confirm the
   scripts compile and the window(s) behave correctly.
+- **Hardening new code that shares Mod Tools resources** — our peer is Amplitude's Mod Editor, not
+  other tools in this package. Before attaching to a scarce slot Mod Tools already uses, harden like
+  `ArchiveTranslations` / `VanillaDatabaseMount` / the Upgrades drawers already do:
+  - **Adopt before mount** — if a provider (or equivalent) is already attached under the same name/path,
+    claim it; never double-`LoadFromFile` the same bundle (broken null-content provider → NREs
+    Amplifiers' `BuildLocalizationCache` and poisons every inspector).
+  - **Unregister side effects** — whoever mounts/stages must scrub orphans and broken providers on
+    failure; use `try/finally` for scratch stages. Leaving garbage in Amplitude's global tables breaks
+    *their* windows, not just ours.
+  - **Layer, don't seize** — inspector hooks use `CallNextDrawer` / `finishedDefaultHeaderGUI` so
+    Odin/Amplitude keep ownership of the body; we attach UI below, we don't replace their editor.
+  - **Invalidate on the other author's writes** — Mod Editor Localization Window (and similar) can
+    mutate the same project overrides; subscribe to `projectChanged` / undo (or bump a generation)
+    instead of assuming exclusive authorship.
+  - **Do not `AssetDatabase.Refresh()` mid-repair** — that forces Mod Tools cache rebuilds against
+    half-registered state. Deep war stories live in the `Shared/` mount comments; keep this checklist
+    short and point there rather than duplicating them.
 - **Inspector IMGUI: avoid Repaint-driven work** — hooks like `Editor.finishedDefaultHeaderGUI` and
   Odin drawers run on *every* inspector GUI pass (Layout **and** Repaint, including mouse-move). Calling
   expensive logic there (`AssetDatabase.FindAssets`, `BuildKeyToTextDict`, full validation passes,

@@ -966,6 +966,7 @@ static class FormulaSuggestionOverlaySession
     static int s_layoutFrame = -1;
     static int s_blockControlId;
     static int s_blockerQueuedFrame = -1;
+    static int s_lastRenewFrame = -1; // last frame Publish() was called by the owning drawer; staleness == owner is gone
 
     internal static bool Active { get; private set; }
     internal static Rect BlockRect { get; private set; }
@@ -1033,6 +1034,7 @@ static class FormulaSuggestionOverlaySession
         s_header = header ?? "";
         s_items.Clear();
         s_items.AddRange(items);
+        s_lastRenewFrame = Time.frameCount;
     }
 
     internal static void ClearIfOwner(string ownerPath, OverlayKind kind)
@@ -1078,8 +1080,26 @@ static class FormulaSuggestionOverlaySession
             if (s_layoutFrame != Time.frameCount)
             {
                 s_layoutFrame = Time.frameCount;
+                // The owning drawer renews the session via Publish() every Layout pass it's still
+                // drawn in. If its Editor/PropertyTree was torn down (element switched, window
+                // closed, ...) nobody calls Publish/ClearIfOwner again and the session would
+                // otherwise stay Active forever with a stale OwnerPath — close it once nobody has
+                // renewed it for more than a frame.
+                if (Time.frameCount - s_lastRenewFrame > 1) { Clear(); return; }
                 s_blockControlId = GUIUtility.GetControlID(s_BlockHint, FocusType.Passive, BlockRect);
             }
+            return;
+        }
+
+        // Any stray MouseMove in this inspector — not just over the popup itself — has to be
+        // eaten while the popup is open. Left unblocked, it reaches whatever's underneath (the
+        // rest of the property tree) and can trigger background hover/focus-follow behaviour
+        // there (e.g. an embedded scroll view jumping back to the top). Unlike click/scroll,
+        // this one isn't scoped to BlockRect.Contains — the popup owns pointer motion everywhere
+        // in the inspector until it closes.
+        if (e.type == EventType.MouseMove)
+        {
+            e.Use();
             return;
         }
 

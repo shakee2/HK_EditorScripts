@@ -72,6 +72,7 @@ public class DatabaseBrowser : EditorWindow
     float _leftWidth = 340f;
     bool  _draggingSplit;
     Vector2 _listScroll, _inspScroll;
+    int _hoverIndex = -1; // last row that had the mouse hover highlight; only repaint when this changes
     const float ROW_H = 18f;
     const float SPLIT_W = 5f;
     const float TYPE_COL_W = 160f;
@@ -240,7 +241,6 @@ public class DatabaseBrowser : EditorWindow
     void OnGUI()
     {
         InitStyles();
-        if (Event.current.type == EventType.MouseMove) Repaint();
 
         EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
         EditorGUI.BeginChangeCheck();
@@ -328,6 +328,7 @@ public class DatabaseBrowser : EditorWindow
         int first = Mathf.Max(0, Mathf.FloorToInt(_listScroll.y / ROW_H));
         int last  = Mathf.Min(_display.Count, Mathf.CeilToInt((_listScroll.y + listArea.height) / ROW_H) + 1);
         Vector2 mouse = Event.current.mousePosition;
+        int hoveredThisPass = -1;
 
         string toggleType = null;
         for (int i = first; i < last; i++)
@@ -362,6 +363,7 @@ public class DatabaseBrowser : EditorWindow
 
             bool selected = e.obj == _selected;
             bool hover = row.Contains(mouse);
+            if (hover) hoveredThisPass = i;
             if (selected)          EditorGUI.DrawRect(row, ROW_SEL);
             else if (hover)        EditorGUI.DrawRect(row, ROW_HOVER);
             else if ((i & 1) == 1) EditorGUI.DrawRect(row, ROW_ALT);
@@ -395,6 +397,12 @@ public class DatabaseBrowser : EditorWindow
             EditorGUI.DrawRect(new Rect(0, row.yMax - 1, contentW, 1), ROW_LINE);
         }
         GUI.EndScrollView();
+
+        // Only force a repaint when the hovered row actually changes (crossing a row boundary,
+        // or entering/leaving the list) — not on every single MouseMove pixel, which is what
+        // wantsMouseMove-driven Repaint() used to do for the whole window.
+        if (Event.current.type == EventType.MouseMove && hoveredThisPass != _hoverIndex) Repaint();
+        _hoverIndex = hoveredThisPass;
 
         if (toggleType != null)
         {
