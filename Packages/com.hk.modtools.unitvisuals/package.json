@@ -7,7 +7,7 @@
   "type": "library",
   "license": "MIT",
   "dependencies": {
-    "com.hk.modtools.shared": "1.0.0"
+    "com.hk.modtools.shared": "1.0.1"
   },
   "keywords": [
     "humankind",
