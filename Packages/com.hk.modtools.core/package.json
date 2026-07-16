@@ -5,6 +5,7 @@
   "description": "Database browsing/editing, tech tree viewer, asset explorer, build/export tooling, inspector upgrades (inline localization, tooltip preview, formula autocomplete, diagnostics), and debug probes for Humankind modding.",
   "unity": "2021.3",
   "type": "library",
+  "license": "MIT",
   "dependencies": {
     "com.hk.modtools.shared": "1.0.0"
   },
