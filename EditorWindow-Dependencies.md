@@ -6,7 +6,7 @@ This document maps each user-facing editor window (`EditorWindow` subclass or `[
 
 As of v1.1.0, files are split across four independent UPM packages under `Packages/`, each with its own `Editor/` folder:
 
-- **`Packages/com.hk.modtools.shared/Editor/`** — foundation mounts nearly everything else depends on (`VanillaDatabaseMount.cs`, `ArchiveTranslations.cs`), plus cross-package infra (`UpdateChecker.cs`, `ToolsOptionsWindow.cs`). No dependencies of its own.
+- **`Packages/com.hk.modtools.shared/Editor/`** — foundation mounts nearly everything else depends on (`VanillaDatabaseMount.cs`, `ArchiveTranslations.cs`), plus cross-package infra (`UpdateChecker.cs`, `ToolsOptionsWindow.cs`, `ChangelogPopupWindow.cs`). No dependencies of its own.
 - **`Packages/com.hk.modtools.core/Editor/`** — depends on `shared`. Subfolders by role:
   - `ModTools/` — standalone browsing/editing windows (database browser, tech tree, asset explorer, build window).
   - `Upgrades/` — hooks that augment vanilla ModTools inspectors with new capabilities (inline localization, tooltip preview, diagnostics, etc.) rather than opening their own window.
@@ -139,7 +139,8 @@ These are static methods with `[MenuItem]` entries, not `EditorWindow` subclasse
 | `Tools/shakee's Tools/Debug/Find Bad NarrativeEventDefinition` | `Debug/NarrativeEventDiagnostic.cs` (`core`), `VanillaDatabaseMount.cs` (`shared`) | Static class with menu items |
 | `Tools/shakee's Tools/Debug/Compat Patcher/Clear Vanilla Validation Cache` | `CompatPatcher/LoadOrderValidator.cs` (`compatpatcher`) | Static menu item |
 | `Tools/shakee's Tools/Check For Updates` | `UpdateChecker.cs` (`shared`) | Static menu item |
-| `Tools/shakee's Tools/Options` | `ToolsOptionsWindow.cs` (`shared`) | Package Install/Update/Remove catalog + settings |
+| `Tools/shakee's Tools/Options` | `ToolsOptionsWindow.cs` (`shared`) | Package Install/Update/Remove catalog + settings; opens `ChangelogPopupWindow` for What's new |
+| *(utility)* What's new | `ChangelogPopupWindow.cs` (`shared`) | Per-version foldout cards; opened from Options when an update is available |
 
 ---
 

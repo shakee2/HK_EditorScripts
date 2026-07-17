@@ -163,13 +163,19 @@ The translations bundle (`Assets/Editor/Resources/Translations/…`) ships with 
 
 `com.hk.modtools.shared` ships two pieces of cross-package infrastructure:
 
-- **`UpdateChecker.cs`** — discovers the Options catalog from namespaced git tags (`<shortname>/<semver>` — tagged packages only; experimentals stay invisible until tagged), fetches release tags, and drives `Client.Add` / `Client.Remove`. Available updates appear on the package cards — no popup dialog.
+- **`UpdateChecker.cs`** — discovers the Options catalog from namespaced git tags (`<shortname>/<semver>` — tagged packages only; experimentals stay invisible until tagged), fetches release tags, and drives `Client.Add` / `Client.Remove`. Available updates appear on the package cards — no "update available" dialog.
   - **Check All** (Options) / **Check For Updates** (menu) / opening Options / background auto-check: fetch the repo tag list once and refresh the cards in place.
   - **Update** / **Update All**: `Client.Add("<repo>.git?path=Packages/<full-package-name>#<shortname>/<version>")`. Display name / description / author / dependencies are read from each package's own `package.json` — `PackageInfo` when installed, or the manifest fetched at the target's latest tag when not. Deps that are missing (except Shared bootstrap — add Shared via Package Manager first) or below the declared minimum are bumped first; resumes across domain reload.
+  - **What's new**: when a newer tag exists, Options shows a button that opens `ChangelogPopupWindow` — one collapsible card per version between installed and latest (from that package's `CHANGELOG.md` at the latest tag; lazy-fetched).
   - Each installed git package has its own auto-check on/off + interval (default: every 14 days).
   - Local `file:` references are listed (Remove available) but skipped for update comparison.
   - Not-installed cards show a **Requires:** line built from the fetched manifest's declared dependencies. New tagged packages appear automatically after the next tag-list refresh — no catalog edit in Shared.
-- **`ToolsOptionsWindow.cs`** (`Tools/shakee's Tools/Options`) — **Packages** cards with Install / Update (only when a newer tag exists) / Remove, **Check All** + **Update All**, auto-check controls, **Keybinds**, and Formula Autocomplete toggles when Core is installed.
+- **`ToolsOptionsWindow.cs`** (`Tools/shakee's Tools/Options`) — **Packages** cards with Install / Update (only when a newer tag exists) / What's new / Remove, **Check All** + **Update All**, auto-check controls, **Keybinds**, and Formula Autocomplete toggles when Core is installed.
+- **`ChangelogPopupWindow.cs`** — utility popup for release notes (per-version foldout cards).
+
+### Changelog convention
+
+Each releasable package ships `Packages/<full-package-name>/CHANGELOG.md` (Keep a Changelog). Headings must be `## [x.y.z]` (optional ` - YYYY-MM-DD`) matching the namespaced tag `shortname/x.y.z`. Put in-progress notes under `## [Unreleased]` and move them into a version section when you cut the tag. The Options What's new UI fetches this file from the latest tag and aggregates every intervening version into one popup.
 
 ## Inline Localization Editing
 

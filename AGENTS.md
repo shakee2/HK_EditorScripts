@@ -44,10 +44,11 @@ package's `Editor/` (see the README table for feature-area descriptions):
 
 - **`Packages/com.hk.modtools.shared/Editor/`** — `VanillaDatabaseMount.cs`, `ArchiveTranslations.cs`
   (foundation mounts nearly everything else depends on), `UpdateChecker.cs` (multi-package git-tag
-  update checker + Install/Remove APIs; Options catalog auto-discovered from namespaced tags),
-  `ToolsOptionsWindow.cs` (aggregate settings window — package
-  Install/Update/Remove catalog, auto-update toggles/intervals per installed git package + a link
-  into Unity's Shortcuts manager). No dependencies of its own.
+  update checker + Install/Remove APIs; Options catalog auto-discovered from namespaced tags;
+  fetches per-package `CHANGELOG.md` for What's new), `ToolsOptionsWindow.cs` (aggregate settings —
+  package Install/Update/Remove catalog, auto-update toggles/intervals per installed git package + a
+  link into Unity's Shortcuts manager), `ChangelogPopupWindow.cs` (utility popup: collapsible
+  per-version cards for the update range). No dependencies of its own.
 - **`Packages/com.hk.modtools.core/Editor/`** — depends on `shared`.
   - `ModTools/` — standalone browsing/editing windows: `DatabaseBrowser.cs`,
     `DescriptorPropertyIndex.cs`, `TechTreeWindow.cs`, `TechTreeData.cs`, `AssetExplorer.cs`,
@@ -82,6 +83,11 @@ package's `Editor/` (see the README table for feature-area descriptions):
   `<shortname>/<semver>` (e.g. `shared/1.0.0`, `core/1.1.0`) — `<shortname>` is the package name with
   the `com.hk.modtools.` prefix stripped.
 - Install URL form: `https://github.com/shakee2/HK_EditorScripts.git?path=Packages/<full-package-name>#<shortname>/<version>`.
+- **Changelog:** each tagged package keeps `Packages/<full-package-name>/CHANGELOG.md` (Keep a
+  Changelog + semver headings `## [x.y.z]` matching the tag). Ship it in the tagged commit — Options
+  "What's new" fetches the file at the latest tag and shows every version between the installed
+  release and that latest (newest first, one foldout card each). Untagged / experimental packages
+  don't need one until first release.
 - `compatpatcher`/`unitvisuals` have no tags yet — don't cut one until the tool is actually ready to
   release; there's no release-branch stripping step to remember anymore, so an untagged package is
   simply invisible to anyone pinning a tag.

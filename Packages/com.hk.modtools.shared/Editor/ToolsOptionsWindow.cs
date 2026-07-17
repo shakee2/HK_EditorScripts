@@ -199,12 +199,18 @@ namespace HK.ModTools.Shared
                         if (GUILayout.Button("Check for Update", GUILayout.Width(130)))
                             UpdateChecker.CheckAllNow(manual: true);
 
-                        if (row.CanUpdate)
+                        if (row.UpdateAvailable)
                         {
-                            string updateLabel = row.UpdateAvailable
-                                ? $"Update to v{row.LatestVersion}"
-                                : "Update dependencies";
+                            if (GUILayout.Button("What's new", GUILayout.Width(90)))
+                                ChangelogPopupWindow.Open(row);
+
+                            string updateLabel = $"Update to v{row.LatestVersion}";
                             if (GUILayout.Button(updateLabel, GUILayout.Width(150)))
+                                UpdateChecker.UpdateToLatest(row.Catalog.Name);
+                        }
+                        else if (row.CanUpdate)
+                        {
+                            if (GUILayout.Button("Update dependencies", GUILayout.Width(150)))
                                 UpdateChecker.UpdateToLatest(row.Catalog.Name);
                         }
                     }

@@ -13,9 +13,10 @@ namespace HK.ModTools.Shared
     /// <summary>
     /// Fetches GitHub release tags, auto-discovers the Options catalog from namespaced tags
     /// (<c>&lt;shortName&gt;/&lt;semver&gt;</c> — tagged packages only), and drives Install / Update /
-    /// Remove. Available updates show on the package cards themselves — no "update available" popup.
-    /// Background checks (per-package auto-update interval) and the "Check For Updates" menu item
-    /// only refresh tag data so the cards can update in place.
+    /// Remove. Available updates show on the package cards themselves — no "update available" dialog.
+    /// A per-update "What's new" button opens a changelog popup (versions between installed and
+    /// latest, from each package's <c>CHANGELOG.md</c>). Background checks and the menu item only
+    /// refresh tag data so the cards can update in place.
     ///
     /// Install / Update call <c>Client.Add</c> with a pinned tag URL; Remove calls <c>Client.Remove</c>.
     /// Local <c>file:</c> references are listed (Remove available) but have nothing meaningful to
@@ -136,6 +137,22 @@ namespace HK.ModTools.Shared
             public bool CanUpdate => UpdateAvailable || DependencyBumpNeeded;
         }
 
+        /// <summary>One <c>## [x.y.z]</c> section from a package <c>CHANGELOG.md</c>.</summary>
+        internal sealed class ChangelogVersionBlock
+        {
+            public Version Version;
+            public string Date;   // optional trailing date from the heading, may be null/empty
+            public string Body;   // markdown under the heading (trimmed); may be a placeholder
+        }
+
+        /// <summary>Changelog slice for "What's new" — versions <c>(installed, latest]</c>, newest first.</summary>
+        internal sealed class ChangelogRange
+        {
+            public bool Loading;
+            public string Error;
+            public List<ChangelogVersionBlock> Blocks = new List<ChangelogVersionBlock>();
+        }
+
         static bool startupCheckDone;
         static bool tagsFetchInFlight;
         static bool packageOpInFlight;
@@ -156,6 +173,11 @@ namespace HK.ModTools.Shared
 
         static readonly Dictionary<string, ManifestFields> manifestByTag = new Dictionary<string, ManifestFields>(StringComparer.Ordinal);
         static readonly HashSet<string> manifestFetchInFlight = new HashSet<string>(StringComparer.Ordinal);
+
+        // Full CHANGELOG.md text keyed by the tag it was loaded from (e.g. "shared/1.0.1").
+        // Empty string means "fetched but missing/empty" so we don't re-hit the network each open.
+        static readonly Dictionary<string, string> changelogByTag = new Dictionary<string, string>(StringComparer.Ordinal);
+        static readonly HashSet<string> changelogFetchInFlight = new HashSet<string>(StringComparer.Ordinal);
 
         /// <summary>True while a Client.Add / Client.Remove is running — Options disables action buttons.</summary>
         internal static bool IsBusy => packageOpInFlight || tagsFetchInFlight;
@@ -1050,6 +1072,205 @@ namespace HK.ModTools.Shared
             if (string.IsNullOrEmpty(version)) return null;
             string trimmed = version.TrimStart('v', 'V');
             return Version.TryParse(trimmed, out Version v) ? v : null;
+        }
+
+        // ── Changelog (per-package CHANGELOG.md, Keep a Changelog) ───────────────────────────────
+
+        static string ChangelogUrl(string packageName, string tag) =>
+            $"{RepoRawBase}/{tag}/Packages/{packageName}/CHANGELOG.md";
+
+        /// <summary>
+        /// Ensures the CHANGELOG at <paramref name="row"/>'s latest tag is cached, then notifies
+        /// listeners. Prefer calling from the What's new popup (lazy) rather than on every Options open.
+        /// </summary>
+        internal static void EnsureChangelogForUpdate(PackageRow row, Action onReady = null)
+        {
+            if (row == null || !row.HasRelease)
+            {
+                onReady?.Invoke();
+                return;
+            }
+
+            string tag = row.LatestTag;
+            if (changelogByTag.ContainsKey(tag))
+            {
+                onReady?.Invoke();
+                return;
+            }
+
+            // Local/file installs: read from disk so authors can preview notes before tagging.
+            if (row.IsInstalled && !string.IsNullOrEmpty(row.Installed.resolvedPath))
+            {
+                string localPath = System.IO.Path.Combine(row.Installed.resolvedPath, "CHANGELOG.md");
+                if (System.IO.File.Exists(localPath))
+                {
+                    try
+                    {
+                        changelogByTag[tag] = System.IO.File.ReadAllText(localPath);
+                        NotifyStateChanged();
+                        onReady?.Invoke();
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning($"[UpdateChecker] Could not read local CHANGELOG.md: {ex.Message}");
+                    }
+                }
+            }
+
+            FetchChangelog(row.Catalog.Name, tag, onReady);
+        }
+
+        static void FetchChangelog(string packageName, string tag, Action onDone = null)
+        {
+            if (changelogByTag.ContainsKey(tag))
+            {
+                onDone?.Invoke();
+                return;
+            }
+            if (!changelogFetchInFlight.Add(tag))
+            {
+                if (onDone != null)
+                {
+                    void Wait()
+                    {
+                        if (changelogFetchInFlight.Contains(tag)) return;
+                        EditorApplication.update -= Wait;
+                        onDone();
+                    }
+                    EditorApplication.update += Wait;
+                }
+                return;
+            }
+
+            var request = UnityWebRequest.Get(ChangelogUrl(packageName, tag));
+            request.SetRequestHeader("User-Agent", "HK-ModTools-UpdateChecker");
+            var op = request.SendWebRequest();
+
+            void Poll()
+            {
+                if (!op.isDone) return;
+                EditorApplication.update -= Poll;
+                using (request)
+                {
+                    changelogFetchInFlight.Remove(tag);
+                    if (request.result == UnityWebRequest.Result.Success)
+                        changelogByTag[tag] = request.downloadHandler.text ?? "";
+                    else
+                        changelogByTag[tag] = ""; // remember failure; popup shows per-version placeholders
+                }
+                NotifyStateChanged();
+                onDone?.Invoke();
+            }
+            EditorApplication.update += Poll;
+        }
+
+        /// <summary>
+        /// Builds the What's new range for <paramref name="row"/>: every tagged version
+        /// <c>&gt; installed</c> and <c>&lt;= latest</c>, newest first. Uses the CHANGELOG at the
+        /// latest tag when present; versions without a matching <c>## [x.y.z]</c> section get a
+        /// placeholder body. Returns <see cref="ChangelogRange.Loading"/> while the fetch is in flight.
+        /// </summary>
+        internal static ChangelogRange GetChangelogRange(PackageRow row)
+        {
+            var result = new ChangelogRange();
+            if (row == null || !row.HasRelease || !row.IsInstalled)
+            {
+                result.Error = "No update range to show.";
+                return result;
+            }
+
+            Version installed = ParseSemVer(row.Installed.version);
+            if (installed == null)
+            {
+                result.Error = "Could not parse the installed version.";
+                return result;
+            }
+
+            if (!changelogByTag.ContainsKey(row.LatestTag))
+            {
+                if (!changelogFetchInFlight.Contains(row.LatestTag))
+                    EnsureChangelogForUpdate(row);
+                result.Loading = true;
+                return result;
+            }
+
+            string raw = changelogByTag[row.LatestTag];
+            var byVersion = ParseChangelogSections(raw);
+            var versions = ListVersionsInRange(row.Catalog.ShortName, installed, row.LatestVersion);
+
+            foreach (var v in versions)
+            {
+                if (byVersion.TryGetValue(v, out var block))
+                    result.Blocks.Add(block);
+                else
+                    result.Blocks.Add(new ChangelogVersionBlock
+                    {
+                        Version = v,
+                        Body = "(No changelog entry for this version.)"
+                    });
+            }
+
+            if (result.Blocks.Count == 0)
+                result.Error = "No versions between the installed release and the latest tag.";
+
+            return result;
+        }
+
+        /// <summary>Tagged versions for <paramref name="shortName"/> with <c>after &lt; v &lt;= through</c>, newest first.</summary>
+        internal static List<Version> ListVersionsInRange(string shortName, Version afterExclusive, Version throughInclusive)
+        {
+            var list = new List<Version>();
+            if (cachedTagNames == null || string.IsNullOrEmpty(shortName) || afterExclusive == null || throughInclusive == null)
+                return list;
+
+            string prefix = shortName + "/";
+            foreach (string tag in cachedTagNames)
+            {
+                if (!tag.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                Version v = ParseSemVer(tag.Substring(prefix.Length));
+                if (v == null) continue;
+                if (v > afterExclusive && v <= throughInclusive)
+                    list.Add(v);
+            }
+
+            list.Sort((a, b) => b.CompareTo(a));
+            return list;
+        }
+
+        /// <summary>
+        /// Parses Keep a Changelog <c>## [x.y.z]</c> / <c>## x.y.z</c> sections. Ignores
+        /// <c>## [Unreleased]</c>. Keyed by parsed <see cref="Version"/>.
+        /// </summary>
+        static Dictionary<Version, ChangelogVersionBlock> ParseChangelogSections(string markdown)
+        {
+            var map = new Dictionary<Version, ChangelogVersionBlock>();
+            if (string.IsNullOrEmpty(markdown)) return map;
+
+            // ## [1.0.1] - 2026-07-16   or   ## 1.0.1   or   ## [v1.0.1]
+            var heading = new Regex(
+                @"^##\s+\[?v?(\d+\.\d+\.\d+(?:\.\d+)?)\]?(?:\s*[-–—]\s*(.+))?\s*$",
+                RegexOptions.Multiline);
+
+            var matches = heading.Matches(markdown);
+            for (int i = 0; i < matches.Count; i++)
+            {
+                Match m = matches[i];
+                Version v = ParseSemVer(m.Groups[1].Value);
+                if (v == null) continue;
+
+                int bodyStart = m.Index + m.Length;
+                int bodyEnd = i + 1 < matches.Count ? matches[i + 1].Index : markdown.Length;
+                string body = markdown.Substring(bodyStart, bodyEnd - bodyStart).Trim();
+
+                map[v] = new ChangelogVersionBlock
+                {
+                    Version = v,
+                    Date = m.Groups[2].Success ? m.Groups[2].Value.Trim() : null,
+                    Body = string.IsNullOrEmpty(body) ? "(No notes for this version.)" : body
+                };
+            }
+            return map;
         }
 
         // ── Per-package prefs (read by ToolsOptionsWindow too) ──────────────────────────────────
