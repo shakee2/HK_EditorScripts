@@ -18,6 +18,9 @@ As of v1.1.0 this repo is a **multi-package monorepo**: instead of one big packa
 | [`com.hk.modtools.core`](Packages/com.hk.modtools.core) | Database Browser, Descriptor Property Browser, Tech Tree viewer/editor, Asset Explorer, Build/Deploy window, inspector upgrades (inline localization, tooltip preview, formula autocomplete, diagnostics), debug probes | `shared` | Released |
 | [`com.hk.modtools.compatpatcher`](Packages/com.hk.modtools.compatpatcher) | Compatibility Patcher | `shared` | Experimental — not yet tagged |
 | [`com.hk.modtools.unitvisuals`](Packages/com.hk.modtools.unitvisuals) | Custom unit visual pipeline wizard | `shared` | Experimental — not yet tagged |
+| [`com.hk.modtools.orphanfinder`](Packages/com.hk.modtools.orphanfinder) | Orphan Resource Finder — find unreferenced images / 3D resources in a Resources folder and delete them to shrink the mod | `shared`¹ | Released |
+
+¹ `orphanfinder` is fully self-contained (uses none of `shared`'s types); it declares `shared` only so it joins the shared Update Checker / Options ecosystem. Drop the dependency if you want it truly standalone.
 
 **`shared` is a real, required dependency of every other package here** — install it first. Unlike Debug/UnitVisualWorkflow being release-branch-stripped in the old single-package layout, `compatpatcher`/`unitvisuals` simply ship no tag until they're stable enough to release; installing them today means pointing at `main` (unpinned, changes underneath you) — not recommended outside active development on those tools.
 
@@ -146,6 +149,11 @@ The translations bundle (`Assets/Editor/Resources/Translations/…`) ships with 
 | **ModelRequirementsChecker** | — | End-to-end validator for baked fragments against runtime requirements |
 | **AnimationManagerContent** | — | Populates AnimationManagerContent registry from baked fragments |
 | **VanillaAssetResolver** | — | Load any asset by GUID from vanilla bundles (used by the wizard) |
+
+### `com.hk.modtools.orphanfinder`
+| Tool | Menu | Description |
+|------|------|-------------|
+| **OrphanResourceFinderWindow** | `Tools/shakee's Tools/Orphan Resource Finder` | Scan a Resources folder for **unreferenced** assets and delete them (to Trash) to shrink the built mod. **Kind** selector: *Images* (default), *3D / meshes*, or *All*. Auto-calibrates Amplitude's `{a,b,c,d}` GUID encoding each scan; in 3D/All mode it also reads Unity hex references and JSON `int[4]` GUID arrays (model registries) so baked meshes/skeletons/atlases referenced from JSON aren't false-flagged. Reference detection is intentionally generous (a false "referenced" only wastes space; a false "orphan" could delete a used asset) — review before deleting, and keep version control. |
 
 ## Update Checker + Options Window
 

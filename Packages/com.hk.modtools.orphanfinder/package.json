@@ -1,0 +1,20 @@
+{
+  "name": "com.hk.modtools.orphanfinder",
+  "version": "1.0.0",
+  "displayName": "HK Mod Tools - Orphan Resource Finder",
+  "description": "Finds unreferenced (\"orphaned\") IMAGE assets in a Humankind mod's Resources folder so you can review and delete them, shrinking the published package. Auto-calibrates Amplitude's {a,b,c,d} GUID encoding each scan. Standalone (declares com.hk.modtools.shared only to join the shared Update Checker / Options ecosystem; uses none of its types).",
+  "unity": "2021.3",
+  "type": "library",
+  "license": "MIT",
+  "dependencies": {
+    "com.hk.modtools.shared": "1.0.1"
+  },
+  "keywords": [
+    "humankind",
+    "editor",
+    "modding"
+  ],
+  "author": {
+    "name": "shakee"
+  }
+}

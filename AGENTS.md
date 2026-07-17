@@ -68,6 +68,12 @@ package's `Editor/` (see the README table for feature-area descriptions):
   depends on `shared` only: `UnitVisualWorkflow.cs` (wizard), `PawnFragmentAuthor.cs`,
   `Tier1MeshBaker.cs`, `BoneStructureMatcher.cs`, `FbxPrepPipeline.cs`, `ModelRequirementsChecker.cs`,
   `AnimationManagerContent.cs`, `VanillaAssetResolver.cs`.
+- **`Packages/com.hk.modtools.orphanfinder/Editor/`** — `OrphanResourceFinderWindow.cs`, a standalone
+  Resources-folder orphan scanner (images or 3D). **Uses NONE of `shared`'s types** — its asmdef
+  (`HK.ModTools.OrphanFinder`) has an empty `references` list; it declares `shared` in `package.json`
+  purely to participate in the shared Update Checker / Options ecosystem. The one package here whose
+  `package.json` dependency is not backed by an asmdef reference — intentional, don't "fix" it by adding
+  the reference (there's no code coupling).
 
 ## Tag scheme
 - Each package versions **independently** via namespaced tags on this one repo:
