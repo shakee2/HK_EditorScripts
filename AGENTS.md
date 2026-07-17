@@ -44,8 +44,10 @@ package's `Editor/` (see the README table for feature-area descriptions):
 
 - **`Packages/com.hk.modtools.shared/Editor/`** — `VanillaDatabaseMount.cs`, `ArchiveTranslations.cs`
   (foundation mounts nearly everything else depends on), `UpdateChecker.cs` (multi-package git-tag
-  update checker), `ToolsOptionsWindow.cs` (aggregate settings window — auto-update toggles/intervals
-  per installed package + a link into Unity's Shortcuts manager). No dependencies of its own.
+  update checker + Install/Remove APIs; Options catalog auto-discovered from namespaced tags),
+  `ToolsOptionsWindow.cs` (aggregate settings window — package
+  Install/Update/Remove catalog, auto-update toggles/intervals per installed git package + a link
+  into Unity's Shortcuts manager). No dependencies of its own.
 - **`Packages/com.hk.modtools.core/Editor/`** — depends on `shared`.
   - `ModTools/` — standalone browsing/editing windows: `DatabaseBrowser.cs`,
     `DescriptorPropertyIndex.cs`, `TechTreeWindow.cs`, `TechTreeData.cs`, `AssetExplorer.cs`,

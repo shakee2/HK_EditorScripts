@@ -139,7 +139,7 @@ These are static methods with `[MenuItem]` entries, not `EditorWindow` subclasse
 | `Tools/shakee's Tools/Debug/Find Bad NarrativeEventDefinition` | `Debug/NarrativeEventDiagnostic.cs` (`core`), `VanillaDatabaseMount.cs` (`shared`) | Static class with menu items |
 | `Tools/shakee's Tools/Debug/Compat Patcher/Clear Vanilla Validation Cache` | `CompatPatcher/LoadOrderValidator.cs` (`compatpatcher`) | Static menu item |
 | `Tools/shakee's Tools/Check For Updates` | `UpdateChecker.cs` (`shared`) | Static menu item |
-| `Tools/shakee's Tools/Options` | `ToolsOptionsWindow.cs` (`shared`) | Opens the aggregate settings window |
+| `Tools/shakee's Tools/Options` | `ToolsOptionsWindow.cs` (`shared`) | Package Install/Update/Remove catalog + settings |
 
 ---
 
