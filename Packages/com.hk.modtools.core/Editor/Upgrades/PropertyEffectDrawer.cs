@@ -454,6 +454,9 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
 
     // Shared token→completions: after "Source."/"Target." suggest that type's properties; a bare word
     // suggests the keywords. Fills outItems with (replaceStart, replaceLen, completion).
+    // Replace spans the whole identifier (chars after the caret too) so confirming mid-name does not
+    // leave a trailing fragment. The already-present identifier is kept and pinned at the top so
+    // default confirm is a no-op (avoids accidental swaps like Food ↔ Fame).
     static void ComputeSuggestions(string text, int caret, Type src, Type tgt, List<(int, int, string)> outItems)
     {
         if (string.IsNullOrEmpty(text)) return;
@@ -463,6 +466,11 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
         string token = text.Substring(start, caret - start);
         if (token.Length == 0) return;
 
+        // Trailing identifier after caret (no '.') — included in replace length, not in the filter prefix.
+        int end = caret;
+        while (end < text.Length && (char.IsLetterOrDigit(text[end]) || text[end] == '_')) end++;
+        string after = text.Substring(caret, end - caret);
+
         int dot = token.LastIndexOf('.');
         IEnumerable<string> matches; int rs, rl;
         if (dot >= 0)
@@ -470,16 +478,26 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
             string keyword = token.Substring(0, dot), partial = token.Substring(dot + 1);
             Type ty = keyword == "Source" ? src : keyword == "Target" ? tgt : null;
             if (ty == null) return;   // World/Variable not resolved in v1
-            rs = start + dot + 1; rl = partial.Length;
+            string existing = partial + after;
+            rs = start + dot + 1; rl = existing.Length;
             matches = RpnTextCompiler.GetTypeFieldLabels(ty)?
-                .Where(n => !string.IsNullOrEmpty(n) && n.IndexOf(partial, StringComparison.OrdinalIgnoreCase) >= 0 && n != partial)
-                .OrderBy(n => n.StartsWith(partial, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .Where(n => !string.IsNullOrEmpty(n)
+                    && n.IndexOf(partial, StringComparison.OrdinalIgnoreCase) >= 0)
+                .OrderBy(n => !string.IsNullOrEmpty(existing)
+                    && n.Equals(existing, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(n => n.StartsWith(partial, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
                 .ThenBy(n => n, StringComparer.OrdinalIgnoreCase) ?? Enumerable.Empty<string>();
         }
         else
         {
-            rs = start; rl = token.Length;
-            matches = new[] { "Source.", "Target.", "World." }.Where(k => k.StartsWith(token, StringComparison.OrdinalIgnoreCase) && k != token);
+            // Keyword completions include a trailing '.'; absorb one if already typed after the caret.
+            if (end < text.Length && text[end] == '.') end++;
+            string existing = text.Substring(start, end - start);
+            rs = start; rl = existing.Length;
+            matches = new[] { "Source.", "Target.", "World." }
+                .Where(k => k.StartsWith(token, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(k => k.Equals(existing, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(k => k, StringComparer.OrdinalIgnoreCase);
         }
         foreach (var m in matches) outItems.Add((rs, rl, m));
     }
