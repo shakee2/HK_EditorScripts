@@ -53,17 +53,19 @@ namespace HK.CompatPatcher
                 return mod;
             }
 
+            var dupes = new DuplicateTally();
             foreach (var (logicalPath, text) in EnumerateDatabaseAssets(path))
             {
                 mod.FileCount++;
                 mod.RawFiles[logicalPath] = text;
                 foreach (var el in ParseElements(text, logicalPath))
-                    AddElement(mod, el);
+                    AddElement(mod, el, dupes);
             }
+            dupes.Flush(mod.Name);
             return mod;
         }
 
-        static void AddElement(HkMod mod, HkElement el)
+        static void AddElement(HkMod mod, HkElement el, DuplicateTally tally = null)
         {
             if (el == null || string.IsNullOrEmpty(el.Name)) return;
             if (mod.Elements.TryGetValue(el.Key, out var prior))
@@ -75,27 +77,44 @@ namespace HK.CompatPatcher
                 {
                     // Same collection path: FetchAllSubAssets can yield the *identical* Unity object twice —
                     // that is noise, keep last silently. Two distinct objects (or YAML docs) with the same
-                    // name in one .asset are real in-file duplicates (even if byte-identical) — warn.
+                    // name in one .asset are real in-file duplicates (even if byte-identical) — count them.
                     bool sameLiveInstance = prior.LiveObject != null && el.LiveObject != null
                                             && ReferenceEquals(prior.LiveObject, el.LiveObject);
                     if (!sameLiveInstance)
-                    {
-                        string typeName = ElementTypeLabel(el, prior);
-                        Debug.LogWarning(
-                            $"[CompatPatcher] Duplicate element '{el.Name}' (type {typeName}, collection {el.TypeHint}) "
-                            + $"in mod '{mod.Name}': defined twice in '{el.SourcePath}' — keeping latter.");
-                    }
+                        tally?.Note(el, prior, samePath: true);
                     mod.Elements[el.Key] = el;
                     return;
                 }
-                {
-                    string typeName = ElementTypeLabel(el, prior);
-                    Debug.LogWarning(
-                        $"[CompatPatcher] Duplicate element '{el.Name}' (type {typeName}, collection {el.TypeHint}) "
-                        + $"in mod '{mod.Name}': '{prior.SourcePath}' vs '{el.SourcePath}' — keeping latter.");
-                }
+                tally?.Note(el, prior, samePath: false);
             }
             mod.Elements[el.Key] = el;
+        }
+
+        /// <summary>
+        /// Batches duplicate-element notes so Compare load does not spam thousands of
+        /// <see cref="Debug.LogWarning"/> stack traces (freezes the editor for minutes).
+        /// </summary>
+        sealed class DuplicateTally
+        {
+            public int Count;
+            public string FirstMessage;
+
+            public void Note(HkElement el, HkElement prior, bool samePath)
+            {
+                Count++;
+                if (FirstMessage != null) return;
+                string typeName = ElementTypeLabel(el, prior);
+                FirstMessage = samePath
+                    ? $"'{el.Name}' (type {typeName}, collection {el.TypeHint}) defined twice in '{el.SourcePath}'"
+                    : $"'{el.Name}' (type {typeName}, collection {el.TypeHint}): '{prior.SourcePath}' vs '{el.SourcePath}'";
+            }
+
+            public void Flush(string modName)
+            {
+                if (Count <= 0) return;
+                string extra = Count > 1 ? $" (+{Count - 1} more)" : "";
+                Debug.LogWarning($"[CompatPatcher] Duplicate elements in mod '{modName}': {FirstMessage}{extra} — keeping latter each time.");
+            }
         }
 
         static string ElementTypeLabel(HkElement el, HkElement prior)
@@ -111,6 +130,7 @@ namespace HK.CompatPatcher
             var provider = CompatBundleMounts.EnsureMounted(path, mod.Name);
             var descriptors = new List<AssetDescriptor>();
             provider.AddAllAssetDescriptors(descriptors, AssetProviderOption.AskForType);
+            var dupes = new DuplicateTally();
             foreach (var d in descriptors.OrderBy(x => x.FileName ?? "", StringComparer.Ordinal)
                                          .ThenBy(x => x.FilePath ?? "", StringComparer.Ordinal))
             {
@@ -128,7 +148,7 @@ namespace HK.CompatPatcher
                 mod.FileCount++;
 
                 var collectionEl = LiveElementBuilder.Build(collection, logicalPath, stem);
-                if (collectionEl != null) AddElement(mod, collectionEl);
+                if (collectionEl != null) AddElement(mod, collectionEl, dupes);
 
                 var elements = provider.FetchAllSubAssetsOfType(d.Guid, elementType)
                     .Where(o => o is IDatatableElement && o != collection)
@@ -138,9 +158,10 @@ namespace HK.CompatPatcher
                 {
                     if (element is IDatatableElement de) de.Initialize();
                     var el = LiveElementBuilder.Build(element, logicalPath, stem);
-                    if (el != null) AddElement(mod, el);
+                    if (el != null) AddElement(mod, el, dupes);
                 }
             }
+            dupes.Flush(mod.Name);
         }
 
         // ---- source enumeration -------------------------------------------

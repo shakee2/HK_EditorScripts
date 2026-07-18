@@ -34,7 +34,8 @@ namespace HK.CompatPatcher
         // EffectId first so SimulationEventEffect rows (Type|TargetID|refs) do not collide on
         // a shared TargetID=Empire alone.
         static readonly string[] EntryKeys =
-            { "EffectId", "serializableElementName", "TargetProperty", "Name", "TargetID", "Type", "Descriptor" };
+            { "EffectId", "serializableElementName", "TargetProperty", "Name", "TargetID", "Type", "Descriptor",
+              "SimulationEvent" };
 
         public const string Missing = "∅"; // ∅
 
@@ -186,6 +187,12 @@ namespace HK.CompatPatcher
             }
             else if (v is List<object> list && list.Any(x => x is Dictionary<string, object>))
             {
+                // Pure DatatableElementReference[] → sorted name-set leaf + per-name paths for Mass Change.
+                // Guarantees set inequality (15 vs 17 Improvements, Artemis present/absent) is never lost
+                // to empty-map / index alignment accidents.
+                if (TryFlattenRefNameList(list, path, outp))
+                    return;
+
                 var keys = new string[list.Count];
                 bool allIndex = true;
                 for (int i = 0; i < list.Count; i++)
@@ -210,6 +217,33 @@ namespace HK.CompatPatcher
 
         static bool IsEmptyCanon(string c) =>
             string.IsNullOrEmpty(c) || c == "null" || c == "[]" || c == "{}";
+
+        /// <summary>
+        /// True when every dict entry is a DatatableElementReference-shaped
+        /// <c>{ serializableElementName: … }</c> (optionally empty name).
+        /// </summary>
+        static bool TryFlattenRefNameList(List<object> list, string path, Dictionary<string, string> outp)
+        {
+            if (list == null || list.Count == 0) return false;
+            var names = new List<string>();
+            foreach (var x in list)
+            {
+                if (x is not Dictionary<string, object> d) return false;
+                // Allow only serializableElementName (ignore Type-only noise).
+                if (d.Count == 0) return false;
+                if (!d.TryGetValue("serializableElementName", out var nv)) return false;
+                foreach (var k in d.Keys)
+                    if (k != "serializableElementName") return false;
+                string n = nv?.ToString() ?? "";
+                if (n.Length > 0) names.Add(n);
+            }
+            // Stable set leaf — order-independent so reshuffles aren't false conflicts.
+            names.Sort(StringComparer.Ordinal);
+            outp[path] = names.Count == 0 ? "[]" : string.Join("|", names);
+            foreach (var n in names)
+                outp[path + "[serializableElementName=" + n + "].serializableElementName"] = n;
+            return true;
+        }
 
         // "simple" = holds no nested structure worth pinpointing: a scalar, or a dict/list whose values
         // are all scalars (e.g. {RawValue: N} entries of an RPN ConstantStack).
@@ -257,30 +291,75 @@ namespace HK.CompatPatcher
 
         static string FormatRpn(Dictionary<string, object> d)
         {
-            string rpn = d.TryGetValue("RpnOperationStack", out var r) ? r?.ToString() : null;
-            var consts = d.TryGetValue("ConstantStack", out var c) ? c as List<object> : null;
+            var ops = ParseRpnOps(d.TryGetValue("RpnOperationStack", out var r) ? r : null);
+            var consts = ParseFixedConstants(d.TryGetValue("ConstantStack", out var c) ? c : null);
             var propNames = (d.TryGetValue("PropertyLocalName", out var p1) ? p1
                           : d.TryGetValue("PropertyLocalNameStack", out var p2) ? p2 : null) as List<object>;
-            var varNames = d.TryGetValue("VariableNameStack", out var vn) ? vn as List<object> : null;
-            return BuildFormula(rpn, consts, propNames, varNames);
+            // Bare RpnDefinition uses DefinedVariables for GetVar names; nested RPNs use VariableNameStack.
+            var varNames = (d.TryGetValue("VariableNameStack", out var vn) ? vn : null) as List<object>;
+            if ((varNames == null || varNames.Count == 0)
+                && d.TryGetValue("DefinedVariables", out var dv) && dv is List<object> defined)
+                varNames = defined;
+            return BuildFormula(ops, consts, propNames, varNames);
         }
 
-        static string BuildFormula(string rpnHex, List<object> constants, List<object> propNames, List<object> varNames)
+        /// <summary>
+        /// Live SerializedObject yields <c>Operation[]</c> as a list of int strings; YAML often stores
+        /// a hex blob. Either must produce the same op stream for StructDiff.
+        /// </summary>
+        static List<int> ParseRpnOps(object rpn)
+        {
+            var ops = new List<int>();
+            if (rpn == null) return ops;
+            if (rpn is List<object> list)
+            {
+                foreach (var x in list)
+                {
+                    if (x == null) continue;
+                    if (x is Dictionary<string, object>) continue; // unexpected
+                    if (int.TryParse(x.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
+                        ops.Add(n);
+                }
+                return ops;
+            }
+            string hex = rpn.ToString();
+            if (string.IsNullOrEmpty(hex) || hex.StartsWith("System.", StringComparison.Ordinal)) return ops;
+            // 4-byte little-endian ints in hex; op fits in first byte of each word
+            for (int i = 0; i + 2 <= hex.Length; i += 8)
+                if (int.TryParse(hex.Substring(i, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var b))
+                    ops.Add(b);
+            return ops;
+        }
+
+        /// <summary>
+        /// FixedPoint[] from live SO is list of {RawValue:n}; YAML may use the same or bare ints.
+        /// </summary>
+        static List<long> ParseFixedConstants(object constants)
         {
             var consts = new List<long>();
-            if (constants != null)
-                foreach (var c in constants)
-                    if (c is Dictionary<string, object> cd && cd.TryGetValue("RawValue", out var rv)
-                        && long.TryParse(rv?.ToString(), out var raw)) consts.Add(raw);
+            if (constants is not List<object> list) return consts;
+            foreach (var c in list)
+            {
+                if (c is Dictionary<string, object> cd)
+                {
+                    if (cd.TryGetValue("RawValue", out var rv)
+                        && long.TryParse(rv?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var raw))
+                        consts.Add(raw);
+                    continue;
+                }
+                if (long.TryParse(c?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var bare))
+                    consts.Add(bare);
+            }
+            return consts;
+        }
+
+        static string BuildFormula(List<int> ops, List<long> consts, List<object> propNames, List<object> varNames)
+        {
             var pn = ToStrList(propNames);
             var vn = ToStrList(varNames);
 
-            if (string.IsNullOrEmpty(rpnHex))
+            if (ops == null || ops.Count == 0)
                 return consts.Count > 0 ? string.Join(", ", consts.Select(FmtFixed)) : "0";
-
-            var ops = new List<int>();
-            for (int i = 0; i + 2 <= rpnHex.Length; i += 8) // 4-byte little-endian ints; op fits in first byte
-                if (int.TryParse(rpnHex.Substring(i, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var b)) ops.Add(b);
 
             var stack = new Stack<string>(); int ci = 0, pi = 0, vi = 0;
             foreach (var op in ops)
@@ -289,7 +368,7 @@ namespace HK.CompatPatcher
                 else if (op == 8) stack.Push("Target." + Nm(pn, pi++));
                 else if (op == 9) stack.Push("Source." + Nm(pn, pi++));
                 else if (op == 12) stack.Push("World." + Nm(pn, pi++));
-                else if (op == 11) stack.Push(Nm(vn, vi++));
+                else if (op == 11) stack.Push("Variable." + Nm(vn, vi++));
                 else
                 {
                     if (stack.Count < 2) { stack.Push("?"); continue; }

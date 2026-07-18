@@ -58,12 +58,17 @@ lists (e.g. RPN `ConstantStack`) compare as one unit. Diffs are **N-way** — ev
 
 ### Odin-node payloads
 Some types keep lists in the Odin `SerializationNodes` stream (e.g. `TechnologyDefinition.SimulationEventEffects`,
-`NarrativeEventDefinition` → `Choices[].NarrativeEventEffects`). For **live** objects (assetbundle mounts)
+`NarrativeEventDefinition` → `Choices[].NarrativeEventEffects`, `LootTableDefinition` → `Loots[].SimulationEventEffects`).
+For **live** objects (assetbundle mounts)
 `LiveElementBuilder` reflection-merges those effect trees into the element body before Flatten, so Amount /
 enums / refs StructDiff like ordinary fields. YAML-only sources without a live object still fall back to
 element-reference-set diff (`RefDiff`) for **opaque** Odin shells (body is only `serializationData`).
 Hybrid assets that also have Unity-serialized gameplay fields (many units) StructDiff those fields —
-a single `ProductionCost` swap is **CHANGED/PICK**, not `MISSING refs[OldName]`.
+a single `ProductionCost` swap is **CHANGED/PICK**, not `MISSING refs[OldName]`. Pure Odin elements
+(`DeedDefinition`, …) get a reflection body merge so Trigger/Evaluator/etc. StructDiff instead of
+falling back to an empty RefDiff (false Identical). `DatatableElementReference[]` lists Flatten as a
+sorted name-set (plus per-name paths for Mass Change). `FixedPoint` uses `RawValue` via
+`FindPropertyRelative` — `NextVisible` skips the internal field and used to drop StartingIndustry etc.
 
 ## Workflow
 

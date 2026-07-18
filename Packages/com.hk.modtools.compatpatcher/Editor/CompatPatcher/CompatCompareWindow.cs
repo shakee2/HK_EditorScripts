@@ -691,36 +691,68 @@ namespace HK.CompatPatcher
 
         void RecomputeDisplayDiffs(CompareItem item)
         {
-            var patchEls = FindPatchHkElements(item.name);
-            if (patchEls.Count == 0)
+            // Always rebuild from live objects. Analyze-time diffs can be stale/empty (false
+            // Identical) while the inspectors already show real field differences.
+            var losers = new Dictionary<string, HkElement>();
+            HkElement winnerLive = null;
+            string winnerName = item.winner;
+            foreach (var (mod, modObj, el) in item.versions)
             {
-                _displayDiffs = item.diffs != null ? new List<Diff>(item.diffs) : new List<Diff>();
+                var live = LiveHkElement(modObj, el) ?? el;
+                losers[mod] = live;
+                if (mod == item.winner) winnerLive = live;
+            }
+            if (winnerLive == null && item.versions != null && item.versions.Count > 0)
+            {
+                var last = item.versions[item.versions.Count - 1];
+                winnerLive = losers.TryGetValue(last.mod, out var w) ? w : LiveHkElement(last.modObj, last.el) ?? last.el;
+                winnerName = last.mod;
+            }
+
+            var patchEls = FindPatchHkElements(item.name);
+            if (patchEls.Count > 0)
+            {
+                var winner = patchEls.FirstOrDefault(e => e.TypeHint == item.typeHint
+                    || string.Equals(e.TypeHint, item.typeName, StringComparison.OrdinalIgnoreCase))
+                    ?? patchEls[0];
+                _displayDiffs = ConflictAnalyzer.ComputeDiffs(winner, losers);
                 ConflictAnalyzer.FinalizeDiffs(_displayDiffs,
-                    item.typeKey ?? item.typeHint ?? "",
-                    item.name ?? "",
+                    item.typeKey ?? item.typeHint ?? winner.Type ?? "",
+                    item.name ?? winner.Name ?? "",
                     Sidecar.LoadIndex(Sidecar.DefaultPath));
-                _displayDiffWinner = item.winner;
-                _displayDiffOdin = item.odin;
+                _displayDiffWinner = "Patch";
+                _displayDiffOdin = ConflictAnalyzer.UsesNameSetDiff(winner)
+                                   || losers.Values.Any(ConflictAnalyzer.UsesNameSetDiff);
                 return;
             }
 
-            var winner = patchEls.FirstOrDefault(e => e.TypeHint == item.typeHint
-                || string.Equals(e.TypeHint, item.typeName, StringComparison.OrdinalIgnoreCase))
-                ?? patchEls[0];
-            // Rebuild losers from live objects so Flatten matches Patch. Stale analyze-time
-            // HkElements often lack Unity fields → false "ONLY in Patch" after Import from winner.
-            var losers = new Dictionary<string, HkElement>();
-            foreach (var (mod, modObj, el) in item.versions)
-                losers[mod] = LiveHkElement(modObj, el) ?? el;
-
-            _displayDiffs = ConflictAnalyzer.ComputeDiffs(winner, losers);
+            // No Patch column — N-way vs load-order winner, from live Flatten.
+            if (winnerLive == null || losers.Count == 0)
+            {
+                _displayDiffs = new List<Diff>();
+                _displayDiffWinner = winnerName;
+                _displayDiffOdin = item.odin;
+                return;
+            }
+            var withoutWinner = losers
+                .Where(kv => kv.Key != winnerName)
+                .ToDictionary(kv => kv.Key, kv => kv.Value);
+            // If winner is the only version, nothing to diff.
+            if (withoutWinner.Count == 0)
+            {
+                _displayDiffs = new List<Diff>();
+                _displayDiffWinner = winnerName;
+                _displayDiffOdin = ConflictAnalyzer.UsesNameSetDiff(winnerLive);
+                return;
+            }
+            _displayDiffs = ConflictAnalyzer.ComputeDiffs(winnerLive, withoutWinner);
             ConflictAnalyzer.FinalizeDiffs(_displayDiffs,
-                item.typeKey ?? item.typeHint ?? winner.Type ?? "",
-                item.name ?? winner.Name ?? "",
+                item.typeKey ?? item.typeHint ?? "",
+                item.name ?? "",
                 Sidecar.LoadIndex(Sidecar.DefaultPath));
-            _displayDiffWinner = "Patch";
-            _displayDiffOdin = ConflictAnalyzer.UsesNameSetDiff(winner)
-                               || losers.Values.Any(ConflictAnalyzer.UsesNameSetDiff);
+            _displayDiffWinner = winnerName;
+            _displayDiffOdin = ConflictAnalyzer.UsesNameSetDiff(winnerLive)
+                               || withoutWinner.Values.Any(ConflictAnalyzer.UsesNameSetDiff);
         }
 
         /// <summary>Live Flatten for Compare diffs (bundle LiveObject or session-staged repo object).</summary>

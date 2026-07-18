@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Reflection;
 using System.Text;
 using Amplitude.Framework;
@@ -40,6 +41,12 @@ namespace HK.CompatPatcher
             // (hybrid tech) or the whole element is pure Odin (narrative). Merge via reflection
             // so StructDiff sees Amount / enums / etc., not only Refs.
             SimulationEventEffectFlattener.MergeInto(live, body, refs);
+            // Pure Odin elements (DeedDefinition, …): SerializedObject often leaves Trigger/Evaluator
+            // empty while the inspector shows live values — reflection fills those for StructDiff.
+            ReflectionBodyMerge.MergeInto(live, body, refs);
+            // Authoritative overlay for DatatableElementReference[] — SO array collapse / empty
+            // relative names must not win over live field values (UnitAbility, Package04, …).
+            OverlayDatatableRefArrays(live, body, refs);
 
             bool odin;
             Dictionary<string, string> flat = null;
@@ -91,6 +98,36 @@ namespace HK.CompatPatcher
             return live.GetType().FullName ?? live.GetType().Name;
         }
 
+        [MenuItem("Tools/shakee's Tools/Debug/Compat Patcher/Dump Live Flatten Of Selection")]
+        static void DumpLiveFlattenOfSelection()
+        {
+            var obj = Selection.activeObject;
+            if (obj == null) { Debug.LogWarning("[CompatPatcher] Select a datatable element first."); return; }
+            var el = Build(obj, AssetDatabase.GetAssetPath(obj) ?? obj.name, obj.GetType().Name);
+            if (el == null) { Debug.LogWarning("[CompatPatcher] LiveElementBuilder.Build returned null."); return; }
+            var sb = new StringBuilder();
+            sb.AppendLine($"[CompatPatcher] Live Flatten — {el.Name} ({obj.GetType().Name}) Odin={el.Odin} Flat={(el.Flat?.Count ?? 0)} Refs={el.Refs?.Count ?? 0}");
+            if (el.Body != null)
+            {
+                sb.AppendLine("-- Body keys --");
+                foreach (var kv in el.Body.OrderBy(k => k.Key, StringComparer.Ordinal))
+                {
+                    string preview = kv.Value is List<object> list
+                        ? $"list[{list.Count}]"
+                        : (kv.Value?.ToString() ?? "null");
+                    if (preview.Length > 120) preview = preview.Substring(0, 117) + "...";
+                    sb.AppendLine($"  {kv.Key} = {preview}");
+                }
+            }
+            if (el.Flat != null)
+            {
+                sb.AppendLine("-- Flat --");
+                foreach (var kv in el.Flat.OrderBy(k => k.Key, StringComparer.Ordinal))
+                    sb.AppendLine($"  {kv.Key} = {kv.Value}");
+            }
+            Debug.Log(sb.ToString());
+        }
+
         static void CollectRefsOnly(UnityEngine.Object live, HashSet<string> refs)
         {
             using var so = new SerializedObject(live);
@@ -122,9 +159,9 @@ namespace HK.CompatPatcher
                 if (VolatileKeys.Contains(prop.name)) continue;
                 if (prop.name == "serializationData")
                 {
-                    // Keep a marker only when it has Odin payload — caller may flip to Odin mode
-                    var sd = ReadPropertyValue(prop, refs) as Dictionary<string, object>;
-                    if (sd != null) body["serializationData"] = sd;
+                    // Do not deep-walk Odin serializationData — it can be megabytes of nodes and
+                    // freezes Compare. Marker only; HasGameplayKeys ignores this key.
+                    body["serializationData"] = new Dictionary<string, object> { ["_present"] = "1" };
                     continue;
                 }
                 body[prop.name] = ReadPropertyValue(prop, refs);
@@ -181,10 +218,73 @@ namespace HK.CompatPatcher
             }
         }
 
+        /// <summary>
+        /// Force <c>DatatableElementReference[]</c> fields from live reflection so Flatten sees
+        /// real name-sets even when SerializedObject mis-reads the array.
+        /// </summary>
+        static void OverlayDatatableRefArrays(object live, Dictionary<string, object> body, HashSet<string> refs)
+        {
+            if (live == null || body == null) return;
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            foreach (var f in live.GetType().GetFields(flags))
+            {
+                if (f.IsStatic || f.IsDefined(typeof(NonSerializedAttribute), inherit: true)) continue;
+                if (!f.FieldType.IsArray) continue;
+                var elemT = f.FieldType.GetElementType();
+                if (elemT == null || elemT.Name != "DatatableElementReference") continue;
+                object raw;
+                try { raw = f.GetValue(live); } catch { continue; }
+                if (raw is not Array arr) continue;
+
+                var list = new List<object>();
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    object item = arr.GetValue(i);
+                    string n = ReadDatatableRefName(item);
+                    if (!string.IsNullOrEmpty(n)) refs.Add(n);
+                    list.Add(new Dictionary<string, object> { ["serializableElementName"] = n ?? "" });
+                }
+                body[f.Name] = list;
+            }
+        }
+
+        static string ReadDatatableRefName(object val)
+        {
+            if (val == null) return "";
+            var t = val.GetType();
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            try
+            {
+                var field = t.GetField("serializableElementName", flags)
+                            ?? t.GetField("SerializableElementName", flags);
+                if (field != null && field.GetValue(val) is string s && s.Length > 0) return s;
+            }
+            catch { /* try property */ }
+            try
+            {
+                var prop = t.GetProperty("XmlSerializableElementName", flags)
+                           ?? t.GetProperty("SerializableElementName", flags);
+                if (prop != null && prop.GetValue(val) is string ps) return ps ?? "";
+            }
+            catch { /* empty */ }
+            return "";
+        }
+
         static object ReadGeneric(SerializedProperty prop, HashSet<string> refs)
         {
-            // DatatableElementReference (and similar): emit { serializableElementName: n } so Flatten
-            // identity-keys list entries (MissingInWinner per ref) instead of one whole-list Changed leaf.
+            // Arrays first. isArray is normally true for T[]; also accept Generic+Array.size
+            // (some drawers report propertyType Generic). Never call FindPropertyRelative
+            // ("serializableElementName") on the array itself — that collapses the list to one
+            // dict and makes every mod look Identical.
+            if (IsSerializedArray(prop))
+            {
+                var list = new List<object>();
+                for (int i = 0; i < prop.arraySize; i++)
+                    list.Add(ReadPropertyValue(prop.GetArrayElementAtIndex(i), refs));
+                return list;
+            }
+
+            // DatatableElementReference (single): emit { serializableElementName: n }.
             var nameProp = prop.FindPropertyRelative("serializableElementName");
             if (nameProp != null && nameProp.propertyType == SerializedPropertyType.String)
             {
@@ -193,18 +293,23 @@ namespace HK.CompatPatcher
                 return new Dictionary<string, object> { ["serializableElementName"] = n };
             }
 
-            if (prop.isArray && prop.propertyType != SerializedPropertyType.String)
+            // FixedPoint: RawValue is internal — NextVisible skips it; FindPropertyRelative still finds it.
+            var rawProp = prop.FindPropertyRelative("RawValue");
+            if (rawProp != null && rawProp.propertyType == SerializedPropertyType.Integer)
             {
-                var list = new List<object>();
-                for (int i = 0; i < prop.arraySize; i++)
-                    list.Add(ReadPropertyValue(prop.GetArrayElementAtIndex(i), refs));
-                return list;
+                return new Dictionary<string, object>
+                {
+                    ["RawValue"] = rawProp.intValue.ToString(CultureInfo.InvariantCulture),
+                };
             }
 
             var map = new Dictionary<string, object>();
             var child = prop.Copy();
             var end = prop.GetEndProperty();
             bool enter = true;
+            // NextVisible (not Next): Next descends into every nested serialized byte of
+            // Odin serializationData and can freeze Compare for minutes per element.
+            // FixedPoint.RawValue is handled above via FindPropertyRelative.
             while (child.NextVisible(enter) && !SerializedProperty.EqualContents(child, end))
             {
                 enter = false;
@@ -213,6 +318,15 @@ namespace HK.CompatPatcher
             }
             // Leave PropertyEffect / RPN maps intact — UnityYaml.Flatten collapses them.
             return map;
+        }
+
+        static bool IsSerializedArray(SerializedProperty prop)
+        {
+            if (prop == null || prop.propertyType == SerializedPropertyType.String) return false;
+            if (prop.isArray) return true;
+            // Fallback: Unity stores arrays as Generic with an Array.size child.
+            return prop.propertyType == SerializedPropertyType.Generic
+                   && prop.FindPropertyRelative("Array.size") != null;
         }
 
         static void HarvestRef(SerializedProperty prop, HashSet<string> refs)

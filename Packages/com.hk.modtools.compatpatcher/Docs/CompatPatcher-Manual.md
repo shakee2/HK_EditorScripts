@@ -72,7 +72,7 @@ Compare also diffs **`Assets/Databases/Patch/`** against the loaded mods. A fold
 | **sole mod left** | Only one mod still has it — the conflict dissolved; Patch/ still overrides that mod |
 | **mods agree** | ≥2 mods still have it but Compare sees them Identical — Patch/ overrides for no conflict |
 
-**Ping** selects the patch asset; **Remove** deletes that named element from the Patch/ collection. Keep the row if you still want a deliberate custom edit. Full dump also goes to the Console each Compare.
+**Compare** opens side-by-side (mods that still define it + Patch/). **Ping** selects the patch asset; **Remove** deletes that named element from the Patch/ collection. Keep the row if you still want a deliberate custom edit. Full dump also goes to the Console each Compare.
 
 ---
 
@@ -254,7 +254,7 @@ The sidecar travels with both forms (companion file in the folder, or included i
 The patcher keys on `(type, name)`, not file path. If Mod A splits an element across two files and Mod B puts it in one, they still collide if the name matches.
 
 ### Odin Elements
-Some element types keep lists in an Odin serialization stream (e.g. `TechnologyDefinition.SimulationEventEffects`, narrative `Choices[].NarrativeEventEffects`). For **live / assetbundle** sources the patcher reflection-merges those effect trees into the compare body, so field diffs (Amount, UnlockAction enums, refs, …) show like any other StructDiff row. Pure-Odin elements that still have no Flatten body (e.g. some YAML-only unitypackage carriers without a live object) fall back to **references only** — use **Compare side-by-side** for the full inspector.
+Some element types keep lists in an Odin serialization stream (e.g. `TechnologyDefinition.SimulationEventEffects`, narrative `Choices[].NarrativeEventEffects`). For **live / assetbundle** sources the patcher reflection-merges those effect trees into the compare body, so field diffs (Amount, UnlockAction enums, refs, …) show like any other StructDiff row. Pure-Odin elements such as `DeedDefinition` (Trigger / Evaluator / Score) get a second reflection pass (`ReflectionBodyMerge`) so Compare does not report false Identical when SerializedObject is empty. Remaining YAML-only carriers without a live object still fall back to **references only** — use **Compare side-by-side** for the full inspector.
 
 ### Winner-Only Diffs
 If a conflict's only diffs are `ExtraInWinner` (the winner has something others don't), it's usually safe to ignore — the winner already includes those entries. Toggle **hide winner-only** to filter these out.

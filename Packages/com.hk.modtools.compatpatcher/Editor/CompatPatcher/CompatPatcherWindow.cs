@@ -755,6 +755,8 @@ namespace HK.CompatPatcher
                 EditorGUILayout.BeginHorizontal();
                 EditorGUILayout.LabelField($"[{KindLabel(o.Kind)}]  {o.Entry.Name}  ({o.Entry.TypeHint})", GUILayout.MinWidth(280));
                 EditorGUILayout.LabelField(o.Detail, EditorStyles.miniLabel);
+                if (GUILayout.Button("Compare", GUILayout.Width(72)))
+                    OpenCompareOrphan(o);
                 if (GUILayout.Button("Ping", GUILayout.Width(44)))
                     PingPatchEntry(o.Entry);
                 if (GUILayout.Button("Remove", GUILayout.Width(64)))
@@ -764,6 +766,98 @@ namespace HK.CompatPatcher
 
             if (toRemove != null)
                 RemovePatchOrphan(toRemove);
+        }
+
+        /// <summary>
+        /// Side-by-side for a Patch orphan: nav list is the current orphan set (Patch always present).
+        /// </summary>
+        void OpenCompareOrphan(PatchOrphan focus)
+        {
+            if (focus?.Entry == null || _mods == null) return;
+            var items = new List<CompatCompareWindow.CompareItem>();
+            int idx = 0;
+            foreach (var o in _patchOrphans.OrderBy(x => x.Kind).ThenBy(x => x.Entry.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                var item = BuildCompareItemForOrphan(o);
+                if (item == null) continue;
+                if (ReferenceEquals(o, focus)) idx = items.Count;
+                items.Add(item);
+            }
+            if (items.Count == 0)
+            {
+                EditorUtility.DisplayDialog("Compat Patcher",
+                    "Could not open Compare for this orphan (no mod or Patch version found).", "OK");
+                return;
+            }
+            CompatCompareWindow.Show(items, idx, OnCompareResolveAsWinner);
+        }
+
+        CompatCompareWindow.CompareItem BuildCompareItemForOrphan(PatchOrphan o)
+        {
+            if (o?.Entry == null) return null;
+            var row = FindRowForPatchEntry(o.Entry);
+            if (row != null)
+            {
+                var item = BuildCompareItem(row);
+                if (item != null) item.inPatch = true;
+                return item;
+            }
+
+            // Gone from analyze rows — still show whatever mods define the name + Patch.
+            var versions = new List<(string mod, HkMod modObj, HkElement el)>();
+            foreach (var mod in _mods)
+            {
+                HkElement best = null;
+                foreach (var el in mod.Elements.Values)
+                {
+                    if (el.IsRoot || el.Name != o.Entry.Name) continue;
+                    if (el.Type == o.Entry.Type
+                        || string.Equals(el.TypeHint, o.Entry.TypeHint, StringComparison.OrdinalIgnoreCase))
+                    {
+                        best = el;
+                        break;
+                    }
+                    best ??= el;
+                }
+                if (best != null) versions.Add((mod.Name, mod, best));
+            }
+            return new CompatCompareWindow.CompareItem
+            {
+                name = o.Entry.Name,
+                typeHint = o.Entry.TypeHint,
+                typeName = FriendlyTypeHint(o.Entry.TypeHint) ?? o.Entry.TypeHint,
+                typeKey = o.Entry.Type,
+                versions = versions,
+                winner = versions.Count > 0 ? versions[versions.Count - 1].mod : "",
+                odin = false,
+                diffs = new List<Diff>(),
+                inPatch = true,
+                resolved = false,
+            };
+        }
+
+        ElementRow FindRowForPatchEntry(PatchEntry pe)
+        {
+            if (pe == null || _result == null) return null;
+            var matches = _result.Rows
+                .Where(r => r.Status != ElemStatus.Root && r.Name == pe.Name)
+                .ToList();
+            if (matches.Count == 0) return null;
+            return matches.FirstOrDefault(r => r.Type == pe.Type
+                    || string.Equals(r.TypeHint, pe.TypeHint, StringComparison.OrdinalIgnoreCase))
+                ?? matches[0];
+        }
+
+        string FriendlyTypeHint(string typeHint)
+        {
+            if (string.IsNullOrEmpty(typeHint)) return typeHint;
+            // Prefer resolved class name when the type filter already knows this stem.
+            foreach (var r in _result?.Rows ?? Enumerable.Empty<ElementRow>())
+            {
+                if (string.Equals(r.TypeHint, typeHint, StringComparison.OrdinalIgnoreCase))
+                    return FriendlyType(r);
+            }
+            return typeHint;
         }
 
         void PingPatchEntry(PatchEntry pe)
@@ -1153,26 +1247,34 @@ namespace HK.CompatPatcher
             int idx = 0;
             foreach (var r in _view)
             {
-                var versions = r.Contributors
-                    .Select(mn => (mn, _mods.FirstOrDefault(m => m.Name == mn), r.Elements.TryGetValue(mn, out var el) ? el : null))
-                    .Where(v => v.Item2 != null && v.Item3 != null).ToList();
-                if (versions.Count == 0) continue;
+                var item = BuildCompareItem(r);
+                if (item == null) continue;
                 if (r == row) idx = items.Count;
-                items.Add(new CompatCompareWindow.CompareItem
-                {
-                    name = r.Name,
-                    typeHint = r.TypeHint,
-                    typeName = FriendlyType(r),
-                    typeKey = r.Type,
-                    versions = versions,
-                    winner = r.Winner,
-                    odin = r.Conflict?.Odin ?? false,
-                    diffs = r.Conflict?.Diffs ?? new List<Diff>(),
-                    inPatch = _patchNames.Contains(r.Name),
-                    resolved = IsResolved(r),
-                });
+                items.Add(item);
             }
             CompatCompareWindow.Show(items, idx, OnCompareResolveAsWinner);
+        }
+
+        CompatCompareWindow.CompareItem BuildCompareItem(ElementRow r)
+        {
+            if (r == null || _mods == null) return null;
+            var versions = r.Contributors
+                .Select(mn => (mn, _mods.FirstOrDefault(m => m.Name == mn), r.Elements.TryGetValue(mn, out var el) ? el : null))
+                .Where(v => v.Item2 != null && v.Item3 != null).ToList();
+            if (versions.Count == 0) return null;
+            return new CompatCompareWindow.CompareItem
+            {
+                name = r.Name,
+                typeHint = r.TypeHint,
+                typeName = FriendlyType(r),
+                typeKey = r.Type,
+                versions = versions,
+                winner = r.Winner,
+                odin = r.Conflict?.Odin ?? false,
+                diffs = r.Conflict?.Diffs ?? new List<Diff>(),
+                inPatch = _patchNames.Contains(r.Name),
+                resolved = IsResolved(r),
+            };
         }
 
         void OnCompareResolveAsWinner(CompatCompareWindow.CompareItem item)

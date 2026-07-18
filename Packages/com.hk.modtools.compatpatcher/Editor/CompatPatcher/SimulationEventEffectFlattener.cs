@@ -12,7 +12,8 @@ namespace HK.CompatPatcher
     /// </summary>
     /// <remarks>
     /// Carriers: root <c>SimulationEventEffects</c> / <c>Effects</c> / <c>EffectByLevels</c> /
-    /// <c>RepeatingEffect</c>; <c>Choices[]</c> → civic <c>SimulationEventEffects</c> or narrative
+    /// <c>RepeatingEffect</c>; <c>Loots[].SimulationEventEffects</c> (loot tables);
+    /// <c>Choices[]</c> → civic <c>SimulationEventEffects</c> or narrative
     /// <c>NarrativeEventEffects[].SimulationEventEffect</c>.
     /// </remarks>
     public static class SimulationEventEffectFlattener
@@ -38,6 +39,7 @@ namespace HK.CompatPatcher
             MergeRootEffectArray(live, "Effects", body, refs);
             MergeRootEffectArray(live, "EffectByLevels", body, refs);
             MergeRootSingleEffect(live, "RepeatingEffect", body, refs);
+            MergeLoots(live, body, refs);
             MergeChoices(live, body, refs);
         }
 
@@ -75,6 +77,42 @@ namespace HK.CompatPatcher
             if (!TryGetFieldValue(live, field, out var raw) || raw == null) return;
             var dict = EffectToDict(raw, refs);
             if (dict != null) body[field] = dict;
+        }
+
+        /// <summary>
+        /// <c>LootTableDefinition.Loots[].SimulationEventEffects</c> — effects are not on the root.
+        /// </summary>
+        static void MergeLoots(object live, Dictionary<string, object> body, HashSet<string> refs)
+        {
+            if (!TryGetFieldValue(live, "Loots", out var raw) || raw == null) return;
+            if (raw is not System.Collections.IEnumerable en || raw is string) return;
+
+            var existing = body.TryGetValue("Loots", out var prev) ? prev as List<object> : null;
+            var list = new List<object>();
+            int i = 0;
+            foreach (var loot in en)
+            {
+                Dictionary<string, object> dict;
+                if (existing != null && i < existing.Count && existing[i] is Dictionary<string, object> ed)
+                    dict = new Dictionary<string, object>(ed);
+                else
+                    dict = new Dictionary<string, object>();
+
+                if (loot != null)
+                {
+                    if (TryGetFieldValue(loot, "Weight", out var w) && w != null
+                        && TryWriteScalar(dict, "Weight", w)) { /* kept */ }
+
+                    if (TryGetFieldValue(loot, "SimulationEventEffects", out var sef) && sef != null
+                        && sef is System.Collections.IEnumerable sefEn && sef is not string)
+                        dict["SimulationEventEffects"] = BuildEffectList(sefEn, refs);
+                }
+
+                list.Add(dict);
+                i++;
+            }
+            if (list.Count > 0 || existing != null)
+                body["Loots"] = list;
         }
 
         static void MergeChoices(object live, Dictionary<string, object> body, HashSet<string> refs)
