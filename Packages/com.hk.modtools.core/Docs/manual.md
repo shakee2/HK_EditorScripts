@@ -129,9 +129,14 @@ No canvas keyboard shortcuts (no arrow-key pan, etc.).
 
 **Menu:** `Tools → shakee's Tools → Asset Explorer`
 
-Pick a vanilla `.assetbundle` under the game install, browse descriptors, preview (texture/mesh/inspector), **import** into a project folder.
+Pick a `.assetbundle`, browse descriptors, preview (texture/mesh/inspector), **import** into a project folder.
 
-**Handling:** The main vanilla database bundle mounts the same way the other browsers do (shared, no extra load). Other bundles mount on pick and unmount when you close the window, so browsing doesn't leave bundles loaded behind you.
+**Sources (dropdown groups):**
+- **Mounted** — already in Amplitude’s provider registry (Mod Tools’ preloaded vanilla bundles, plus Compat Patcher mod mounts after Compare).
+- **Vanilla/&lt;folder&gt;** — on-disk under the Humankind `AssetBundles/` install.
+- **Custom** — any file opened via **Open…** (e.g. a mod `.assetbundle` not yet mounted).
+
+**Handling:** MercuryDatabases reuses the shared `VanillaDatabaseMount`. Bundles already mounted elsewhere are *adopted* (closing Asset Explorer does not unload Compat Patcher / Mod Tools mounts). Bundles this window mounts itself unmount on close.
 
 **Inputs:**
 

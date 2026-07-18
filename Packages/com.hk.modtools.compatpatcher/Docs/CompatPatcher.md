@@ -20,8 +20,9 @@ mods, surfaces exactly where they collide, lets you resolve each collision, and 
 
 ## Scope & non-goals
 
-- **In:** compare N external mods (`.unitypackage` preferred; `.zip`/folder also read) against **each
-  other**; produce a patch; support **re-patching** against a previously-made patch.
+- **In:** compare N external mods (`.unitypackage` / `.zip` / folder / `.assetbundle`) against **each
+  other**; produce a patch; support **re-patching** against a previously-made patch. `.assetbundle`
+  sources stay mounted for the session (in-memory compare; inspector refs resolve like vanilla).
 - **Out:** no vanilla baseline. Vanilla-version drift is handled by other tools; our reference for "what
   changed since last time" is each mod's **own current state vs. the state recorded in the prior patch's
   sidecar**.

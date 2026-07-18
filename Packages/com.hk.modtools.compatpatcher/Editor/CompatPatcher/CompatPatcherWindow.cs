@@ -18,8 +18,32 @@ namespace HK.CompatPatcher
         static readonly string[] STATUS_LABELS = { "Conflicts", "All", "New", "Identical" };
         enum Col { Element, Type, By, Winner, Status, Diffs }
 
+        enum PatchOrphanKind
+        {
+            GoneFromMods,       // in Patch, in 0 compared mods — true orphan
+            SoleModLeft,        // in Patch, only 1 mod still defines it — conflict dissolved
+            ModsAgree,          // in Patch, ≥2 mods still define it but Identical — patch overrides for nothing
+        }
+
+        class PatchEntry
+        {
+            public string Name;
+            public string Type;       // m_Script guid:fileID
+            public string TypeHint;   // collection stem / file stem
+            public string AssetPath;  // Assets/Databases/Patch/….asset
+        }
+
+        class PatchOrphan
+        {
+            public PatchOrphanKind Kind;
+            public PatchEntry Entry;
+            public string Detail;     // e.g. remaining mod name
+        }
+
         [SerializeField] List<SourceEntry> _sources = new List<SourceEntry>();
         [SerializeField] string _sidecarPath = "";
+        [SerializeField] bool _showMountedBundles;
+        [SerializeField] bool _showPatchOrphans = true;
 
         List<HkMod> _mods;
         AnalyzeResult _result;
@@ -28,6 +52,8 @@ namespace HK.CompatPatcher
         readonly Dictionary<string, string> _elemStatus = new Dictionary<string, string>(); // elemKey -> new|changed|carried
         readonly Dictionary<string, string> _elemFp = new Dictionary<string, string>();     // elemKey -> fingerprint
         readonly HashSet<string> _patchNames = new HashSet<string>();                        // element names already in Assets/Databases/Patch/
+        readonly List<PatchEntry> _patchEntries = new List<PatchEntry>();
+        readonly List<PatchOrphan> _patchOrphans = new List<PatchOrphan>();
         List<ElementRow> _view = new List<ElementRow>();
 
         // Load-order validation (recomputed every Compare): findings for the current order and for a
@@ -66,15 +92,131 @@ namespace HK.CompatPatcher
         void ScanPatch()
         {
             _patchNames.Clear();
+            _patchEntries.Clear();
             try
             {
                 if (!Directory.Exists(PatchBuilder.PatchDir)) return;
                 foreach (var f in Directory.EnumerateFiles(PatchBuilder.PatchDir, "*.asset", SearchOption.AllDirectories))
-                    foreach (var el in ModReader.ParseElements(File.ReadAllText(f), f))
-                        if (!el.IsRoot) _patchNames.Add(el.Name);
+                {
+                    string norm = f.Replace('\\', '/');
+                    string text;
+                    try { text = File.ReadAllText(f); }
+                    catch { continue; }
+                    foreach (var el in ModReader.ParseElements(text, norm))
+                    {
+                        if (el.IsRoot || string.IsNullOrEmpty(el.Name)) continue;
+                        _patchNames.Add(el.Name);
+                        _patchEntries.Add(new PatchEntry
+                        {
+                            Name = el.Name,
+                            Type = el.Type,
+                            TypeHint = el.TypeHint,
+                            AssetPath = norm,
+                        });
+                    }
+                }
             }
             catch { /* patch folder may not exist yet */ }
         }
+
+        /// <summary>
+        /// Patch entries that no longer need to override the compared mods: gone from all mods,
+        /// only one mod left, or mods now Identical. Still-Conflict rows are not orphans.
+        /// Matched by element <see cref="PatchEntry.Name"/> (same as ✓in patch), not script Type key
+        /// (YAML vs live MonoScript keys can differ).
+        /// </summary>
+        void ComputePatchOrphans()
+        {
+            _patchOrphans.Clear();
+            if (_mods == null || _result == null || _patchEntries.Count == 0) return;
+
+            var nameToMods = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            foreach (var mod in _mods)
+                foreach (var el in mod.Elements.Values)
+                {
+                    if (el.IsRoot || string.IsNullOrEmpty(el.Name)) continue;
+                    if (!nameToMods.TryGetValue(el.Name, out var set))
+                        nameToMods[el.Name] = set = new HashSet<string>(StringComparer.Ordinal);
+                    set.Add(mod.Name);
+                }
+
+            var rowsByName = _result.Rows
+                .Where(r => r.Status != ElemStatus.Root && !string.IsNullOrEmpty(r.Name))
+                .GroupBy(r => r.Name, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+
+            foreach (var pe in _patchEntries)
+            {
+                nameToMods.TryGetValue(pe.Name, out var mods);
+                int n = mods?.Count ?? 0;
+                if (n == 0)
+                {
+                    _patchOrphans.Add(new PatchOrphan
+                    {
+                        Kind = PatchOrphanKind.GoneFromMods,
+                        Entry = pe,
+                        Detail = "not defined by any compared mod — patch still forces it",
+                    });
+                    continue;
+                }
+
+                rowsByName.TryGetValue(pe.Name, out var rows);
+                bool stillConflict = rows != null && rows.Any(r => r.Status == ElemStatus.Conflict);
+                if (stillConflict) continue;
+
+                if (n == 1)
+                {
+                    string sole = mods.First();
+                    _patchOrphans.Add(new PatchOrphan
+                    {
+                        Kind = PatchOrphanKind.SoleModLeft,
+                        Entry = pe,
+                        Detail = $"only '{sole}' still defines it — conflict dissolved; patch still overrides",
+                    });
+                    continue;
+                }
+
+                bool allIdentical = rows != null && rows.Count > 0
+                    && rows.All(r => r.Status == ElemStatus.Identical);
+                if (allIdentical)
+                {
+                    _patchOrphans.Add(new PatchOrphan
+                    {
+                        Kind = PatchOrphanKind.ModsAgree,
+                        Entry = pe,
+                        Detail = "mods now Identical — patch still overrides for no conflict",
+                    });
+                }
+            }
+
+            DumpPatchOrphans();
+        }
+
+        void DumpPatchOrphans()
+        {
+            if (_patchOrphans.Count == 0)
+            {
+                Debug.Log("[CompatPatcher] Patch orphans — 0 (no stale Patch/ overrides vs current mods).");
+                return;
+            }
+            var sb = new StringBuilder();
+            sb.AppendLine($"[CompatPatcher] Patch orphans — {_patchOrphans.Count} total");
+            foreach (var g in _patchOrphans.GroupBy(o => o.Kind).OrderBy(g => g.Key))
+            {
+                sb.AppendLine($"  {KindLabel(g.Key)}  ({g.Count()}):");
+                foreach (var o in g.OrderBy(x => x.Entry.Name, StringComparer.OrdinalIgnoreCase))
+                    sb.AppendLine($"    {o.Entry.Name}  ({o.Entry.TypeHint})  {o.Detail}");
+            }
+            Debug.Log(sb.ToString());
+        }
+
+        static string KindLabel(PatchOrphanKind k) => k switch
+        {
+            PatchOrphanKind.GoneFromMods => "gone from mods",
+            PatchOrphanKind.SoleModLeft => "sole mod left",
+            PatchOrphanKind.ModsAgree => "mods agree (identical)",
+            _ => k.ToString(),
+        };
 
         static List<HkElement> FindPatchHkElements(string elementName)
         {
@@ -237,10 +379,51 @@ namespace HK.CompatPatcher
                 if (!string.IsNullOrEmpty(p)) AddSource(p);
             }
             EditorGUILayout.EndHorizontal();
+
+            DrawMountedBundles();
+        }
+
+        void DrawMountedBundles()
+        {
+            EditorGUILayout.Space(4);
+            _showMountedBundles = EditorGUILayout.Foldout(_showMountedBundles, "Loaded mod bundles (Compat Patcher mounts)", true);
+            if (!_showMountedBundles) return;
+
+            var entries = CompatBundleMounts.ListMountedCompatProviders();
+            if (entries.Count == 0)
+            {
+                EditorGUILayout.HelpBox(
+                    "No mod assetbundles mounted by Compat Patcher yet. Compare with .assetbundle sources mounts them for the session. Game FX/UI/data bundles are not listed here.",
+                    MessageType.None);
+                return;
+            }
+
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField($"{entries.Count} mounted", EditorStyles.miniLabel);
+            if (GUILayout.Button("Unload all", GUILayout.Width(90)))
+            {
+                CompatBundleMounts.UnloadAllOurs();
+                Repaint();
+            }
+            EditorGUILayout.EndHorizontal();
+
+            foreach (var e in entries)
+            {
+                EditorGUILayout.BeginHorizontal();
+                string status = e.Stale ? "stale" : "mounted";
+                EditorGUILayout.LabelField($"{e.Label}  [{status}]", GUILayout.Width(180));
+                EditorGUILayout.LabelField(e.Path, EditorStyles.miniLabel);
+                if (GUILayout.Button("Force unload", GUILayout.Width(100)))
+                {
+                    CompatBundleMounts.ForceUnload(e.ProviderName);
+                    Repaint();
+                }
+                EditorGUILayout.EndHorizontal();
+            }
         }
 
         void AddSource(string path) =>
-            _sources.Add(new SourceEntry { path = path, name = Path.GetFileNameWithoutExtension(path.TrimEnd('/', '\\')) });
+            _sources.Add(new SourceEntry { path = path, name = CompatBundleMounts.SuggestModName(path) });
 
         void DrawSidecarAndActions()
         {
@@ -344,9 +527,85 @@ namespace HK.CompatPatcher
         {
             var s = _result.Stats;
             int need = _elemStatus.Values.Count(v => v == "new" || v == "changed");
+            int orphans = _patchOrphans.Count;
             EditorGUILayout.LabelField(
-                $"conflicts {s.Conflicts} (needs review {need}, odin {s.OdinConflicts}) · new {s.New} · identical {s.Identical} · roots {s.Roots} · showing {_view.Count}",
+                $"conflicts {s.Conflicts} (needs review {need}, odin {s.OdinConflicts}) · new {s.New} · identical {s.Identical} · roots {s.Roots} · showing {_view.Count}"
+                + (orphans > 0 ? $" · patch orphans {orphans}" : ""),
                 EditorStyles.miniLabel);
+            DrawPatchOrphans();
+        }
+
+        void DrawPatchOrphans()
+        {
+            if (_result == null) return;
+            int n = _patchOrphans.Count;
+            string title = n == 0
+                ? "Patch orphans — none"
+                : $"Patch orphans — {n} (Patch/ overrides that no longer match a live conflict)";
+            _showPatchOrphans = EditorGUILayout.Foldout(_showPatchOrphans, title, true);
+            if (!_showPatchOrphans) return;
+
+            if (n == 0)
+            {
+                EditorGUILayout.HelpBox(
+                    "Every element in Assets/Databases/Patch/ either still conflicts across the compared mods, or Patch/ is empty.",
+                    MessageType.None);
+                return;
+            }
+
+            EditorGUILayout.HelpBox(
+                "These Patch/ elements still load last and override. Gone = dropped by all mods. Sole = only one mod left. Identical = mods agree now. Remove if the override is stale; keep if you still want a custom edit.",
+                MessageType.Warning);
+
+            PatchOrphan toRemove = null;
+            foreach (var o in _patchOrphans.OrderBy(x => x.Kind).ThenBy(x => x.Entry.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                EditorGUILayout.BeginHorizontal();
+                EditorGUILayout.LabelField($"[{KindLabel(o.Kind)}]  {o.Entry.Name}  ({o.Entry.TypeHint})", GUILayout.MinWidth(280));
+                EditorGUILayout.LabelField(o.Detail, EditorStyles.miniLabel);
+                if (GUILayout.Button("Ping", GUILayout.Width(44)))
+                    PingPatchEntry(o.Entry);
+                if (GUILayout.Button("Remove", GUILayout.Width(64)))
+                    toRemove = o;
+                EditorGUILayout.EndHorizontal();
+            }
+
+            if (toRemove != null)
+                RemovePatchOrphan(toRemove);
+        }
+
+        void PingPatchEntry(PatchEntry pe)
+        {
+            if (pe == null || string.IsNullOrEmpty(pe.AssetPath)) return;
+            foreach (var o in AssetDatabase.LoadAllAssetsAtPath(pe.AssetPath))
+            {
+                if (o != null && o.name == pe.Name)
+                {
+                    Selection.activeObject = o;
+                    EditorGUIUtility.PingObject(o);
+                    return;
+                }
+            }
+            var main = AssetDatabase.LoadMainAssetAtPath(pe.AssetPath);
+            if (main != null) { Selection.activeObject = main; EditorGUIUtility.PingObject(main); }
+        }
+
+        void RemovePatchOrphan(PatchOrphan o)
+        {
+            if (o?.Entry == null) return;
+            if (!EditorUtility.DisplayDialog("Remove from Patch/",
+                $"Remove '{o.Entry.Name}' from:\n{o.Entry.AssetPath}\n\n{o.Detail}",
+                "Remove", "Cancel"))
+                return;
+            if (!PatchBuilder.RemoveNamedElement(o.Entry.AssetPath, o.Entry.Name))
+            {
+                Debug.LogWarning($"[CompatPatcher] Could not remove '{o.Entry.Name}' from {o.Entry.AssetPath}.");
+                return;
+            }
+            Debug.Log($"[CompatPatcher] Removed orphan '{o.Entry.Name}' from {o.Entry.AssetPath}.");
+            ScanPatch();
+            ComputePatchOrphans();
+            Repaint();
         }
 
         void ApplyFilter()
@@ -454,15 +713,15 @@ namespace HK.CompatPatcher
                         ? "New element (single mod). Import & Edit to bring it into the patch and adjust."
                         : row.Status == ElemStatus.Root ? "Collection/container object — not a gameplay element."
                         : "Identical across mods — no action needed.", MessageType.None);
+                    EditorGUILayout.BeginHorizontal();
                     using (new EditorGUI.DisabledScope(row.Status == ElemStatus.Root || inPatch))
                     {
-                        EditorGUILayout.BeginHorizontal();
                         if (GUILayout.Button("Import & Edit into Patch/", GUILayout.Width(200))) ImportChosen(row, row.Winner);
-                        if (GUILayout.Button("Compare side-by-side", GUILayout.Width(180))) OpenCompare(row);
-                        EditorGUILayout.EndHorizontal();
                     }
+                    if (GUILayout.Button("Compare side-by-side", GUILayout.Width(180))) OpenCompare(row);
+                    EditorGUILayout.EndHorizontal();
                     if (inPatch)
-                        EditorGUILayout.LabelField("✓ In patch — Compare side-by-side to edit the patch version.", EditorStyles.miniLabel);
+                        EditorGUILayout.LabelField("✓ In patch — use Compare side-by-side to inspect/edit the patch version.", EditorStyles.miniLabel);
                 }
                 else
                 {
@@ -479,16 +738,16 @@ namespace HK.CompatPatcher
                         EditorGUILayout.EndHorizontal();
                     }
 
+                    EditorGUILayout.BeginHorizontal();
                     using (new EditorGUI.DisabledScope(inPatch))
                     {
-                        EditorGUILayout.BeginHorizontal();
                         if (GUILayout.Button("Import chosen into Patch/", GUILayout.Width(200)))
                             ImportChosen(row, _choice.TryGetValue(key, out var c2) ? c2 : row.Winner);
-                        if (GUILayout.Button("Compare side-by-side", GUILayout.Width(180))) OpenCompare(row);
-                        EditorGUILayout.EndHorizontal();
                     }
+                    if (GUILayout.Button("Compare side-by-side", GUILayout.Width(180))) OpenCompare(row);
+                    EditorGUILayout.EndHorizontal();
                     if (inPatch)
-                        EditorGUILayout.LabelField("✓ In patch — Compare side-by-side to edit the patch version directly.", EditorStyles.miniLabel);
+                        EditorGUILayout.LabelField("✓ In patch — use Compare side-by-side to inspect/edit the patch version.", EditorStyles.miniLabel);
 
                     EditorGUILayout.Space(2);
                     string diffWinner = row.Winner;
@@ -563,6 +822,7 @@ namespace HK.CompatPatcher
                 _selected = null;
                 ShowCompareProgress(0.75, 0.8, "Compat Patcher", 0, "Scanning patch directory…");
                 ScanPatch();
+                ComputePatchOrphans();
                 ShowCompareProgress(0.8, 1.0, "Compat Patcher", 0, "Validating load order (Vanilla → mods)…");
                 Validate((sub, label) => ShowCompareProgress(0.8, 1.0, "Compat Patcher", sub, label));
             }
@@ -651,6 +911,7 @@ namespace HK.CompatPatcher
                 {
                     name = r.Name,
                     typeHint = r.TypeHint,
+                    typeName = FriendlyType(r),
                     versions = versions,
                     winner = r.Winner,
                     odin = r.Conflict?.Odin ?? false,

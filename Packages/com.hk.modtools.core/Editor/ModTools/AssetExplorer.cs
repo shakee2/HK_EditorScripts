@@ -13,10 +13,12 @@ using UnityEngine;
 using AssetDatabase = Amplitude.Framework.Asset.AssetDatabase;
 
 /// <summary>
-/// Asset Explorer for the vanilla Humankind asset bundles. The Mod Editor's own
+/// Asset Explorer for Humankind <c>.assetbundle</c> contents. The Mod Editor's own
 /// "Asset Explorer" window only *browses* the bundles (textures, models, materials,
-/// collections, …) with no way to pull anything into the project. This window mounts
-/// any bundle found under &lt;Humankind&gt;/AssetBundles/&lt;folder&gt;/&lt;file&gt;.assetbundle,
+/// collections, …) with no way to pull anything into the project. This window can open:
+///   - vanilla bundles under &lt;Humankind&gt;/AssetBundles/… (disk walk),
+///   - any provider already in Amplitude's mount registry (Mod Tools + Compat Patcher mods),
+///   - an arbitrary <c>.assetbundle</c> via Open…,
 /// lists every descriptor the provider exposes (main assets + sub-assets), previews the
 /// selected one (texture thumbnail, mesh stats, or embedded inspector), and imports it:
 ///   - Texture2D / Sprite  -> exported as a PNG into a chosen project folder.
@@ -25,23 +27,34 @@ using AssetDatabase = Amplitude.Framework.Asset.AssetDatabase;
 ///                            step 3 proved viable for Amplitude ScriptableObjects).
 ///
 /// Reuses VanillaDatabaseMount for the MercuryDatabases bundle (so the existing
-/// Database Browser and this explorer share one mount of it); mounts every other
-/// bundle on demand and unmounts on window close so we don't leak providers.
+/// Database Browser and this explorer share one mount of it). Bundles this window mounts
+/// itself are unmounted on close; providers it only *adopts* (already mounted by Mod Tools
+/// or Compat Patcher) are left alone.
 /// </summary>
 public class AssetExplorer : EditorWindow
 {
     // ── Bundle picker state ───────────────────────────────────────────────────
-    // Discovered bundles, grouped by their folder name under AssetBundles/.
-    class BundleInfo { public string folder; public string file; public string fullPath; }
+    // Discovered / mounted / custom-opened bundles. `folder` is the dropdown group
+    // ("Vanilla/<dir>", "Mounted", "Custom").
+    class BundleInfo
+    {
+        public string folder;
+        public string file;
+        public string fullPath;
+        public bool alreadyMounted; // true → adopt AllProviders entry; do not own/unmount
+    }
     List<BundleInfo> _bundles;
     BundleInfo _bundle;                 // currently selected bundle
     AdvancedDropdownState _bundleDdState = new();
 
     // ── Mounted provider for the selected (non-MercuryDatabases) bundle ──────
-    static string ProviderName(BundleInfo b) => Path.GetFileName(b.fullPath).ToLowerInvariant();
+    // Amplitude registers under Path.GetFileName(path) — keep case; do not ToLower.
+    static string ProviderName(BundleInfo b) => Path.GetFileName(b.fullPath);
     IAssetProvider _provider;
     string _providerName;               // the provider name we actually mounted (for unmount)
+    bool _ownsMount;                   // false when we adopted an already-mounted provider
     const string MercuryDatabasesProvider = "mercurydatabases.assetbundle";
+    const string ProjectProviderName = "AssetDatabase";
 
     // ── Descriptors ──────────────────────────────────────────────────────────
     class Desc
@@ -127,39 +140,106 @@ public class AssetExplorer : EditorWindow
     }
 
     // ── Bundle discovery ──────────────────────────────────────────────────────
-    // Walks <Humankind>/AssetBundles/<folder>/<file>.assetbundle. The MercuryDatabases
-    // bundle is included so the explorer can browse it via the shared VanillaDatabaseMount
-    // mount (no double-mount); every other bundle gets its own on-demand mount below.
+    // Vanilla on disk under AssetBundles/, plus anything already in AllProviders
+    // (Mod Tools preloads many vanilla bundles; Compat Patcher mounts mod bundles).
     void RefreshBundleList()
     {
         _bundles = new List<BundleInfo>();
-        string mercuryFolder = Amplitude.Mercury.Production.Modification.ModuleEditor.MercuryFolderPath;
-        if (string.IsNullOrEmpty(mercuryFolder)) return;
-        string root = Path.Combine(mercuryFolder, "AssetBundles");
-        if (!Directory.Exists(root)) return;
+        var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var dir in Directory.GetDirectories(root))
+        string mercuryFolder = Amplitude.Mercury.Production.Modification.ModuleEditor.MercuryFolderPath;
+        if (!string.IsNullOrEmpty(mercuryFolder))
         {
-            foreach (var f in Directory.GetFiles(dir, "*.assetbundle"))
+            string root = Path.Combine(mercuryFolder, "AssetBundles");
+            if (Directory.Exists(root))
             {
-                _bundles.Add(new BundleInfo
+                foreach (var dir in Directory.GetDirectories(root))
                 {
-                    folder = Path.GetFileName(dir),
-                    file = Path.GetFileName(f),
-                    fullPath = f
-                });
+                    foreach (var f in Directory.GetFiles(dir, "*.assetbundle"))
+                    {
+                        string file = Path.GetFileName(f);
+                        seenNames.Add(file);
+                        _bundles.Add(new BundleInfo
+                        {
+                            folder = "Vanilla/" + Path.GetFileName(dir),
+                            file = file,
+                            fullPath = f,
+                            alreadyMounted = false,
+                        });
+                    }
+                }
             }
         }
+
+        // Registry: currently mounted Amplitude AssetBundles (mods, leftover mounts, …).
+        foreach (var p in AssetDatabase.AllProviders)
+        {
+            if (p == null || string.IsNullOrEmpty(p.Name)) continue;
+            if (string.Equals(p.Name, ProjectProviderName, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!(p is Amplitude.Framework.Asset.AssetBundle ab)) continue;
+            if (seenNames.Contains(ab.Name))
+            {
+                // Same leaf already listed from disk — mark adopt-friendly if paths match.
+                var existing = _bundles.FirstOrDefault(b =>
+                    string.Equals(b.file, ab.Name, StringComparison.OrdinalIgnoreCase));
+                if (existing != null) existing.alreadyMounted = true;
+                continue;
+            }
+            seenNames.Add(ab.Name);
+            _bundles.Add(new BundleInfo
+            {
+                folder = "Mounted",
+                file = ab.Name,
+                fullPath = string.IsNullOrEmpty(ab.Path) ? ab.Name : ab.Path,
+                alreadyMounted = true,
+            });
+        }
+
         _bundles = _bundles.OrderBy(b => b.folder).ThenBy(b => b.file).ToList();
+    }
+
+    /// <summary>Add / select an arbitrary .assetbundle (mod export, Compat Patcher source, …).</summary>
+    void OpenCustomBundle()
+    {
+        string path = EditorUtility.OpenFilePanel("Open assetbundle", "", "assetbundle");
+        if (string.IsNullOrEmpty(path)) return;
+        path = path.Replace('\\', '/');
+        string file = Path.GetFileName(path);
+        if (_bundles == null) RefreshBundleList();
+        var existing = _bundles.FirstOrDefault(b =>
+            string.Equals(b.fullPath, path, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(b.file, file, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            // Prefer the opened path; if registry already has this filename, adopt.
+            existing.fullPath = path;
+            existing.alreadyMounted = AssetDatabase.IsMounted(file);
+            _bundle = existing;
+        }
+        else
+        {
+            var info = new BundleInfo
+            {
+                folder = "Custom",
+                file = file,
+                fullPath = path,
+                alreadyMounted = AssetDatabase.IsMounted(file),
+            };
+            _bundles.Add(info);
+            _bundles = _bundles.OrderBy(b => b.folder).ThenBy(b => b.file).ToList();
+            _bundle = info;
+        }
+        LoadDescriptors();
     }
 
     // ── Mount / unmount ───────────────────────────────────────────────────────
     bool MountBundle(BundleInfo b, out string error)
     {
         error = null;
+        _ownsMount = false;
         // MercuryDatabases is owned by VanillaDatabaseMount — reuse it so the Database
         // Browser and this window share a single mount (Amplitude throws on double-mount).
-        if (ProviderName(b) == MercuryDatabasesProvider)
+        if (string.Equals(ProviderName(b), MercuryDatabasesProvider, StringComparison.OrdinalIgnoreCase))
         {
             if (!VanillaDatabaseMount.TryMount(out error)) return false;
             _provider = null;               // signals "use VanillaDatabaseMount" to the loaders
@@ -167,9 +247,21 @@ public class AssetExplorer : EditorWindow
             return true;
         }
 
-        if (_provider != null && _providerName == ProviderName(b)) return true; // already mounted
+        string want = ProviderName(b);
+        if (_provider != null && string.Equals(_providerName, want, StringComparison.OrdinalIgnoreCase))
+            return true; // already selected
 
-        Unmount();                          // different bundle — drop the previous one first
+        Unmount();                          // drop a previous *owned* mount only
+
+        // Adopt if already in the registry (Mod Tools / Compat Patcher / prior Open).
+        var existing = FindProvider(want);
+        if (existing != null)
+        {
+            _provider = existing;
+            _providerName = existing.Name;
+            _ownsMount = false;
+            return true;
+        }
 
         if (!File.Exists(b.fullPath))
         {
@@ -178,10 +270,11 @@ public class AssetExplorer : EditorWindow
         }
         try
         {
-            bool ok = AssetDatabase.TryMountAssetBundle(ProviderName(b), b.fullPath, uint.MaxValue,
+            bool ok = AssetDatabase.TryMountAssetBundle(want, b.fullPath, uint.MaxValue,
                 out _provider, Amplitude.Framework.Asset.AssetBundle.Options.None);
             if (!ok) { error = $"Failed to mount: {b.fullPath}"; return false; }
-            _providerName = ProviderName(b);
+            _providerName = want;
+            _ownsMount = true;
             return true;
         }
         catch (Exception ex)
@@ -191,17 +284,27 @@ public class AssetExplorer : EditorWindow
         }
     }
 
+    static IAssetProvider FindProvider(string providerName)
+    {
+        if (string.IsNullOrEmpty(providerName)) return null;
+        foreach (var p in AssetDatabase.AllProviders)
+            if (p != null && string.Equals(p.Name, providerName, StringComparison.OrdinalIgnoreCase))
+                return p;
+        return null;
+    }
+
     void Unmount()
     {
         // Only unmount bundles *we* mounted. VanillaDatabaseMount owns MercuryDatabases;
-        // touching it here would break the Database Browser mid-session.
-        if (_provider != null && !string.IsNullOrEmpty(_providerName)
-            && _providerName != MercuryDatabasesProvider)
+        // Compat Patcher / Mod Tools own their mounts — adopting must not tear them down.
+        if (_ownsMount && _provider != null && !string.IsNullOrEmpty(_providerName)
+            && !string.Equals(_providerName, MercuryDatabasesProvider, StringComparison.OrdinalIgnoreCase))
         {
             try { AssetDatabase.UnmountAssetBundle(_providerName); } catch { }
         }
         _provider = null;
         _providerName = null;
+        _ownsMount = false;
     }
 
     // Resolve the live provider for the current bundle (VanillaDatabaseMount's or ours).
@@ -209,14 +312,12 @@ public class AssetExplorer : EditorWindow
     {
         get
         {
-            if (_providerName == MercuryDatabasesProvider)
+            if (string.Equals(_providerName, MercuryDatabasesProvider, StringComparison.OrdinalIgnoreCase))
             {
                 // VanillaDatabaseMount exposes IsVanillaAsset etc., but for raw descriptor
                 // enumeration we need the provider itself. Recover it from AllProviders by name
                 // (same recovery pattern ArchiveTranslations uses after a domain reload).
-                foreach (var p in AssetDatabase.AllProviders)
-                    if (p.Name == MercuryDatabasesProvider) return p;
-                return null;
+                return FindProvider(MercuryDatabasesProvider);
             }
             return _provider;
         }
@@ -453,12 +554,14 @@ public class AssetExplorer : EditorWindow
 
         // Toolbar
         EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-        if (GUILayout.Button("Refresh Bundles", EditorStyles.toolbarButton, GUILayout.Width(120)))
+        if (GUILayout.Button("Refresh Bundles", EditorStyles.toolbarButton, GUILayout.Width(110)))
         { RefreshBundleList(); }
+        if (GUILayout.Button("Open…", EditorStyles.toolbarButton, GUILayout.Width(55)))
+            OpenCustomBundle();
         GUILayout.Space(6);
         GUILayout.Label("Bundle:", EditorStyles.toolbarButton);
         string label = _bundle == null ? "(none)" : $"{_bundle.folder}/{_bundle.file}";
-        if (GUILayout.Button(label, EditorStyles.toolbarPopup, GUILayout.Width(Mathf.Min(300, label.Length * 7 + 20))))
+        if (GUILayout.Button(label, EditorStyles.toolbarPopup, GUILayout.MinWidth(180), GUILayout.MaxWidth(420)))
         {
             if (_bundles == null) RefreshBundleList();
             var dd = new BundleDropdown(_bundleDdState, _bundles, picked =>
@@ -953,10 +1056,14 @@ public class AssetExplorer : EditorWindow
             var root = new AdvancedDropdownItem("Bundles");
             if (_bundles == null || _bundles.Count == 0)
             {
-                root.AddChild(new AdvancedDropdownItem("(no bundles — set Humankind folder)"));
+                root.AddChild(new AdvancedDropdownItem("(no bundles — set Humankind folder or Open…)"));
                 return root;
             }
-            var byFolder = _bundles.GroupBy(b => b.folder).OrderBy(g => g.Key);
+            // Prefer Mounted / Custom groups first so mod bundles from Compat Patcher are easy to find.
+            var byFolder = _bundles.GroupBy(b => b.folder)
+                .OrderBy(g => g.Key.StartsWith("Mounted", StringComparison.OrdinalIgnoreCase) ? 0
+                            : g.Key.StartsWith("Custom", StringComparison.OrdinalIgnoreCase) ? 1 : 2)
+                .ThenBy(g => g.Key);
             foreach (var g in byFolder)
             {
                 var f = new AdvancedDropdownItem(g.Key);

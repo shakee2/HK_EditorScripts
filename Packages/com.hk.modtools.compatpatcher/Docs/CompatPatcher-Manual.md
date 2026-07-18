@@ -25,14 +25,16 @@ It also validates your load order against known crash-causing patterns and suppo
 ### 1. Add Your Mods
 
 At the top of the window, add each mod you want to compare. Supported formats:
-- `.unitypackage` (preferred)
+- `.assetbundle` (best for live refs — stays mounted for the session)
+- `.unitypackage`
 - `.zip`
-- `.assetbundle`
 - A folder containing `Assets/Databases/`
 
 Click **+ Add .unitypackage / .zip / .assetbundle** or **+ Add folder**.
 
 Each mod appears as a row with a name field and path. Use the **▲ ▼** buttons to set load order — **last in the list wins** (same as in-game load order).
+
+After Compare with assetbundles, expand **Loaded mod bundles (excl. vanilla)** to see mounts and **Force unload**. Remount only happens if a mount is missing or stale.
 
 > **Tip:** The load order matters. If Mod A and Mod B both define `Unit_X`, and Mod B is below Mod A, then Mod B's version is the "winner" by default.
 
@@ -48,11 +50,25 @@ The sidecar records your previous decisions. On re-run:
 ### 3. Compare
 
 Press **Compare** (requires at least 2 mods). The patcher:
+
 1. Reads each mod's database assets (read-only, never imports into your project)
 2. Builds an element map keyed by `(type, name)` — path-agnostic
 3. Diffs every element present in multiple mods
-4. Validates the load order against crash-causing patterns
-5. Populates the three panels below
+4. Scans **`Assets/Databases/Patch/`** for **orphans** (see below)
+5. Validates the load order against crash-causing patterns
+6. Populates the three panels below
+
+### Patch orphans (after Compare)
+
+Compare also diffs **`Assets/Databases/Patch/`** against the loaded mods. A foldout under the stats line lists **orphans** — Patch/ elements that still override at load but no longer sit on a live multi-mod conflict:
+
+| Kind | Meaning |
+|---|---|
+| **gone from mods** | No compared mod defines this name anymore — Patch/ alone forces it |
+| **sole mod left** | Only one mod still has it — the conflict dissolved; Patch/ still overrides that mod |
+| **mods agree** | ≥2 mods still have it but Compare sees them Identical — Patch/ overrides for no conflict |
+
+**Ping** selects the patch asset; **Remove** deletes that named element from the Patch/ collection. Keep the row if you still want a deliberate custom edit. Full dump also goes to the Console each Compare.
 
 ---
 
@@ -120,7 +136,7 @@ For the selected element:
 
 Click **Compare side-by-side** from the detail panel to open a separate window showing:
 
-- **Left**: searchable list of elements (from your current filtered view)
+- **Left**: searchable list of elements (from your current filtered view), with type filter and optional Group-by-type (same pattern as Database Browser)
 - **Right**: one column per contributing mod + a **Patch** column (if the element is already in the patch)
 
 Each column stacks the element and its matching mappers (UIMapper, DescriptorMapper, etc.).
@@ -222,7 +238,11 @@ Some element types (e.g. `TechnologyDefinition`) store their real lists in an Od
 If a conflict's only diffs are `ExtraInWinner` (the winner has something others don't), it's usually safe to ignore — the winner already includes those entries. Toggle **hide winner-only** to filter these out.
 
 ### Scratch Staging
-When you import or compare, the patcher stages source files to `Assets/_PatcherStage/` temporarily. These are deleted automatically. If you see leftover folders, they're harmless — delete them manually or let the next Compare clean them up.
+- **`.assetbundle` sources:** Compare is fully in-memory. Bundles stay **mounted for the session** so inspector references resolve (like vanilla). No `_PatcherBundleStage` / `_PatcherStage` fill on Compare alone. Use the **Loaded mod bundles** foldout to see mounts (excl. vanilla) and **Force unload**.
+- **Folder / zip / unitypackage:** Import, side-by-side Compare, and load-order Validate stage text into `Assets/_PatcherStage/<ModName>/…` temporarily, then delete it. Leftover empty folders are harmless — delete manually if needed.
+
+### Loaded Mod Bundles
+After Compare with `.assetbundle` mods, open **Loaded mod bundles (excl. vanilla)** under the source list. Remount only happens when a mount is missing or stale; otherwise Compare reuses the provider. Vanilla (`mercurydatabases.assetbundle`) is owned by Mod Tools and is never listed or unloaded here.
 
 ### Vanilla Cache
 The validation panel caches vanilla databases for the session. If you change the Humankind folder or remount vanilla, use **Tools → Debug → Compat Patcher → Clear Vanilla Validation Cache** to force a reload.
@@ -271,6 +291,8 @@ Set the Humankind folder in the Mod Editor (Mercury → Mod Editor → Settings)
 |------|---------|
 | `CompatPatcherWindow.cs` | Main window UI and workflow |
 | `CompatCompareWindow.cs` | Side-by-side inspector |
+| `CompatBundleMounts.cs` | Session mounts for mod `.assetbundle`s |
+| `LiveElementBuilder.cs` | In-memory `HkElement` from live SO |
 | `ModReader.cs` | Reads mods (.unitypackage, .zip, .assetbundle, folder) |
 | `ConflictAnalyzer.cs` | N-way diff and classification |
 | `PatchBuilder.cs` | Stages source files and imports into Patch/ |

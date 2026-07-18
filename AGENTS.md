@@ -65,7 +65,8 @@ package's `Editor/` (see the README table for feature-area descriptions):
   - `Docs/manual.md` — user manual shipped alongside the exported `.unitypackage`.
 - **`Packages/com.hk.modtools.compatpatcher/Editor/CompatPatcher/`** (experimental, no tag yet) —
   depends on `shared` only: `CompatPatcherWindow.cs` (main window), `CompatCompareWindow.cs`,
-  `ModReader.cs`, `ConflictAnalyzer.cs`, `UnityYaml.cs`, `PatchBuilder.cs`, `Sidecar.cs`,
+  `CompatBundleMounts.cs`, `LiveElementBuilder.cs`, `ModReader.cs`, `ConflictAnalyzer.cs`,
+  `UnityYaml.cs`, `PatchBuilder.cs`, `Sidecar.cs`,
   `LoadOrderValidator.cs`, `DiffGui.cs`.
 - **`Packages/com.hk.modtools.unitvisuals/Editor/UnitVisualWorkflow/`** (experimental, no tag yet) —
   depends on `shared` only: `UnitVisualWorkflow.cs` (wizard), `PawnFragmentAuthor.cs`,

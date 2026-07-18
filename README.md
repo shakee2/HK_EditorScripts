@@ -90,7 +90,7 @@ Within each package's `Editor/` folder, files stay grouped by role in subfolders
 #### Asset & Bundle Tools
 | Tool | Menu | Description |
 |------|------|-------------|
-| **AssetExplorer** | `Tools/shakee's Tools/Asset Explorer` | Mount vanilla `.assetbundle` files, list descriptors, preview assets, import into project |
+| **AssetExplorer** | `Tools/shakee's Tools/Asset Explorer` | Browse vanilla / mounted / Open… `.assetbundle`s, list descriptors, preview, import into project |
 | **GuidLookup** | `Tools/shakee's Tools/Debug/Find GUID In Vanilla Bundles` | Resolve an Amplitude GUID against all vanilla bundles |
 | **BundleContentProbe** | `Tools/shakee's Tools/Debug/Inspect Built Mod Bundle` | Inspect the mod's built assetbundle to confirm what shipped |
 

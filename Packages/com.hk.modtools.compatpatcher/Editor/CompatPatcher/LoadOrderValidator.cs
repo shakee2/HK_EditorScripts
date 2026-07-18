@@ -33,9 +33,11 @@ namespace HK.CompatPatcher
     ///
     /// Because whole elements are replaced last-wins, the merged datatable it checks is: every vanilla
     /// element, overridden by name by each mod in load order. Vanilla comes from the mounted MercuryDatabases
-    /// bundle as live objects (VanillaDatabaseMount); each overriding mod element is *staged* to a live object
-    /// (PatchBuilder) so Odin-backed lists (a tech's SimulationEventEffects) read correctly — never guessed
-    /// from raw YAML. Rules are then evaluated by reflection against the exact fields DataController reads.
+    /// bundle as live objects (VanillaDatabaseMount). Assetbundle mods reuse mounted LiveObjects; folder/zip/
+    /// unitypackage mods stage to live objects (PatchBuilder) so Odin-backed lists (a tech's
+    /// SimulationEventEffects) read correctly — never guessed from raw YAML. Overlay typing prefers
+    /// LiveObject.GetType() over MonoScript guid:fileID resolution. Rules are then evaluated by reflection
+    /// against the exact fields DataController reads.
     ///
     /// Implemented rules (all reset-capable → Error):
     ///   :4713 unlock references a constructible no vanilla-or-mod defines
@@ -261,18 +263,42 @@ namespace HK.CompatPatcher
                            Dictionary<string, Object> presentationMount, Dictionary<string, string> source,
                            List<string> stagePaths)
         {
-            var relevant = mod.Elements.Values.Where(el => !el.IsRoot && IsRelevant(ResolveType(el.Type)));
+            // Prefer LiveObject.GetType() — assetbundle HkElements may carry a FullName Type key (or a
+            // MonoScript localId that AssetDatabase.GUIDToAssetPath can't resolve), and ResolveType(el.Type)
+            // then returns null → zero overlay → silent "0 findings" even for known :4734 load orders.
+            var relevant = mod.Elements.Values.Where(el => !el.IsRoot && IsRelevant(ResolveElementType(el))).ToList();
+            int placed = 0;
             foreach (var g in relevant.GroupBy(el => el.SourcePath))
             {
                 var (objects, stage) = PatchBuilder.StageSourceFile(mod, g.Key);
                 if (stage != null) stagePaths.Add(stage);
                 foreach (var el in g)
                 {
-                    var live = objects.FirstOrDefault(o => o != null && o.name == el.Name);
+                    // Bundle path: LiveObject is authoritative (StageSourceFile returns the same instances).
+                    var live = el.LiveObject
+                               ?? objects.FirstOrDefault(o => o != null && o.name == el.Name);
                     if (live != null && Place(live, construct, resource, tech, civic, presentationUnit, presentationPawn, presentationMount))
+                    {
                         source[el.Name] = mod.Name;
+                        placed++;
+                    }
                 }
             }
+            if (placed == 0 && mod.Elements.Count > 0)
+            {
+                int candidates = relevant.Count;
+                UnityEngine.Debug.LogWarning(
+                    $"[CompatPatcher] Load-order validation: mod '{mod.Name}' overlaid 0 elements "
+                    + $"(relevant candidates: {candidates}, total elements: {mod.Elements.Count}). "
+                    + "Family-unlock hazards against this mod will be missed.");
+            }
+        }
+
+        Type ResolveElementType(HkElement el)
+        {
+            if (el == null) return null;
+            if (el.LiveObject != null) return el.LiveObject.GetType();
+            return ResolveType(el.Type);
         }
 
         bool IsRelevant(Type t) =>
@@ -495,20 +521,29 @@ namespace HK.CompatPatcher
         }
 
         // guid:fileID (mod element m_Script) -> concrete element Type, via the script's MonoScript.
+        // Also accepts a CLR FullName fallback (LiveElementBuilder when MonoScript lookup fails).
         Type ResolveType(string guidFileId)
         {
             if (string.IsNullOrEmpty(guidFileId)) return null;
             if (_typeCache.TryGetValue(guidFileId, out var cached)) return cached;
             Type result = null;
             int c = guidFileId.IndexOf(':');
-            string guid = c > 0 ? guidFileId.Substring(0, c) : guidFileId;
-            var path = AssetDatabase.GUIDToAssetPath(guid);
-            if (!string.IsNullOrEmpty(path))
-                foreach (var o in AssetDatabase.LoadAllAssetsAtPath(path))
-                    if (o is MonoScript ms
-                        && AssetDatabase.TryGetGUIDAndLocalFileIdentifier(ms, out var g, out long fid)
-                        && (g + ":" + fid) == guidFileId)
-                    { result = ms.GetClass(); break; }
+            if (c < 0)
+            {
+                // FullName / type name — not a MonoScript key.
+                result = FindType(guidFileId);
+            }
+            else
+            {
+                string guid = guidFileId.Substring(0, c);
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (!string.IsNullOrEmpty(path))
+                    foreach (var o in AssetDatabase.LoadAllAssetsAtPath(path))
+                        if (o is MonoScript ms
+                            && AssetDatabase.TryGetGUIDAndLocalFileIdentifier(ms, out var g, out long fid)
+                            && (g + ":" + fid) == guidFileId)
+                        { result = ms.GetClass(); break; }
+            }
             _typeCache[guidFileId] = result;
             return result;
         }

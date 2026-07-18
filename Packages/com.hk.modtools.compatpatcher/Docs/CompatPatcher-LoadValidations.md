@@ -38,13 +38,17 @@ in the same unlock event keep the old one).
 
 **How the merge is built (uniform live objects, no Odin guessing):**
 - **Vanilla base** = the mounted `MercuryDatabases` bundle, loaded as live objects via `VanillaDatabaseMount`
-  (same source the Tech Tree / DatabaseBrowser use). Only four categories are loaded — constructibles,
-  resources, techs, civics — and the result is **cached for the whole session** (vanilla doesn't change), so
-  only the first Compare pays the load. The cache self-invalidates on unmount/domain reload; clear it manually
-  via *Tools ▸ Debug ▸ Compat Patcher ▸ Clear Vanilla Validation Cache* after changing the Humankind folder.
-- **Mod overlay** = each mod's constructibles/resources/techs/civics **staged to live objects**
-  (`PatchBuilder.StageSourceFile`), overlaid by name in load order (last wins). Staging means a tech's
-  Odin-serialized `SimulationEventEffects` deserialize correctly instead of being parsed out of raw YAML.
+  (same source the Tech Tree / DatabaseBrowser use). Only the validation-relevant categories are loaded —
+  constructibles, resources, techs, civics, presentation unit/pawn/mount — and the result is **cached for
+  the whole session** (vanilla doesn't change), so only the first Compare pays the load. The cache
+  self-invalidates on unmount/domain reload; clear it manually via *Tools ▸ Debug ▸ Compat Patcher ▸
+  Clear Vanilla Validation Cache* after changing the Humankind folder.
+- **Mod overlay** = each mod's constructibles/resources/techs/civics/presentation defs, overlaid by name
+  in load order (last wins). **Assetbundle** mods reuse the session-mounted `LiveObject` directly (no
+  `_PatcherStage`). **Folder / zip / unitypackage** mods still stage each source file to a live object
+  (`PatchBuilder.StageSourceFile`) so Odin-serialized `SimulationEventEffects` deserialize correctly
+  instead of being guessed from raw YAML. Overlay typing uses `LiveObject.GetType()` when present —
+  MonoScript `guid:fileID` resolution alone is not enough for bundle-built `HkElement`s.
 - Rules are then evaluated by reflection against the exact fields `DataController.Initialize` reads
   (`SimulationEventEffects` / `Choices` / `Effects` / `EffectByLevels` → `SimulationEventEffect_UnlockConstructible.
   ConstructibleReferences` / `..._UnlockResource.ResourceReferences`; `ConstructibleDefinition.SerializableFamily`).

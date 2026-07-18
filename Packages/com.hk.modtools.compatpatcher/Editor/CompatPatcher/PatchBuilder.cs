@@ -27,18 +27,28 @@ namespace HK.CompatPatcher
         /// <summary>Stage an element's source file and return the live element (+ its collection type + scratch path).</summary>
         public static (UnityEngine.Object element, Type collectionType, string stagePath) StageElement(HkMod mod, HkElement el)
         {
-            if (mod == null || el == null || !mod.RawFiles.TryGetValue(el.SourcePath, out var text))
+            if (mod == null || el == null) return (null, null, null);
+
+            // Assetbundle path: use the mounted live object (no _PatcherStage).
+            if (el.LiveObject != null)
+            {
+                Type colType = null;
+                DatatableElementCollectionUtility.TryGetCollectionTypeFromElementType(el.LiveObject.GetType(), ref colType);
+                return (el.LiveObject, colType, null);
+            }
+
+            if (!mod.RawFiles.TryGetValue(el.SourcePath, out var text))
                 return (null, null, null);
             string stagePath = StageFile(mod.Name, el.SourcePath, text);
             UnityEngine.Object live = null;
-            Type colType = null;
+            Type fileColType = null;
             foreach (var o in AssetDatabase.LoadAllAssetsAtPath(stagePath))
             {
                 if (o == null) continue;
-                if (colType == null && o is IDatatableElementCollection) colType = o.GetType();
+                if (fileColType == null && o is IDatatableElementCollection) fileColType = o.GetType();
                 if (live == null && o is IDatatableElement && o.name == el.Name) live = o;
             }
-            return (live, colType, stagePath);
+            return (live, fileColType, stagePath);
         }
 
         public static void CleanupStage(string stagePath)
@@ -61,11 +71,24 @@ namespace HK.CompatPatcher
         /// Stage a whole source .asset file and hand back *every* live object in it (elements + collection),
         /// so a caller that needs several elements out of one file imports it only once. Caller must
         /// CleanupStage(stagePath) when done. Used by the load-order validator to overlay Odin-correct mod
-        /// versions on top of the vanilla live objects.
+        /// versions on top of the vanilla live objects. For assetbundle mods, returns LiveObjects with a
+        /// null stagePath (nothing to clean up).
         /// </summary>
         public static (UnityEngine.Object[] objects, string stagePath) StageSourceFile(HkMod mod, string sourcePath)
         {
-            if (mod == null || sourcePath == null || !mod.RawFiles.TryGetValue(sourcePath, out var text))
+            if (mod == null || sourcePath == null) return (Array.Empty<UnityEngine.Object>(), null);
+
+            if (mod.FromAssetBundle)
+            {
+                var lives = mod.Elements.Values
+                    .Where(e => e.SourcePath == sourcePath && e.LiveObject != null)
+                    .Select(e => e.LiveObject)
+                    .Distinct()
+                    .ToArray();
+                return (lives, null);
+            }
+
+            if (!mod.RawFiles.TryGetValue(sourcePath, out var text))
                 return (Array.Empty<UnityEngine.Object>(), null);
             string stagePath = StageFile(mod.Name, sourcePath, text);
             return (AssetDatabase.LoadAllAssetsAtPath(stagePath), stagePath);
@@ -86,20 +109,33 @@ namespace HK.CompatPatcher
         public static int ImportElements(IEnumerable<(HkMod mod, HkElement el)> targets)
         {
             var seen = new HashSet<string>();
-            var groups = targets.Where(t => t.mod != null && t.el != null
-                                            && seen.Add(t.mod.Name + ":" + t.el.Type + ":" + t.el.Name))
-                                .GroupBy(t => t.mod.Name + "" + t.el.SourcePath)
-                                .ToList();
+            var list = targets.Where(t => t.mod != null && t.el != null
+                                          && seen.Add(t.mod.Name + ":" + t.el.Type + ":" + t.el.Name))
+                              .ToList();
+
+            // Bundle-sourced elements: import directly from LiveObject (no text staging).
+            var liveTargets = list.Where(t => t.el.LiveObject != null).ToList();
+            var textTargets = list.Where(t => t.el.LiveObject == null).ToList();
+
             int done = 0;
             try
             {
+                for (int i = 0; i < liveTargets.Count; i++)
+                {
+                    var t = liveTargets[i];
+                    if (EditorUtility.DisplayCancelableProgressBar("Importing to patch",
+                        t.el.Name, (float)i / System.Math.Max(1, list.Count))) break;
+                    if (Duplicate(t.el.LiveObject, null, t.el.TypeHint) != null) done++;
+                }
+
+                var groups = textTargets.GroupBy(t => t.mod.Name + "" + t.el.SourcePath).ToList();
                 for (int gi = 0; gi < groups.Count; gi++)
                 {
                     var g = groups[gi];
                     var first = g.First();
                     if (!first.mod.RawFiles.TryGetValue(first.el.SourcePath, out var text)) continue;
                     if (EditorUtility.DisplayCancelableProgressBar("Importing to patch",
-                        first.el.SourcePath, (float)gi / groups.Count)) break;
+                        first.el.SourcePath, (float)(liveTargets.Count + gi) / System.Math.Max(1, list.Count))) break;
 
                     string stage = StageFile(first.mod.Name, first.el.SourcePath, text);
                     try
@@ -142,6 +178,27 @@ namespace HK.CompatPatcher
                 return dups[0] as UnityEngine.Object;
             }
             catch (Exception e) { Debug.LogError("[CompatPatcher] Duplicate failed: " + e); return null; }
+        }
+
+        /// <summary>
+        /// Remove a named non-root element from a patch <c>.asset</c> (sub-asset destroy). Returns true if removed.
+        /// Does not delete the collection file even if it becomes empty.
+        /// </summary>
+        public static bool RemoveNamedElement(string assetPath, string elementName)
+        {
+            if (string.IsNullOrEmpty(assetPath) || string.IsNullOrEmpty(elementName)) return false;
+            UnityEngine.Object target = null;
+            foreach (var o in AssetDatabase.LoadAllAssetsAtPath(assetPath))
+            {
+                if (o == null || o.name != elementName) continue;
+                if (o is IDatatableElementCollection) continue;
+                if (o is IDatatableElement) { target = o; break; }
+            }
+            if (target == null) return false;
+            Undo.DestroyObjectImmediate(target);
+            EditorUtility.SetDirty(AssetDatabase.LoadMainAssetAtPath(assetPath));
+            AssetDatabase.SaveAssets();
+            return true;
         }
 
         static string StageFile(string modName, string sourcePath, string fileText)

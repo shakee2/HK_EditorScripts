@@ -25,6 +25,8 @@ namespace HK.CompatPatcher
         public Dictionary<string, object> Body;       // parsed field tree (null if opaque)
         public HashSet<string> Refs;        // referenced element names
         public Dictionary<string, string> Flat;       // lazily-filled path -> value
+        /// <summary>Live mounted object for assetbundle sources (no YAML staging needed).</summary>
+        public UnityEngine.Object LiveObject;
         public string Key => Type + "" + Name;
     }
 
@@ -34,6 +36,7 @@ namespace HK.CompatPatcher
         public string Name;
         public string Path;
         public int FileCount;
+        public bool FromAssetBundle;
         public Dictionary<string, HkElement> Elements = new Dictionary<string, HkElement>();
         public Dictionary<string, string> RawFiles = new Dictionary<string, string>(); // logical path -> full .asset text (for staging)
     }
@@ -43,14 +46,82 @@ namespace HK.CompatPatcher
         public static HkMod Load(string modName, string path)
         {
             var mod = new HkMod { Name = modName, Path = path };
+            string ext = System.IO.Path.GetExtension(path)?.ToLowerInvariant();
+            if (ext == ".assetbundle")
+            {
+                LoadFromAssetBundle(mod, path);
+                return mod;
+            }
+
             foreach (var (logicalPath, text) in EnumerateDatabaseAssets(path))
             {
                 mod.FileCount++;
                 mod.RawFiles[logicalPath] = text;
                 foreach (var el in ParseElements(text, logicalPath))
-                    mod.Elements[el.Key] = el; // last within a mod wins (in-mod override)
+                    AddElement(mod, el);
             }
             return mod;
+        }
+
+        static void AddElement(HkMod mod, HkElement el)
+        {
+            if (el == null || string.IsNullOrEmpty(el.Name)) return;
+            if (mod.Elements.TryGetValue(el.Key, out var prior))
+            {
+                // Deterministic in-mod last-wins: keep lexicographically greater SourcePath
+                int cmp = string.Compare(el.SourcePath, prior.SourcePath, StringComparison.Ordinal);
+                if (cmp < 0) return;
+                if (cmp == 0)
+                {
+                    // Same collection path — FetchAllSubAssets can yield the same element twice; keep last silently.
+                    mod.Elements[el.Key] = el;
+                    return;
+                }
+                string typeName = el.LiveObject != null ? el.LiveObject.GetType().Name
+                    : (prior.LiveObject != null ? prior.LiveObject.GetType().Name : null);
+                if (string.IsNullOrEmpty(typeName)) typeName = el.TypeHint ?? "?";
+                Debug.LogWarning($"[CompatPatcher] Duplicate element '{el.Name}' (type {typeName}, collection {el.TypeHint}) in mod '{mod.Name}': "
+                               + $"'{prior.SourcePath}' vs '{el.SourcePath}' — keeping latter.");
+            }
+            mod.Elements[el.Key] = el;
+        }
+
+        static void LoadFromAssetBundle(HkMod mod, string path)
+        {
+            mod.FromAssetBundle = true;
+            var provider = CompatBundleMounts.EnsureMounted(path, mod.Name);
+            var descriptors = new List<AssetDescriptor>();
+            provider.AddAllAssetDescriptors(descriptors, AssetProviderOption.AskForType);
+            foreach (var d in descriptors.OrderBy(x => x.FileName ?? "", StringComparer.Ordinal)
+                                         .ThenBy(x => x.FilePath ?? "", StringComparer.Ordinal))
+            {
+                var collectionType = d.GetAssetType();
+                if (collectionType == null || !typeof(DatatableElementCollection).IsAssignableFrom(collectionType))
+                    continue;
+                var collection = provider.LoadAsset<DatatableElementCollection>(d);
+                if (collection == null) continue;
+                collection.Initialize();
+                var elementType = collection.DatatableElementType;
+                if (elementType == null) continue;
+
+                string logicalPath = NormalizeBundleDatabasePath(d.FilePath, d.FileName);
+                string stem = System.IO.Path.GetFileNameWithoutExtension(logicalPath);
+                mod.FileCount++;
+
+                var collectionEl = LiveElementBuilder.Build(collection, logicalPath, stem);
+                if (collectionEl != null) AddElement(mod, collectionEl);
+
+                var elements = provider.FetchAllSubAssetsOfType(d.Guid, elementType)
+                    .Where(o => o is IDatatableElement && o != collection)
+                    .OrderBy(o => o.name, StringComparer.Ordinal)
+                    .ToArray();
+                foreach (var element in elements)
+                {
+                    if (element is IDatatableElement de) de.Initialize();
+                    var el = LiveElementBuilder.Build(element, logicalPath, stem);
+                    if (el != null) AddElement(mod, el);
+                }
+            }
         }
 
         // ---- source enumeration -------------------------------------------
@@ -85,8 +156,8 @@ namespace HK.CompatPatcher
             }
             else if (ext == ".assetbundle")
             {
-                foreach (var kv in ReadAssetBundleDatabaseAssets(path))
-                    yield return (kv.Key, kv.Value);
+                throw new InvalidDataException(
+                    "EnumerateDatabaseAssets does not support .assetbundle (use ModReader.Load, which mounts in-memory).");
             }
             else
             {
@@ -101,56 +172,6 @@ namespace HK.CompatPatcher
             return r.ReadToEnd();
         }
 
-        static IEnumerable<KeyValuePair<string, string>> ReadAssetBundleDatabaseAssets(string path)
-        {
-            IAssetProvider provider = null;
-            string providerName = "compatpatcher." + Hash(path) + "." + System.IO.Path.GetFileName(path).ToLowerInvariant();
-            bool weMounted = false;
-            string sharedProviderName = System.IO.Path.GetFileName(path).ToLowerInvariant();
-
-            try
-            {
-                if (AssetDatabase.IsMounted(sharedProviderName))
-                {
-                    provider = AssetDatabase.AllProviders.FirstOrDefault(p => p.Name == sharedProviderName);
-                }
-                else
-                {
-                    weMounted = AssetDatabase.TryMountAssetBundle(providerName, path, uint.MaxValue, out provider, Amplitude.Framework.Asset.AssetBundle.Options.None);
-                }
-                if (provider == null)
-                    throw new InvalidDataException("Failed to mount assetbundle: " + path);
-
-                var descriptors = new List<AssetDescriptor>();
-                provider.AddAllAssetDescriptors(descriptors, AssetProviderOption.AskForType);
-                foreach (var d in descriptors)
-                {
-                    var collectionType = d.GetAssetType();
-                    if (collectionType == null || !typeof(DatatableElementCollection).IsAssignableFrom(collectionType)) continue;
-                    var collection = provider.LoadAsset<DatatableElementCollection>(d);
-                    if (collection == null) continue;
-                    collection.Initialize();
-                    var elementType = collection.DatatableElementType;
-                    if (elementType == null) continue;
-
-                    string logicalPath = NormalizeBundleDatabasePath(d.FilePath, d.FileName);
-                    var elements = provider.FetchAllSubAssetsOfType(d.Guid, elementType)
-                        .Where(o => o is IDatatableElement)
-                        .ToArray();
-                    string text = SerializeBundleCollection(collection, elements, logicalPath);
-                    if (!string.IsNullOrEmpty(text))
-                        yield return new KeyValuePair<string, string>(logicalPath, text);
-                }
-            }
-            finally
-            {
-                if (weMounted)
-                {
-                    try { AssetDatabase.UnmountAssetBundle(providerName); } catch { }
-                }
-            }
-        }
-
         static string NormalizeBundleDatabasePath(string filePath, string fileName)
         {
             string p = (filePath ?? "").Replace('\\', '/');
@@ -160,44 +181,8 @@ namespace HK.CompatPatcher
             return "Assets/Databases/AssetBundle/" + name;
         }
 
-        static string SerializeBundleCollection(DatatableElementCollection collection, UnityEngine.Object[] elements, string logicalPath)
-        {
-            string dir = "Assets/_PatcherBundleStage/" + Hash(logicalPath);
-            Directory.CreateDirectory(dir);
-            string stagePath = dir + "/" + Sanitize(System.IO.Path.GetFileNameWithoutExtension(logicalPath)) + ".asset";
-
-            try
-            {
-                var collectionClone = CloneFromBundle(collection);
-                if (collectionClone == null) return null;
-                var objects = new List<UnityEngine.Object> { collectionClone };
-                foreach (var element in elements)
-                {
-                    if (element == null || element == collection) continue;
-                    if (element is IDatatableElement de) de.Initialize();
-                    var clone = CloneFromBundle(element);
-                    if (clone != null) objects.Add(clone);
-                }
-
-                SaveToFile(objects.ToArray(), stagePath);
-                return File.Exists(stagePath) ? File.ReadAllText(stagePath) : null;
-            }
-            finally
-            {
-                if (File.Exists(stagePath))
-                {
-                    try { UnityEditor.AssetDatabase.DeleteAsset(stagePath); } catch { File.Delete(stagePath); }
-                }
-                try
-                {
-                    if (Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
-                        UnityEditor.AssetDatabase.DeleteAsset(dir);
-                }
-                catch { }
-            }
-        }
-
-        static UnityEngine.Object CloneFromBundle(UnityEngine.Object source)
+        /// <summary>Deep-clone a mounted bundle object for Import when a mutable copy is needed.</summary>
+        public static UnityEngine.Object CloneFromBundle(UnityEngine.Object source)
         {
             if (source == null) return null;
             var dest = ScriptableObject.CreateInstance(source.GetType());
@@ -224,26 +209,6 @@ namespace HK.CompatPatcher
                 }
             }
             return dest;
-        }
-
-        static void SaveToFile(UnityEngine.Object[] objects, string path)
-        {
-            var method = typeof(UnityEditorInternal.InternalEditorUtility).GetMethod(
-                "SaveToSerializedFileAndForget",
-                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public,
-                null, new[] { typeof(UnityEngine.Object[]), typeof(string), typeof(bool) }, null);
-            if (method != null)
-            {
-                method.Invoke(null, new object[] { objects, path, true });
-            }
-            else
-            {
-                var main = objects[0];
-                UnityEditor.AssetDatabase.CreateAsset(main, path);
-                for (int i = 1; i < objects.Length; i++)
-                    UnityEditor.AssetDatabase.AddObjectToAsset(objects[i], path);
-                UnityEditor.AssetDatabase.SaveAssets();
-            }
         }
 
         // ---- .unitypackage = gzip(tar of <guid>/{pathname,asset,asset.meta}) ----
@@ -379,22 +344,6 @@ namespace HK.CompatPatcher
             int j = i;
             while (j < s.Length && s[j] != ',' && s[j] != '}' && s[j] != ' ') j++;
             return s.Substring(i, j - i).Trim();
-        }
-
-        static string Sanitize(string s)
-        {
-            foreach (var c in System.IO.Path.GetInvalidFileNameChars()) s = s.Replace(c, '_');
-            return s;
-        }
-
-        static string Hash(string s)
-        {
-            unchecked
-            {
-                uint h = 2166136261;
-                foreach (var c in s) { h ^= c; h *= 16777619; }
-                return h.ToString("x8");
-            }
         }
     }
 }
