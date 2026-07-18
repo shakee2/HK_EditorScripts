@@ -137,8 +137,9 @@ The translations bundle (`Assets/Editor/Resources/Translations/…`) ships with 
 ### `com.hk.modtools.compatpatcher` (experimental)
 | Tool | Menu | Description |
 |------|------|-------------|
-| **CompatPatcherWindow** | `Tools/shakee's Tools/Compatibility Patcher` | Pick source mods, set load order, diff conflicting elements, select per-element winners, mass-import into Patch folder |
+| **CompatPatcherWindow** | `Tools/shakee's Tools/Compatibility Patcher` | Pick source mods, set load order, diff conflicting elements, select per-element winners, mass-import / Mass Change into Patch folder |
 | **CompatCompareWindow** | (opened from above) | Side-by-side inspector of one conflicting element across all mods + existing Patch version |
+| **MassFieldChangeWindow** | (opened from Compat Patcher) | Bulk field ADD/PICK on already-imported Patch elements (filter or multi-select scope) |
 | **DiffGui** | — | Shared diff rendering for both windows |
 | **LoadOrderValidator** | `Tools/shakee's Tools/Debug/Compat Patcher/Clear Vanilla Validation Cache` | Validates load order against vanilla; menu item drops the cached vanilla baseline so the next Compare reloads it |
 

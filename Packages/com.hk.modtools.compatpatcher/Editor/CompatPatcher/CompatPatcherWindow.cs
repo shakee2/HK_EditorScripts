@@ -73,11 +73,13 @@ namespace HK.CompatPatcher
         readonly Dictionary<string, string> _typeName = new Dictionary<string, string>(); // "guid:fileID" -> class name
         bool _needsReviewOnly;
         bool _hideWinnerOnly = true; // conflicts whose only diffs are ExtraInWinner (already in winner mod) are hidden by default
+        bool _showResolvedDiffs; // carried per-diff Resolve rows in detail panel
 
         MultiColumnHeader _header;
         MultiColumnHeaderState _headerState;
         Vector2 _tableScroll, _detailScroll;
         ElementRow _selected;
+        readonly HashSet<string> _multiSelect = new HashSet<string>(); // ElemKey multi-select for Mass Change
         bool _viewDirty = true;
         // Cached Patch-vs-mods diffs for the selected conflict (FindPatchHkElements+ComputeDiffs is disk-heavy).
         ElementRow _detailDiffRow;
@@ -272,6 +274,7 @@ namespace HK.CompatPatcher
             if (patchEls.Count == 0) return;
             var patchEl = patchEls.FirstOrDefault(e => e.TypeHint == row.TypeHint) ?? patchEls[0];
             _detailDiffList = ConflictAnalyzer.ComputeDiffs(patchEl, row.Elements.ToDictionary(kv => kv.Key, kv => kv.Value));
+            ConflictAnalyzer.FinalizeDiffs(_detailDiffList, row.Type, row.Name, _prior);
             _detailDiffWinner = "Patch";
             _detailDiffOdin = patchEl.Odin;
         }
@@ -542,9 +545,23 @@ namespace HK.CompatPatcher
                 if (GUILayout.Button("Resolve all as winner", GUILayout.Height(26), GUILayout.Width(160)))
                     MassResolveAsWinner();
                 if (GUILayout.Button("Import all conflicts (Winner Mod)", GUILayout.Height(26), GUILayout.Width(230))) MassImport();
+                if (GUILayout.Button("Mass Change…", GUILayout.Height(26), GUILayout.Width(130))) OpenMassChange();
                 if (GUILayout.Button("Export sidecar", GUILayout.Height(26), GUILayout.Width(130))) Export();
             }
             EditorGUILayout.EndHorizontal();
+            if (_result != null && _multiSelect.Count > 0)
+            {
+                EditorGUILayout.BeginHorizontal();
+                EditorGUILayout.LabelField(
+                    $"Mass Change selection: {_multiSelect.Count} row(s) (Ctrl/Cmd+click in list)",
+                    EditorStyles.miniLabel);
+                if (GUILayout.Button("Clear selection", GUILayout.Width(120)))
+                {
+                    _multiSelect.Clear();
+                    Repaint();
+                }
+                EditorGUILayout.EndHorizontal();
+            }
         }
 
         /// <summary>
@@ -854,14 +871,26 @@ namespace HK.CompatPatcher
             {
                 var r = _view[i];
                 Rect rr = new Rect(0, i * ROW_H, totalW, ROW_H);
-                if (r == _selected) EditorGUI.DrawRect(rr, ROW_SEL);
+                bool multiOn = _multiSelect.Contains(ElemKey(r));
+                if (r == _selected || multiOn) EditorGUI.DrawRect(rr, ROW_SEL);
                 else if ((i & 1) == 1) EditorGUI.DrawRect(rr, ROW_ALT);
                 if (Event.current.type == EventType.MouseDown && rr.Contains(mouse))
                 {
-                    if (_selected != r)
+                    bool ctrl = Event.current.control || Event.current.command;
+                    string ek = ElemKey(r);
+                    if (ctrl)
                     {
+                        if (!_multiSelect.Add(ek)) _multiSelect.Remove(ek);
                         _selected = r;
                         InvalidateDetailDiffs();
+                    }
+                    else
+                    {
+                        if (_selected != r)
+                        {
+                            _selected = r;
+                            InvalidateDetailDiffs();
+                        }
                     }
                     Repaint();
                 }
@@ -947,9 +976,22 @@ namespace HK.CompatPatcher
 
                     EditorGUILayout.Space(2);
                     EnsureDetailDiffs(row);
-                    DiffGui.DrawTable(_detailDiffList ?? row.Conflict.Diffs,
+                    var detailDiffs = _detailDiffList ?? row.Conflict.Diffs;
+                    int resolvedN = detailDiffs?.Count(d => d.Status == "carried") ?? 0;
+                    if (resolvedN > 0)
+                    {
+                        EditorGUILayout.BeginHorizontal();
+                        _showResolvedDiffs = GUILayout.Toggle(_showResolvedDiffs,
+                            $"Show resolved ({resolvedN})", EditorStyles.miniButton, GUILayout.Width(130));
+                        EditorGUILayout.EndHorizontal();
+                    }
+                    DiffGui.DrawTable(detailDiffs,
                         _detailDiffWinner ?? row.Winner,
-                        _detailDiffList != null ? _detailDiffOdin : row.Conflict.Odin);
+                        _detailDiffList != null ? _detailDiffOdin : row.Conflict.Odin,
+                        onApplyPattern: (diff, srcMod) => ApplyMassChangeFromDiff(diff, srcMod),
+                        countInPatchForPath: CountPatchMatchesForDiff,
+                        onResolveDiff: ResolveDetailDiff,
+                        hideResolved: !_showResolvedDiffs);
                 }
             }
 
@@ -1024,6 +1066,7 @@ namespace HK.CompatPatcher
                     .ToList();
                 if (_typeFilter.Length > 0 && !_types.Contains(_typeFilter)) _typeFilter = "";
                 _selected = null;
+                _multiSelect.Clear();
                 ShowCompareProgress(0.75, 0.8, "Compat Patcher", 0, "Scanning patch directory…");
                 ScanPatch();
                 ComputePatchOrphans();
@@ -1205,10 +1248,36 @@ namespace HK.CompatPatcher
             EditorUtility.DisplayDialog("Compat Patcher", $"Marked {pending.Count} conflict(s) resolved (winner accepted).", "OK");
         }
 
+        void ResolveDetailDiff(Diff d)
+        {
+            if (d == null || _selected == null) return;
+            if (string.IsNullOrEmpty(d.Sig) || string.IsNullOrEmpty(d.Fp))
+                ConflictAnalyzer.FinalizeDiffs(new[] { d }, _selected.Type, _selected.Name, _prior);
+            var decision = new Sidecar.Decision
+            {
+                sig = d.Sig,
+                fp = d.Fp,
+                choice = _detailDiffWinner ?? _selected.Winner ?? "accepted",
+                kind = "diff",
+                element = _selected.Name,
+            };
+            Sidecar.UpsertDecision(EnsureSidecarPath(), decision);
+            _prior[d.Sig] = decision;
+            d.Status = "carried";
+            d.Choice = decision.choice;
+            // Keep conflict.Diffs in sync when detail list is a live recompute copy.
+            if (_selected.Conflict?.Diffs != null)
+            {
+                foreach (var cd in _selected.Conflict.Diffs)
+                    if (cd.Sig == d.Sig) { cd.Status = "carried"; cd.Choice = decision.choice; }
+            }
+            Repaint();
+        }
+
         string EnsureSidecarPath()
         {
             if (string.IsNullOrEmpty(_sidecarPath))
-                _sidecarPath = PatchBuilder.PatchDir + "/CompatPatch.sidecar.json";
+                _sidecarPath = Sidecar.DefaultPath;
             return _sidecarPath;
         }
 
@@ -1256,6 +1325,138 @@ namespace HK.CompatPatcher
                 AssetDatabase.ImportAsset(assetPath.Substring(assetsIdx + 1), ImportAssetOptions.ForceUpdate);
             else if (assetPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
                 AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);
+        }
+
+        void OpenMassChange()
+        {
+            if (_result == null || _view == null || _view.Count == 0)
+            {
+                EditorUtility.DisplayDialog("Mass Change",
+                    "No rows in the current filtered view. Compare mods and set filters (e.g. Type) first.", "OK");
+                return;
+            }
+
+            IEnumerable<ElementRow> scopeRows = _view;
+            HashSet<string> customKeys = null;
+            if (_multiSelect.Count > 0)
+            {
+                customKeys = new HashSet<string>(_multiSelect);
+                scopeRows = _view.Where(r => customKeys.Contains(ElemKey(r))).ToList();
+                if (!scopeRows.Any())
+                {
+                    EditorUtility.DisplayDialog("Mass Change",
+                        "Custom selection has no rows in the current filtered view. Clear selection or adjust filters.", "OK");
+                    return;
+                }
+            }
+
+            var candidates = MassChange.ComputeCandidates(scopeRows);
+            if (candidates.Count == 0)
+            {
+                EditorUtility.DisplayDialog("Mass Change",
+                    "No field-level conflict diffs in scope. Filter to conflict elements that differ on concrete fields.", "OK");
+                return;
+            }
+
+            var pathByName = BuildPatchPathByName();
+            MassFieldChangeWindow.Show(
+                candidates,
+                pathByName,
+                new HashSet<string>(_patchNames),
+                customKeys,
+                ElemKey,
+                onDone: () =>
+                {
+                    ScanPatch();
+                    InvalidateDetailDiffs();
+                    _viewDirty = true;
+                    ApplyFilter();
+                    _viewDirty = false;
+                    Repaint();
+                });
+        }
+
+        Dictionary<string, string> BuildPatchPathByName()
+        {
+            var d = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var e in _patchEntries)
+            {
+                if (e == null || string.IsNullOrEmpty(e.Name)) continue;
+                d[e.Name] = e.AssetPath;
+            }
+            return d;
+        }
+
+        int CountPatchMatchesForDiff(Diff diff)
+        {
+            if (diff == null || _view == null) return 0;
+            var pool = _multiSelect.Count > 0
+                ? _view.Where(r => _multiSelect.Contains(ElemKey(r)))
+                : _view.AsEnumerable();
+            int n = 0;
+            foreach (var row in pool)
+            {
+                if (!_patchNames.Contains(row.Name) || row.Conflict?.Diffs == null) continue;
+                if (row.Conflict.Diffs.Any(d => d.Path == diff.Path && d.Kind == diff.Kind))
+                    n++;
+            }
+            return n;
+        }
+
+        void ApplyMassChangeFromDiff(Diff diff, string sourceMod)
+        {
+            if (diff == null || string.IsNullOrEmpty(sourceMod)) return;
+            var parsed = FieldApplier.Parse(diff.Path, diff.Kind,
+                diff.Values.FirstOrDefault(kv => kv.Key == sourceMod).Value);
+            if (!FieldApplier.IsSupported(parsed))
+            {
+                EditorUtility.DisplayDialog("Mass Change",
+                    "Unsupported pattern: " + (parsed.UnsupportedReason ?? "?"), "OK");
+                return;
+            }
+
+            var pool = (_multiSelect.Count > 0
+                ? _view.Where(r => _multiSelect.Contains(ElemKey(r)))
+                : _view).Where(r => r.Conflict?.Diffs != null
+                    && r.Conflict.Diffs.Any(d => d.Path == diff.Path && d.Kind == diff.Kind)).ToList();
+
+            int inPatch = pool.Count(r => _patchNames.Contains(r.Name));
+            int notInPatch = pool.Count - inPatch;
+            if (inPatch == 0)
+            {
+                EditorUtility.DisplayDialog("Mass Change",
+                    "No matching elements in Patch for this pattern. Import into Patch/ first.", "OK");
+                return;
+            }
+
+            string confirm =
+                $"Apply field change to {inPatch} Patch element(s)?\n\n"
+                + $"Path: {diff.Path}\nSource mod: {sourceMod}\n";
+            if (notInPatch > 0)
+                confirm += $"\n{notInPatch} matching row(s) not in Patch will be skipped.";
+            if (!EditorUtility.DisplayDialog("Mass Change", confirm, "Apply", "Cancel")) return;
+
+            var candidate = new MassChange.Candidate
+            {
+                Path = diff.Path,
+                Kind = diff.Kind,
+                Sources = new List<string> { sourceMod },
+                Elements = pool,
+                Preview = diff.Values.TryGetValue(sourceMod, out var pv) ? pv : null,
+                Action = sourceMod,
+                ApplyKind = parsed.Kind,
+            };
+            var stats = MassChange.Apply(new[] { candidate }, BuildPatchPathByName(),
+                _multiSelect.Count > 0 ? _multiSelect : null, ElemKey);
+            ScanPatch();
+            InvalidateDetailDiffs();
+            _viewDirty = true;
+            ApplyFilter();
+            _viewDirty = false;
+            EditorUtility.DisplayDialog("Mass Change",
+                $"Applied: {stats.Applied}\nAlready had value: {stats.SkippedAlready}\n"
+                + $"Not in Patch: {stats.SkippedNotInPatch}\nFailed: {stats.Failed}", "OK");
+            Repaint();
         }
 
         void ImportChosen(ElementRow row, string sourceModName)

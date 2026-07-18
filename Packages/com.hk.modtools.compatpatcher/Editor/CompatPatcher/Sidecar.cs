@@ -81,5 +81,23 @@ namespace HK.CompatPatcher
             Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
             File.WriteAllText(path, JsonUtility.ToJson(sc, true));
         }
+
+        /// <summary>
+        /// Insert or replace one decision, keeping other decisions and the source list.
+        /// Used for per-diff Resolve (kind=<c>diff</c>) without rewriting the whole review state.
+        /// </summary>
+        public static void UpsertDecision(string path, Decision decision)
+        {
+            if (string.IsNullOrEmpty(path) || decision == null || string.IsNullOrEmpty(decision.sig)) return;
+            var sc = Load(path) ?? new Sidecar();
+            var bySig = new Dictionary<string, Decision>();
+            if (sc.decisions != null)
+                foreach (var d in sc.decisions)
+                    if (!string.IsNullOrEmpty(d.sig)) bySig[d.sig] = d;
+            bySig[decision.sig] = decision;
+            Save(path, sc.sources, bySig.Values);
+        }
+
+        public static string DefaultPath => PatchBuilder.PatchDir + "/CompatPatch.sidecar.json";
     }
 }

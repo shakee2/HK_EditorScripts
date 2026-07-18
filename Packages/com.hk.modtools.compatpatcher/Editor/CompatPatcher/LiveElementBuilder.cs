@@ -19,7 +19,8 @@ namespace HK.CompatPatcher
         static readonly HashSet<string> VolatileKeys = new HashSet<string>
         {
             "m_ObjectHideFlags","m_CorrespondingSourceObject","m_PrefabInstance","m_PrefabAsset",
-            "m_GameObject","m_Enabled","m_EditorHideFlags","m_Script","m_EditorClassIdentifier","m_Name"
+            "m_GameObject","m_Enabled","m_EditorHideFlags","m_Script","m_EditorClassIdentifier","m_Name",
+            "Key", // definition identity key — see UnityYaml.VolatileKeys
         };
 
         public static HkElement Build(UnityEngine.Object live, string logicalPath, string collectionStem)
@@ -42,7 +43,7 @@ namespace HK.CompatPatcher
 
             bool odin;
             Dictionary<string, string> flat = null;
-            if (HasGameplayKeys(body))
+            if (UnityYaml.HasGameplayKeys(body))
             {
                 odin = false;
                 flat = UnityYaml.Flatten(body);
@@ -76,18 +77,6 @@ namespace HK.CompatPatcher
                 Refs = refs,
                 LiveObject = live,
             };
-        }
-
-        static bool HasGameplayKeys(Dictionary<string, object> body)
-        {
-            if (body == null || body.Count == 0) return false;
-            foreach (var k in body.Keys)
-            {
-                if (VolatileKeys.Contains(k)) continue;
-                if (k == "serializationData") continue;
-                return true;
-            }
-            return false;
         }
 
         public static string ScriptTypeKey(UnityEngine.Object live)
@@ -153,7 +142,10 @@ namespace HK.CompatPatcher
                 case SerializedPropertyType.Float:
                     return prop.floatValue.ToString("0.###", CultureInfo.InvariantCulture);
                 case SerializedPropertyType.String: return prop.stringValue ?? "";
-                case SerializedPropertyType.Enum: return prop.enumValueIndex.ToString(CultureInfo.InvariantCulture);
+                case SerializedPropertyType.Enum:
+                    // Flags enums (e.g. UnitDefinition.UnitTags / "Unit Type" buttons) store a bitmask.
+                    // enumValueIndex is only a single-name index and collapses combinations — use intValue.
+                    return prop.intValue.ToString(CultureInfo.InvariantCulture);
                 case SerializedPropertyType.ObjectReference:
                     return prop.objectReferenceValue != null ? prop.objectReferenceValue.name : "";
                 case SerializedPropertyType.ArraySize:
@@ -191,13 +183,14 @@ namespace HK.CompatPatcher
 
         static object ReadGeneric(SerializedProperty prop, HashSet<string> refs)
         {
-            // DatatableElementReference (and similar): prefer serializableElementName as scalar
+            // DatatableElementReference (and similar): emit { serializableElementName: n } so Flatten
+            // identity-keys list entries (MissingInWinner per ref) instead of one whole-list Changed leaf.
             var nameProp = prop.FindPropertyRelative("serializableElementName");
             if (nameProp != null && nameProp.propertyType == SerializedPropertyType.String)
             {
                 string n = nameProp.stringValue ?? "";
                 if (!string.IsNullOrEmpty(n)) refs.Add(n);
-                return n;
+                return new Dictionary<string, object> { ["serializableElementName"] = n };
             }
 
             if (prop.isArray && prop.propertyType != SerializedPropertyType.String)

@@ -156,6 +156,10 @@ Click **Import this version into Patch/** on any source column to bring that mod
 
 Click **Resolve as winner** to accept the load-order winner without importing (`✓resolved` + sidecar). List markers: **●** = in patch, **○** = resolved.
 
+The diff strip uses **Patch as winner** when a Patch copy exists. **ONLY in winner** rows are hidden by default (toggle **Show winner-only**). Click **Resolve** on a difference row to dismiss it (sidecar per-diff decision); resolved rows stay hidden until the fingerprint changes on re-Compare.
+
+**Definition `Key`:** Mod Tools locks the byte/ushort Key on constructibles/techs/etc. Source mods often omit it (0) or copy vanilla's. The patcher ignores Key in conflict diffs; on Import it copies a non-zero Key from the source live object when the duplicate would otherwise stay 0. It does not invent new keys.
+
 > **Tip:** Use this window when you need to see the full inspector view of each version before deciding, or when you want to import a version and hand-edit it.
 
 ---
@@ -178,12 +182,13 @@ For each conflict:
 
 ### Mass actions
 
-Both operate on the **current filtered list** only (status / name / type / needs-review / hide-winner-only):
+Operate on the **current filtered list** only (status / name / type / needs-review / hide-winner-only):
 
 - **Resolve all as winner** — mark listed unresolved conflicts resolved (load-order winner each). Sidecar only; no import.
 - **Import all conflicts (Winner Mod)** — import listed unresolved conflicts' load-order winner versions into `Patch/` (ignores per-row radio choice).
+- **Mass Change…** — bulk field ADD/PICK on elements **already in Patch**. Groups recurring diffs by path; pick a source mod per pattern. Scope = current filters (incl. Type), or **Ctrl/Cmd+click** multi-select in the list. Never imports — import winners first. Detail diffs also offer **Apply to N in Patch…** for one pattern.
 
-> Import is whole-element. For per-field merges, import one version then hand-edit in the inspector or the Compare window's Patch column.
+> Whole-element import is still the base. Mass Change covers recurring ref-list ADDs and simple leaf PICKs (including nested paths like `SettlementStabilityPrerequisite.PublicOrderEffects`). Complex structured list rows still need hand-edit in Compare.
 
 ### Import & Edit (New Elements)
 

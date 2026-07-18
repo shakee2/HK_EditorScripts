@@ -107,7 +107,7 @@ namespace HK.CompatPatcher
                 for (int i = 0; i < present.Count - 1; i++) losers[present[i].mod.Name] = present[i].el;
 
                 List<Diff> diffs;
-                bool odin = winner.el.Odin || losers.Values.Any(e => e.Odin) || winner.el.Body == null;
+                bool odin = UsesRefDiff(winner.el) || losers.Values.Any(UsesRefDiff);
                 if (odin) diffs = RefDiff(winner.el, losers);
                 else diffs = CollapseMissing(StructDiff(winner.el, losers));
 
@@ -119,12 +119,12 @@ namespace HK.CompatPatcher
                 var conflict = new ElementConflict
                 {
                     Type = winner.el.Type, Name = winner.el.Name, Winner = winner.mod.Name,
-                    Contributors = row.Contributors, Odin = winner.el.Odin, Diffs = diffs,
+                    Contributors = row.Contributors, Odin = odin, Diffs = diffs,
                 };
                 foreach (var d in diffs) AssignStatus(conflict, d, prior);
 
                 res.Stats.Conflicts++;
-                if (winner.el.Odin) res.Stats.OdinConflicts++;
+                if (odin) res.Stats.OdinConflicts++;
                 int add = diffs.Count(d => d.Kind == DiffKind.MissingInWinner);
                 int pick = diffs.Count(d => d.Kind == DiffKind.Changed);
                 int only = diffs.Count(d => d.Kind == DiffKind.ExtraInWinner);
@@ -161,21 +161,22 @@ namespace HK.CompatPatcher
             {
                 string wv = wf.TryGetValue(p, out var w) ? w : UnityYaml.Missing;
                 var vals = new Dictionary<string, string>();
-                bool anyDiff = false, anyPresentNonWinner = false, anyMissing = false, allInWinnerOrMissing = true;
+                bool anyDiff = false, anyPresentNonWinner = false;
                 foreach (var kv in ofs)
                 {
                     string v = kv.Value.TryGetValue(p, out var x) ? x : UnityYaml.Missing;
                     vals[kv.Key] = v;
                     if (v != wv) anyDiff = true;
                     if (v != UnityYaml.Missing) anyPresentNonWinner = true;
-                    if (v == UnityYaml.Missing) anyMissing = true;
-                    if (v != wv && v != UnityYaml.Missing) allInWinnerOrMissing = false;
                 }
                 if (!anyDiff) continue;
 
+                // ExtraInWinner = truly absent from every other mod. If another mod has the same
+                // value (e.g. Patch imported from load-order winner), that is CHANGED / presence
+                // gap — never "ONLY in winner".
                 DiffKind kind;
                 if (wv == UnityYaml.Missing && anyPresentNonWinner) kind = DiffKind.MissingInWinner;
-                else if (wv != UnityYaml.Missing && anyMissing && allInWinnerOrMissing) kind = DiffKind.ExtraInWinner;
+                else if (wv != UnityYaml.Missing && !anyPresentNonWinner) kind = DiffKind.ExtraInWinner;
                 else kind = DiffKind.Changed;
 
                 vals["*winner*"] = wv;
@@ -233,24 +234,53 @@ namespace HK.CompatPatcher
         public static List<Diff> ComputeDiffs(HkElement winner, Dictionary<string, HkElement> losers)
         {
             if (winner == null || losers == null || losers.Count == 0) return new List<Diff>();
-            bool odin = winner.Odin || losers.Values.Any(e => e.Odin) || winner.Body == null;
-            if (odin) return RefDiff(winner, losers);
-            return CollapseMissing(StructDiff(winner, losers));
+            bool odin = UsesRefDiff(winner) || losers.Values.Any(UsesRefDiff);
+            var diffs = odin ? RefDiff(winner, losers) : CollapseMissing(StructDiff(winner, losers));
+            return diffs;
+        }
+
+        /// <summary>
+        /// Attach Sig/Fp/Status for UI + sidecar (per-diff Resolve). Call after ComputeDiffs or on
+        /// conflict Diffs before drawing when prior decisions may dismiss rows.
+        /// </summary>
+        public static void FinalizeDiffs(IList<Diff> diffs, string type, string name,
+            Dictionary<string, Sidecar.Decision> prior = null)
+        {
+            if (diffs == null) return;
+            string t = type ?? "";
+            string n = name ?? "";
+            foreach (var d in diffs)
+            {
+                if (d == null) continue;
+                d.Sig = t + "|" + n + "|" + d.Path + "|" + d.Kind;
+                d.Fp = Fingerprint(d.Values);
+                d.Recommend = d.Kind == DiffKind.MissingInWinner ? "add"
+                            : d.Kind == DiffKind.ExtraInWinner ? "keep" : "pick";
+                Sidecar.Decision pd = null;
+                prior?.TryGetValue(d.Sig, out pd);
+                if (pd != null && pd.fp == d.Fp) { d.Status = "carried"; d.Choice = pd.choice; }
+                else if (pd != null) { d.Status = "changed"; d.PriorChoice = pd.choice; }
+                else if (d.Kind == DiffKind.ExtraInWinner) d.Status = "info";
+                else d.Status = "new";
+            }
+        }
+
+        /// <summary>
+        /// Opaque Odin shells (no Unity gameplay fields) use flat name-set RefDiff.
+        /// Hybrid types with a Flatten-able body use StructDiff — even if serializationData is present.
+        /// </summary>
+        public static bool UsesNameSetDiff(HkElement e) => UsesRefDiff(e);
+
+        static bool UsesRefDiff(HkElement e)
+        {
+            if (e == null || e.Body == null) return true;
+            if (UnityYaml.HasGameplayKeys(e.Body)) return false;
+            return e.Odin;
         }
 
         static void AssignStatus(ElementConflict c, Diff d, Dictionary<string, Sidecar.Decision> prior)
         {
-            d.Sig = c.Type + "|" + c.Name + "|" + d.Path + "|" + d.Kind;
-            d.Fp = Fingerprint(d.Values);
-            d.Recommend = d.Kind == DiffKind.MissingInWinner ? "add"
-                        : d.Kind == DiffKind.ExtraInWinner ? "keep" : "pick";
-
-            Sidecar.Decision pd = null;
-            prior?.TryGetValue(d.Sig, out pd);
-            if (d.Kind == DiffKind.ExtraInWinner) d.Status = "info";
-            else if (pd != null && pd.fp == d.Fp) { d.Status = "carried"; d.Choice = pd.choice; }
-            else if (pd != null) { d.Status = "changed"; d.PriorChoice = pd.choice; }
-            else d.Status = "new";
+            FinalizeDiffs(new[] { d }, c.Type, c.Name, prior);
         }
 
         public static string Fingerprint(Dictionary<string, string> values)

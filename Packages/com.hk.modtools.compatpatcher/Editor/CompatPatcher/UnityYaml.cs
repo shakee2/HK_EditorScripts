@@ -20,11 +20,14 @@ namespace HK.CompatPatcher
     /// </summary>
     public static class UnityYaml
     {
-        // fields that are editor/serialization bookkeeping, never gameplay data
+        // fields that are editor/serialization bookkeeping, never gameplay data.
+        // Key = IDatatableElementWithByteKey/ShortKey: Mod Tools locks it; mods often omit or zero it;
+        // uniqueness is a vanilla-only load check — never a merge conflict.
         static readonly HashSet<string> VolatileKeys = new HashSet<string>
         {
             "m_ObjectHideFlags","m_CorrespondingSourceObject","m_PrefabInstance","m_PrefabAsset",
-            "m_GameObject","m_Enabled","m_EditorHideFlags","m_Script","m_EditorClassIdentifier","m_Name"
+            "m_GameObject","m_Enabled","m_EditorHideFlags","m_Script","m_EditorClassIdentifier","m_Name",
+            "Key",
         };
 
         // first present of these identifies a list entry across mods (else index).
@@ -402,6 +405,23 @@ namespace HK.CompatPatcher
             bool Has(string k) => sd.TryGetValue(k, out var val) && val != null &&
                                   !(val is List<object> lo && lo.Count == 0) && val.ToString().Length > 0;
             return Has("SerializationNodes") || Has("SerializedBytesString") || Has("SerializedBytes");
+        }
+
+        /// <summary>
+        /// True when <paramref name="body"/> has at least one Unity-serialized gameplay field
+        /// (not only <c>serializationData</c> / volatile keys). Hybrid Odin+Unity types (many units,
+        /// techs) should StructDiff these fields — do not treat them as opaque RefDiff shells.
+        /// </summary>
+        public static bool HasGameplayKeys(Dictionary<string, object> body)
+        {
+            if (body == null || body.Count == 0) return false;
+            foreach (var k in body.Keys)
+            {
+                if (VolatileKeys.Contains(k)) continue;
+                if (k == "serializationData") continue;
+                return true;
+            }
+            return false;
         }
     }
 }

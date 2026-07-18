@@ -73,17 +73,36 @@ namespace HK.CompatPatcher
                 if (cmp < 0) return;
                 if (cmp == 0)
                 {
-                    // Same collection path — FetchAllSubAssets can yield the same element twice; keep last silently.
+                    // Same collection path: FetchAllSubAssets can yield the *identical* Unity object twice —
+                    // that is noise, keep last silently. Two distinct objects (or YAML docs) with the same
+                    // name in one .asset are real in-file duplicates (even if byte-identical) — warn.
+                    bool sameLiveInstance = prior.LiveObject != null && el.LiveObject != null
+                                            && ReferenceEquals(prior.LiveObject, el.LiveObject);
+                    if (!sameLiveInstance)
+                    {
+                        string typeName = ElementTypeLabel(el, prior);
+                        Debug.LogWarning(
+                            $"[CompatPatcher] Duplicate element '{el.Name}' (type {typeName}, collection {el.TypeHint}) "
+                            + $"in mod '{mod.Name}': defined twice in '{el.SourcePath}' — keeping latter.");
+                    }
                     mod.Elements[el.Key] = el;
                     return;
                 }
-                string typeName = el.LiveObject != null ? el.LiveObject.GetType().Name
-                    : (prior.LiveObject != null ? prior.LiveObject.GetType().Name : null);
-                if (string.IsNullOrEmpty(typeName)) typeName = el.TypeHint ?? "?";
-                Debug.LogWarning($"[CompatPatcher] Duplicate element '{el.Name}' (type {typeName}, collection {el.TypeHint}) in mod '{mod.Name}': "
-                               + $"'{prior.SourcePath}' vs '{el.SourcePath}' — keeping latter.");
+                {
+                    string typeName = ElementTypeLabel(el, prior);
+                    Debug.LogWarning(
+                        $"[CompatPatcher] Duplicate element '{el.Name}' (type {typeName}, collection {el.TypeHint}) "
+                        + $"in mod '{mod.Name}': '{prior.SourcePath}' vs '{el.SourcePath}' — keeping latter.");
+                }
             }
             mod.Elements[el.Key] = el;
+        }
+
+        static string ElementTypeLabel(HkElement el, HkElement prior)
+        {
+            string typeName = el.LiveObject != null ? el.LiveObject.GetType().Name
+                : (prior?.LiveObject != null ? prior.LiveObject.GetType().Name : null);
+            return string.IsNullOrEmpty(typeName) ? (el.TypeHint ?? "?") : typeName;
         }
 
         static void LoadFromAssetBundle(HkMod mod, string path)

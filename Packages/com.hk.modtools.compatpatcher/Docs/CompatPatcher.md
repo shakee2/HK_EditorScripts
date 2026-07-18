@@ -61,7 +61,9 @@ Some types keep lists in the Odin `SerializationNodes` stream (e.g. `TechnologyD
 `NarrativeEventDefinition` → `Choices[].NarrativeEventEffects`). For **live** objects (assetbundle mounts)
 `LiveElementBuilder` reflection-merges those effect trees into the element body before Flatten, so Amount /
 enums / refs StructDiff like ordinary fields. YAML-only sources without a live object still fall back to
-element-reference-set diff (`RefDiff`) for opaque Odin shells.
+element-reference-set diff (`RefDiff`) for **opaque** Odin shells (body is only `serializationData`).
+Hybrid assets that also have Unity-serialized gameplay fields (many units) StructDiff those fields —
+a single `ProductionCost` swap is **CHANGED/PICK**, not `MISSING refs[OldName]`.
 
 ## Workflow
 
@@ -114,13 +116,19 @@ ping-on-click, dropdown+text filters) where **rows are elements across the loade
 
 **Columns:** name · type · defined-by · winner · status · diff summary (`2 ADD, 1 PICK`).
 
-**Resolution model — per-element winner (v1).** Because the patch is built by whole-element import (a
-collection element is duplicated in verbatim), resolution is **one choice per element: which mod's whole
-version wins** (radio, defaults to the load-order winner). The field-level diff rows are shown **read-only**
-to explain *what* differs and are pinpointed to the exact field (e.g.
-`Effects[#0].PropertyEffects[TargetProperty=LandCombatStrength].ConstantStack: ENC 20000 vs VIP 19000`).
-True per-field **merge** (union of ADD + specific PICK values into one element) is deferred — it needs
-object-level field merging; until then a mixed element is handled by importing one version and hand-editing.
+**Resolution model — per-element winner + Mass Change field merge.** Whole-element import remains the
+base workflow (radio → import / mark resolved). Field-level diffs are shown to explain *what* differs
+(e.g. `OwnDescriptorReferences[serializableElementName=Effect_X]`, or nested
+`SettlementStabilityPrerequisite.PublicOrderEffects[…]`).
+
+**Mass Change** (v1) applies recurring ADD/PICK field edits onto **already-imported Patch** elements only
+(never auto-imports), scoped by the current Type/name filters or a Ctrl/Cmd multi-selection:
+
+- **ADD** missing `DatatableElementReference[]` entries (any field path, including nested Generics)
+- **PICK** single refs / simple leaves (enums, bools, ints, floats, strings)
+
+Mutations use `SerializedObject` with read-back verification. Complex struct-list rows
+(`UnitAbility[]`, prerequisite arrays, …) stay unsupported (hand-edit in Compare).
 
 **Row / detail actions:**
 - **Compare side-by-side** — opens `CompatCompareWindow`: each contributing mod's version is staged and
@@ -131,6 +139,7 @@ object-level field merging; until then a mixed element is handled by importing o
   auto-imported. Also marks the conflict **resolved** in the sidecar.
 - **Mark resolved / Resolve all as winner / Compare “Resolve as winner”** — accept winner/choice without
   importing; sidecar is the memory (`✓resolved`, same review weight as `✓in patch`).
+- **Mass Change… / Apply to N in Patch…** — bulk field ADD/PICK on Patch copies (import winners first).
 
 ## Incremental re-patch (the time-saver)
 

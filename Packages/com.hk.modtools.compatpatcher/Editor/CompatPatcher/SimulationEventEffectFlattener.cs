@@ -241,7 +241,8 @@ namespace HK.CompatPatcher
                 default:
                     if (val.GetType().IsEnum)
                     {
-                        dict[field] = val.ToString();
+                        // Underlying int so Flags enums match LiveElementBuilder (not ToString names).
+                        dict[field] = Convert.ToInt64(val).ToString(CultureInfo.InvariantCulture);
                         return true;
                     }
                     return false;

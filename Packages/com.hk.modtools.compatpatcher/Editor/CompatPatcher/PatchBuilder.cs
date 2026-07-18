@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using Amplitude.Framework;
 using Amplitude.Framework.Utility;
+using Amplitude.Mercury.Data;
 using UnityEditor;
 using UnityEngine;
 
@@ -40,20 +41,46 @@ namespace HK.CompatPatcher
             if (!mod.RawFiles.TryGetValue(el.SourcePath, out var text))
                 return (null, null, null);
             string stagePath = StageFile(mod.Name, el.SourcePath, text);
+            return LoadStagedElement(stagePath, el.Name);
+        }
+
+        /// <summary>Duplicate an already-live object into Patch/ (no staging / no CleanupStage).</summary>
+        public static UnityEngine.Object ImportLive(UnityEngine.Object live, string typeHint)
+            => Duplicate(live, null, typeHint);
+
+        static (UnityEngine.Object element, Type collectionType, string stagePath) LoadStagedElement(string stagePath, string elementName)
+        {
             UnityEngine.Object live = null;
             Type fileColType = null;
             foreach (var o in AssetDatabase.LoadAllAssetsAtPath(stagePath))
             {
                 if (o == null) continue;
                 if (fileColType == null && o is IDatatableElementCollection) fileColType = o.GetType();
-                if (live == null && o is IDatatableElement && o.name == el.Name) live = o;
+                if (live == null && o is IDatatableElement && o.name == elementName) live = o;
             }
             return (live, fileColType, stagePath);
+        }
+
+        static readonly HashSet<string> PinnedStages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Keep a staged path alive across other callers' <see cref="CleanupStage"/> (e.g. Compare's
+        /// session repository). Unpin when the owner is done.
+        /// </summary>
+        public static void PinStage(string stagePath)
+        {
+            if (!string.IsNullOrEmpty(stagePath)) PinnedStages.Add(stagePath);
+        }
+
+        public static void UnpinStage(string stagePath)
+        {
+            if (!string.IsNullOrEmpty(stagePath)) PinnedStages.Remove(stagePath);
         }
 
         public static void CleanupStage(string stagePath)
         {
             if (string.IsNullOrEmpty(stagePath)) return;
+            if (PinnedStages.Contains(stagePath)) return;
             AssetDatabase.DeleteAsset(stagePath);
             // Prune the now-empty per-source subfolder we created for this file (best-effort).
             try
@@ -175,9 +202,41 @@ namespace HK.CompatPatcher
                     showWarningDialogThresholdCount: false, ensureUniqueName: false, reimport: true);
                 if (!ok || dups == null || dups.Length == 0) { Debug.LogError($"[CompatPatcher] duplicate failed for '{live.name}'."); return null; }
                 dups[0].SetEditable(true);
-                return dups[0] as UnityEngine.Object;
+                var dupObj = dups[0] as UnityEngine.Object;
+                PreserveDefinitionKey(dupObj, live);
+                return dupObj;
             }
             catch (Exception e) { Debug.LogError("[CompatPatcher] Duplicate failed: " + e); return null; }
+        }
+
+        /// <summary>
+        /// Definition <c>Key</c> is Mod Tools–locked identity (byte/ushort). Many source mods omit it
+        /// (serialize as 0); Duplicate then leaves 0. If the source live object had a non-zero Key,
+        /// copy it so the patch override keeps the same identity. Do not invent a new key — that can
+        /// diverge from vanilla's key for the same name.
+        /// </summary>
+        static void PreserveDefinitionKey(UnityEngine.Object dup, UnityEngine.Object source)
+        {
+            if (dup == null || source == null) return;
+            if (dup is IDatatableElementWithByteKey db)
+            {
+                if (db.Key != 0) return;
+                if (source is IDatatableElementWithByteKey sb && sb.Key != 0)
+                {
+                    db.Key = sb.Key;
+                    EditorUtility.SetDirty(dup);
+                }
+                return;
+            }
+            if (dup is IDatatableElementWithShortKey ds)
+            {
+                if (ds.Key != 0) return;
+                if (source is IDatatableElementWithShortKey ss && ss.Key != 0)
+                {
+                    ds.Key = ss.Key;
+                    EditorUtility.SetDirty(dup);
+                }
+            }
         }
 
         /// <summary>
@@ -212,6 +271,22 @@ namespace HK.CompatPatcher
             string baseName = Sanitize(System.IO.Path.GetFileNameWithoutExtension(sourcePath));
             if (string.IsNullOrEmpty(baseName)) baseName = "staged";
             string stagePath = dir + "/" + baseName + ".asset";
+
+            // Reuse an existing stage without ImportAsset — each Import/Delete bumps Amplitude
+            // DatatableElementCache.CacheRevisionIndex and forces BuildCacheBuilderEntry (~0.4s).
+            if (File.Exists(stagePath))
+            {
+                try
+                {
+                    if (File.ReadAllText(stagePath) == fileText)
+                        return stagePath;
+                }
+                catch { /* fall through to rewrite */ }
+                File.WriteAllText(stagePath, fileText);
+                AssetDatabase.ImportAsset(stagePath, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+                return stagePath;
+            }
+
             File.WriteAllText(stagePath, fileText);
             File.WriteAllText(stagePath + ".meta",
                 "fileFormatVersion: 2\nguid: " + System.Guid.NewGuid().ToString("N") + "\n" +
