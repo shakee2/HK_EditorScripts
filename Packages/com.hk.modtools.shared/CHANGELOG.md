@@ -9,10 +9,13 @@ Versions match namespaced git tags: `shared/<semver>`.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-18
+
 ### Added
 - Options package catalog: Install / Update / Remove from namespaced git tags (auto-discovered).
 - Dependency resolution on install/update (bump missing or outdated `com.hk.modtools.*` deps).
 - Per-update "What's new" changelog popup (versions between installed and latest).
+- "Changelog" button when already on the latest version (history through the installed release).
 
 ## [1.0.1] - 2026-07-16
 
