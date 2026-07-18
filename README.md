@@ -26,22 +26,25 @@ As of v1.1.0 this repo is a **multi-package monorepo**: instead of one big packa
 
 ## Installing a Package
 
-1. In your modding project, open **Window → Package Manager**.
+**Easiest path (after Shared is present):** open **Tools → shakee's Tools → Options** and use the Packages list — each tool has Install / Update / Remove. Installing or updating a tool also bumps required dependencies that are missing or below the minimum version (Shared itself must already be present — Options lives in Shared).
+
+**First-time install of Shared** (bootstrap — Options lives *in* Shared, so this one still goes through Package Manager):
+
+1. Open **Window → Package Manager**.
 2. Click the **+** button (top-left) → **Add package from git URL...**
-3. **Install `com.hk.modtools.shared` first:**
+3. Install `com.hk.modtools.shared`:
    ```
-   https://github.com/shakee2/HK_EditorScripts.git?path=Packages/com.hk.modtools.shared#shared/1.0.0
+   https://github.com/shakee2/HK_EditorScripts.git?path=Packages/com.hk.modtools.shared#shared/1.1.0
    ```
-4. Then any tool package(s) you want, e.g. `core`:
+4. After the domain reload, open **Tools → shakee's Tools → Options** and Install the tool package(s) you want from the list (or keep using Package Manager git URLs if you prefer):
    ```
-   https://github.com/shakee2/HK_EditorScripts.git?path=Packages/com.hk.modtools.core#core/1.0.0
+   https://github.com/shakee2/HK_EditorScripts.git?path=Packages/com.hk.modtools.core#core/1.0.1
    ```
-   (swap the version for whichever [tag](https://github.com/shakee2/HK_EditorScripts/tags) you want — always pin to a tag, never a branch name, so your project doesn't silently change behavior on a future push. Each package versions independently; check the tag list for the `<shortname>/` prefix that matches the package you're installing.)
-5. Click **Add** for each. Unity clones/checks out the tagged subfolder and compiles it; menu items appear under `Tools/shakee's Tools/...` after the next domain reload.
+   Always pin to a [tag](https://github.com/shakee2/HK_EditorScripts/tags), never a branch name. Each package versions independently (`<shortname>/<semver>`).
 
-**If you skip step 3 and install a tool package without `shared` present:** Unity's Package Manager does *not* refuse the install outright — it adds the package, then shows an error icon next to it in the package list with a "Dependency error message" in its details panel, and you'll also see compile errors in the Console for the missing shared types. It's a clear, discoverable signal, just not a pre-flight block — installing `shared` (in either order, actually) resolves it immediately.
+**If you install a tool package without `shared` present:** Unity's Package Manager does *not* refuse the install outright — it adds the package, then shows an error icon next to it with a dependency error, plus Console compile errors for the missing shared types. Installing `shared` resolves it. The Options window avoids that by chaining Shared ahead of the tool when needed.
 
-To get a later release of an installed package, repeat step 4 with the new tag, or use the built-in [Options window](#update-checker--options-window) (`Tools/shakee's Tools/Options`, or `Tools/shakee's Tools/Check For Updates` for a quick manual check) — it checks every installed `com.hk.modtools.*` package and prompts automatically on its own schedule too.
+To get a later release: use **Update** / **Update All** on the Options cards after **Check All** refreshes tags, or `Tools/shakee's Tools/Check For Updates` (opens Options and refreshes; also runs on a per-package auto-check schedule).
 
 If you're developing one of these packages yourself (not just consuming it), reference it with a local path instead — e.g. `"com.hk.modtools.core": "file:../relative/path/to/HK_EditorScripts/Packages/com.hk.modtools.core"` in `manifest.json` — so edits are picked up live without needing a tag. The Update Checker skips local references since there's nothing meaningful to compare a local checkout against.
 
@@ -60,6 +63,7 @@ Packages/
   com.hk.modtools.core/           ModTools/, Upgrades/, Debug/, ExportModEditorScriptsPackage.cs, Docs/manual.md
   com.hk.modtools.compatpatcher/  CompatPatcher/, Docs/CompatPatcher*.md
   com.hk.modtools.unitvisuals/    UnitVisualWorkflow/
+  com.hk.modtools.orphanfinder/   OrphanResourceFinderWindow.cs
 EditorWindow-Dependencies.md      cross-file dependency map (needed before exporting/packaging a subset of tools)
 AGENTS.md                         orientation doc for AI agents working on this repo
 ```
@@ -159,12 +163,19 @@ The translations bundle (`Assets/Editor/Resources/Translations/…`) ships with 
 
 `com.hk.modtools.shared` ships two pieces of cross-package infrastructure:
 
-- **`UpdateChecker.cs`** — checks every installed `com.hk.modtools.*` package (resolved via a git URL, not a local reference) against its own namespaced tags on this repo (`<shortname>/<semver>`, e.g. `core/1.1.0`), and offers to update in place.
-  - Fetches the repo's tag list **once** per check, then evaluates every package due for a check, and shows **one aggregated dialog** listing every package with an available update rather than one dialog per package.
-  - Each package has its own auto-update on/off + check-interval, configurable in the Options window below (default: every 14 days).
-  - Accepting an update calls `Client.Add("<repo>.git?path=Packages/<full-package-name>#<shortname>/<version>")` per package — the same call the Package Manager UI itself makes when you paste a git URL — sequentially for each accepted package.
-  - "Skip This Version" is remembered per-package/tag (`EditorPrefs`) so the background check won't re-prompt for a release you've deliberately deferred, but a newer tag after that will still prompt.
-- **`ToolsOptionsWindow.cs`** (`Tools/shakee's Tools/Options`) — lists every installed `com.hk.modtools.*` package with its own auto-update toggle, check-interval (in days), and a "Check Now" button, plus a **Keybinds** section. Rebinding this suite's shortcuts goes through Unity's own built-in **Edit → Shortcuts** manager (search "shakee's Tools" there) rather than a custom rebind UI — every tool here is a regular `[MenuItem]`, so Unity's shortcut editor already handles it.
+- **`UpdateChecker.cs`** — discovers the Options catalog from namespaced git tags (`<shortname>/<semver>` — tagged packages only; experimentals stay invisible until tagged), fetches release tags, and drives `Client.Add` / `Client.Remove`. Available updates appear on the package cards — no "update available" dialog.
+  - **Check All** (Options) / **Check For Updates** (menu) / opening Options / background auto-check: fetch the repo tag list once and refresh the cards in place.
+  - **Update** / **Update All**: `Client.Add("<repo>.git?path=Packages/<full-package-name>#<shortname>/<version>")`. Display name / description / author / dependencies are read from each package's own `package.json` — `PackageInfo` when installed, or the manifest fetched at the target's latest tag when not. Deps that are missing (except Shared bootstrap — add Shared via Package Manager first) or below the declared minimum are bumped first; resumes across domain reload.
+  - **What's new**: when a newer tag exists, Options shows a button that opens `ChangelogPopupWindow` — one collapsible card per version between installed and latest (from that package's `CHANGELOG.md` at the latest tag; lazy-fetched).
+  - Each installed git package has its own auto-check on/off + interval (default: every 14 days).
+  - Local `file:` references are listed (Remove available) but skipped for update comparison.
+  - Not-installed cards show a **Requires:** line built from the fetched manifest's declared dependencies. New tagged packages appear automatically after the next tag-list refresh — no catalog edit in Shared.
+- **`ToolsOptionsWindow.cs`** (`Tools/shakee's Tools/Options`) — **Packages** cards with Install / Update (only when a newer tag exists) / What's new / Remove, **Check All** + **Update All**, auto-check controls, **Keybinds**, and Formula Autocomplete toggles when Core is installed.
+- **`ChangelogPopupWindow.cs`** — utility popup for release notes (per-version foldout cards).
+
+### Changelog convention
+
+Each releasable package ships `Packages/<full-package-name>/CHANGELOG.md` (Keep a Changelog). Headings must be `## [x.y.z]` (optional ` - YYYY-MM-DD`) matching the namespaced tag `shortname/x.y.z`. Put in-progress notes under `## [Unreleased]` and move them into a version section when you cut the tag. The Options What's new UI fetches this file from the latest tag and aggregates every intervening version into one popup.
 
 ## Inline Localization Editing
 
