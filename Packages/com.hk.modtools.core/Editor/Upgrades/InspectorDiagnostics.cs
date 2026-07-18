@@ -280,22 +280,46 @@ public static class InspectorDiagnostics
         }
     }
 
-    // Yields every SimulationEventEffect[] reachable from an element: a direct SimulationEventEffects
-    // field, plus one held per entry of a Choices array (Civic / Narrative choices). Bounded, name-based
-    // reflection so it works across the definition types that carry unlock events.
+    // Yields every SimulationEventEffect[] reachable from an element: root SimulationEventEffects /
+    // Effects / EffectByLevels, civic Choices[].SimulationEventEffects, and narrative
+    // Choices[].NarrativeEventEffects[].SimulationEventEffect (unwrapped into a temp array).
     static IEnumerable<Array> EnumerateEventEffectArrays(UnityEngine.Object element)
     {
         var type = element.GetType();
-        var direct = type.GetField("SimulationEventEffects", ALL);
-        if (direct != null && direct.GetValue(element) is Array a) yield return a;
+        foreach (var name in new[] { "SimulationEventEffects", "Effects", "EffectByLevels" })
+        {
+            var f = type.GetField(name, ALL);
+            if (f != null && f.GetValue(element) is Array a) yield return a;
+        }
+
+        var repeating = type.GetField("RepeatingEffect", ALL);
+        if (repeating != null)
+        {
+            var one = repeating.GetValue(element);
+            if (one != null) yield return new[] { one };
+        }
 
         var choicesField = type.GetField("Choices", ALL);
         if (choicesField != null && choicesField.GetValue(element) is Array choices)
             foreach (var choice in choices)
             {
                 if (choice == null) continue;
-                var cf = choice.GetType().GetField("SimulationEventEffects", ALL);
+                var ct = choice.GetType();
+                var cf = ct.GetField("SimulationEventEffects", ALL);
                 if (cf != null && cf.GetValue(choice) is Array ca) yield return ca;
+
+                var nef = ct.GetField("NarrativeEventEffects", ALL);
+                if (nef != null && nef.GetValue(choice) is Array wrappers)
+                {
+                    var unwrapped = new List<object>();
+                    foreach (var w in wrappers)
+                    {
+                        if (w == null) continue;
+                        var sef = w.GetType().GetField("SimulationEventEffect", ALL)?.GetValue(w);
+                        if (sef != null) unwrapped.Add(sef);
+                    }
+                    if (unwrapped.Count > 0) yield return unwrapped.ToArray();
+                }
             }
     }
 

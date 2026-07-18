@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Reflection;
 using System.Text;
 using Amplitude.Framework;
@@ -35,7 +34,12 @@ namespace HK.CompatPatcher
             // serializationData blob *and* Unity-serialized gameplay fields — if we bail to
             // RefDiff solely because DetectOdin is true, StructDiff never runs and real
             // conflicts (constants, families, …) disappear.
-            var body = BuildBody(live, refs);
+            var body = BuildBody(live, refs) ?? new Dictionary<string, object>();
+            // Odin-backed SimulationEventEffect trees are often invisible to SerializedObject
+            // (hybrid tech) or the whole element is pure Odin (narrative). Merge via reflection
+            // so StructDiff sees Amount / enums / etc., not only Refs.
+            SimulationEventEffectFlattener.MergeInto(live, body, refs);
+
             bool odin;
             Dictionary<string, string> flat = null;
             if (HasGameplayKeys(body))
@@ -47,8 +51,10 @@ namespace HK.CompatPatcher
             {
                 odin = true;
                 body = null;
+                var kept = new HashSet<string>(refs);
                 refs.Clear();
                 CollectRefsOnly(live, refs);
+                foreach (var r in kept) refs.Add(r);
             }
 
             // Roots are collection containers only. Never treat an empty/opaque body as a root —

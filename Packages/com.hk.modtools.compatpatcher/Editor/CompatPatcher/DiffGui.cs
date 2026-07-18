@@ -16,7 +16,7 @@ namespace HK.CompatPatcher
             var list = diffs?.ToList() ?? new List<Diff>();
             int diffCount = list.Count;
             EditorGUILayout.LabelField(odin
-                ? $"Differences (read-only) — {diffCount} — Odin element: references only, use Compare side-by-side for full fields:"
+                ? $"Differences (read-only) — {diffCount} — Odin element (no Flatten body): references only, use Compare side-by-side for full fields:"
                 : $"Differences (read-only) — {diffCount}:", EditorStyles.miniBoldLabel);
             if (diffCount == 0)
             {

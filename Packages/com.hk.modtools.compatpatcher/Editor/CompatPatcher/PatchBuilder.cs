@@ -104,7 +104,7 @@ namespace HK.CompatPatcher
 
         /// <summary>
         /// Batch-import many elements, staging each distinct source file only once. Returns the count
-        /// duplicated. Use for single elements+their mappers and for mass "import all conflicts".
+        /// duplicated. Used by mass "import all conflicts".
         /// </summary>
         public static int ImportElements(IEnumerable<(HkMod mod, HkElement el)> targets)
         {

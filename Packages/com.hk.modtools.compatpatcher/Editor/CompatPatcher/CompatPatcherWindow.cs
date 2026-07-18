@@ -49,7 +49,7 @@ namespace HK.CompatPatcher
         AnalyzeResult _result;
         Dictionary<string, Sidecar.Decision> _prior = new Dictionary<string, Sidecar.Decision>();
         readonly Dictionary<string, string> _choice = new Dictionary<string, string>();     // elemKey -> chosen mod
-        readonly Dictionary<string, string> _elemStatus = new Dictionary<string, string>(); // elemKey -> new|changed|carried
+        readonly Dictionary<string, string> _elemStatus = new Dictionary<string, string>(); // elemKey -> new|changed|resolved
         readonly Dictionary<string, string> _elemFp = new Dictionary<string, string>();     // elemKey -> fingerprint
         readonly HashSet<string> _patchNames = new HashSet<string>();                        // element names already in Assets/Databases/Patch/
         readonly List<PatchEntry> _patchEntries = new List<PatchEntry>();
@@ -78,6 +78,12 @@ namespace HK.CompatPatcher
         MultiColumnHeaderState _headerState;
         Vector2 _tableScroll, _detailScroll;
         ElementRow _selected;
+        bool _viewDirty = true;
+        // Cached Patch-vs-mods diffs for the selected conflict (FindPatchHkElements+ComputeDiffs is disk-heavy).
+        ElementRow _detailDiffRow;
+        List<Diff> _detailDiffList;
+        string _detailDiffWinner;
+        bool _detailDiffOdin;
         const float ROW_H = 18f;
         static readonly Color ROW_ALT = new Color(1f, 1f, 1f, 0.03f);
         static readonly Color ROW_SEL = new Color(0.3f, 0.5f, 0.9f, 0.28f);
@@ -85,14 +91,15 @@ namespace HK.CompatPatcher
         [MenuItem("Tools/shakee's Tools/Compatibility Patcher", false, 4)]
         static void Open() => GetWindow<CompatPatcherWindow>("Compat Patcher");
 
-        void OnEnable() { wantsMouseMove = true; BuildHeader(); ScanPatch(); }
-        void OnFocus() { ScanPatch(); Repaint(); }
+        void OnEnable() { wantsMouseMove = false; BuildHeader(); ScanPatch(); }
+        void OnFocus() { ScanPatch(); _viewDirty = true; InvalidateDetailDiffs(); Repaint(); }
 
         // Always know which elements already live in Assets/Databases/Patch/ (any layout).
         void ScanPatch()
         {
             _patchNames.Clear();
             _patchEntries.Clear();
+            InvalidateDetailDiffs();
             try
             {
                 if (!Directory.Exists(PatchBuilder.PatchDir)) return;
@@ -117,6 +124,12 @@ namespace HK.CompatPatcher
                 }
             }
             catch { /* patch folder may not exist yet */ }
+        }
+
+        void InvalidateDetailDiffs()
+        {
+            _detailDiffRow = null;
+            _detailDiffList = null;
         }
 
         /// <summary>
@@ -218,34 +231,106 @@ namespace HK.CompatPatcher
             _ => k.ToString(),
         };
 
-        static List<HkElement> FindPatchHkElements(string elementName)
+        List<HkElement> FindPatchHkElements(string elementName)
         {
             var result = new List<HkElement>();
-            if (!Directory.Exists(PatchBuilder.PatchDir)) return result;
-            foreach (var f in Directory.EnumerateFiles(PatchBuilder.PatchDir, "*.asset", SearchOption.AllDirectories))
+            if (string.IsNullOrEmpty(elementName) || _patchEntries.Count == 0) return result;
+            // Only parse files we already know contain this name — never rescan all of Patch/ every frame.
+            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pe in _patchEntries)
+            {
+                if (pe.Name != elementName || string.IsNullOrEmpty(pe.AssetPath)) continue;
+                paths.Add(pe.AssetPath);
+            }
+            foreach (var path in paths)
             {
                 string text;
-                try { text = File.ReadAllText(f); }
+                try { text = File.ReadAllText(path); }
                 catch { continue; }
-                foreach (var el in ModReader.ParseElements(text, f))
+                foreach (var el in ModReader.ParseElements(text, path))
                     if (el.Name == elementName && !el.IsRoot)
                         result.Add(el);
             }
             return result;
         }
 
-        static string ElemKey(ElementRow r) => r.Type + "|" + r.Name;
-        string FriendlyType(ElementRow r) => _typeName.TryGetValue(r.Type, out var n) ? n : r.TypeHint;
+        void EnsureDetailDiffs(ElementRow row)
+        {
+            if (row == null || row.Conflict == null)
+            {
+                InvalidateDetailDiffs();
+                return;
+            }
+            if (_detailDiffRow == row && _detailDiffList != null) return;
 
-        // Resolve the real element class name from its m_Script (guid:fileID) via the script's MonoScript,
-        // since the table has no live objects (unlike DatabaseBrowser's obj.GetType().Name). This turns
-        // per-collection labels like "RPNDefinitionScienceENC" into the actual type "RpnDefinition".
+            _detailDiffRow = row;
+            _detailDiffList = row.Conflict.Diffs;
+            _detailDiffWinner = row.Winner;
+            _detailDiffOdin = row.Conflict.Odin;
+
+            var patchEls = FindPatchHkElements(row.Name);
+            if (patchEls.Count == 0) return;
+            var patchEl = patchEls.FirstOrDefault(e => e.TypeHint == row.TypeHint) ?? patchEls[0];
+            _detailDiffList = ConflictAnalyzer.ComputeDiffs(patchEl, row.Elements.ToDictionary(kv => kv.Key, kv => kv.Value));
+            _detailDiffWinner = "Patch";
+            _detailDiffOdin = patchEl.Odin;
+        }
+
+        static string ElemKey(ElementRow r) => r.Type + "|" + r.Name;
+
+        /// <summary>
+        /// Concrete element class name for filters/UI — never the collection file stem (<see cref="ElementRow.TypeHint"/>).
+        /// Prefer live CLR type; else cached MonoScript/live map; else FullName tail. Empty if unknown.
+        /// </summary>
+        string FriendlyType(ElementRow r)
+        {
+            if (r == null) return "";
+            if (r.Elements != null)
+            {
+                foreach (var el in r.Elements.Values)
+                {
+                    if (el?.LiveObject == null || el.IsRoot) continue;
+                    if (el.LiveObject is Amplitude.Framework.IDatatableElementCollection) continue;
+                    return el.LiveObject.GetType().Name;
+                }
+            }
+            if (!string.IsNullOrEmpty(r.Type) && _typeName.TryGetValue(r.Type, out var mapped) && !string.IsNullOrEmpty(mapped))
+                return mapped;
+            // LiveElementBuilder / analyzer may store CLR FullName when MonoScript lookup fails
+            if (!string.IsNullOrEmpty(r.Type) && r.Type.IndexOf(':') < 0)
+            {
+                int dot = r.Type.LastIndexOf('.');
+                if (dot >= 0 && dot < r.Type.Length - 1)
+                    return r.Type.Substring(dot + 1);
+                // Bare name only if it isn't the collection stem
+                if (!string.Equals(r.Type, r.TypeHint, StringComparison.Ordinal))
+                    return r.Type;
+            }
+            return "";
+        }
+
+        // Resolve concrete class names into _typeName (guid:fileID → e.g. TechnologyDefinition).
+        // Live objects first (authoritative for assetbundles); MonoScript path for YAML-only rows.
         void ResolveTypeNames()
         {
             _typeName.Clear();
+            if (_result?.Rows == null) return;
+
+            foreach (var r in _result.Rows)
+            {
+                if (r.Elements == null) continue;
+                foreach (var el in r.Elements.Values)
+                {
+                    if (el?.LiveObject == null || el.IsRoot || string.IsNullOrEmpty(el.Type)) continue;
+                    if (el.LiveObject is Amplitude.Framework.IDatatableElementCollection) continue;
+                    _typeName[el.Type] = el.LiveObject.GetType().Name;
+                }
+            }
+
             var guids = new HashSet<string>();
             foreach (var r in _result.Rows)
             {
+                if (string.IsNullOrEmpty(r.Type) || _typeName.ContainsKey(r.Type)) continue;
                 int c = r.Type.IndexOf(':');
                 if (c > 0) guids.Add(r.Type.Substring(0, c));
             }
@@ -270,8 +355,12 @@ namespace HK.CompatPatcher
             readonly Action<string> _onPick;
             public TypeDropdown(AdvancedDropdownState state, List<string> types, Action<string> onPick) : base(state)
             {
-                _types = types; _onPick = onPick;
-                minimumSize = new Vector2(260, 340);
+                _types = types ?? new List<string>();
+                _onPick = onPick;
+                // minSize floor only — height cap + anchor is AdvancedDropdownHeight.ShowCapped.
+                int rows = Math.Min(_types.Count + 1, 22);
+                float h = 44f + rows * 18f;
+                minimumSize = new Vector2(240, Mathf.Clamp(h, 100f, AdvancedDropdownHeight.DefaultMaxHeight));
             }
             protected override AdvancedDropdownItem BuildRoot()
             {
@@ -308,7 +397,6 @@ namespace HK.CompatPatcher
         // ---- GUI ----------------------------------------------------------
         void OnGUI()
         {
-            if (Event.current.type == EventType.MouseMove) Repaint();
             DrawSources();
             EditorGUILayout.Space(4);
             DrawSidecarAndActions();
@@ -433,7 +521,16 @@ namespace HK.CompatPatcher
             if (GUILayout.Button("…", GUILayout.Width(28)))
             {
                 var p = EditorUtility.OpenFilePanel("Prior sidecar", PatchBuilder.PatchDir, "json");
-                if (!string.IsNullOrEmpty(p)) _sidecarPath = p;
+                if (!string.IsNullOrEmpty(p))
+                {
+                    _sidecarPath = p;
+                    ApplySidecarSources(p);
+                }
+            }
+            using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(_sidecarPath) || !File.Exists(_sidecarPath)))
+            {
+                if (GUILayout.Button("Load mods", GUILayout.Width(90)))
+                    ApplySidecarSources(_sidecarPath);
             }
             EditorGUILayout.EndHorizontal();
 
@@ -442,10 +539,62 @@ namespace HK.CompatPatcher
                 if (GUILayout.Button("Compare", GUILayout.Height(26))) Compare();
             using (new EditorGUI.DisabledScope(_result == null))
             {
+                if (GUILayout.Button("Resolve all as winner", GUILayout.Height(26), GUILayout.Width(160)))
+                    MassResolveAsWinner();
                 if (GUILayout.Button("Import all conflicts (chosen)", GUILayout.Height(26), GUILayout.Width(210))) MassImport();
                 if (GUILayout.Button("Export sidecar", GUILayout.Height(26), GUILayout.Width(130))) Export();
             }
             EditorGUILayout.EndHorizontal();
+        }
+
+        /// <summary>
+        /// Refill the Compare source list from the sidecar (name + path, load order).
+        /// Legacy sidecars with only <c>loadOrder</c> names keep matching paths already in the list.
+        /// </summary>
+        void ApplySidecarSources(string path)
+        {
+            var sc = Sidecar.Load(path);
+            if (sc == null)
+            {
+                Debug.LogWarning("[CompatPatcher] Could not load sidecar: " + path);
+                return;
+            }
+
+            var priorByName = _sources
+                .Where(s => !string.IsNullOrEmpty(s.name))
+                .GroupBy(s => s.name, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().path, StringComparer.OrdinalIgnoreCase);
+
+            _sources.Clear();
+            if (sc.sources != null && sc.sources.Count > 0)
+            {
+                foreach (var s in sc.sources)
+                {
+                    if (s == null || string.IsNullOrEmpty(s.name)) continue;
+                    string p = s.path ?? "";
+                    if (string.IsNullOrEmpty(p) && priorByName.TryGetValue(s.name, out var kept))
+                        p = kept;
+                    _sources.Add(new SourceEntry { name = s.name, path = p });
+                    if (string.IsNullOrEmpty(p) || !File.Exists(p) && !Directory.Exists(p))
+                        Debug.LogWarning($"[CompatPatcher] Sidecar mod '{s.name}' path missing or not found: '{p}'. Re-add the file.");
+                }
+            }
+            else if (sc.loadOrder != null && sc.loadOrder.Count > 0)
+            {
+                // Legacy name-only sidecar
+                foreach (var name in sc.loadOrder)
+                {
+                    if (string.IsNullOrEmpty(name)) continue;
+                    priorByName.TryGetValue(name, out var p);
+                    _sources.Add(new SourceEntry { name = name, path = p ?? "" });
+                    if (string.IsNullOrEmpty(p))
+                        Debug.LogWarning($"[CompatPatcher] Legacy sidecar has mod name '{name}' but no path — re-add that mod, then Export sidecar.");
+                }
+            }
+
+            _sidecarPath = path;
+            Debug.Log($"[CompatPatcher] Sidecar loaded: {_sources.Count} mod(s) in load order from {path}.");
+            Repaint();
         }
 
         // ---- load-order validation panel (container 1) -------------------
@@ -508,28 +657,54 @@ namespace HK.CompatPatcher
 
         void DrawFilters()
         {
+            var prevStatus = _status;
+            var prevName = _nameFilter;
+            var prevType = _typeFilter;
+            var prevNeeds = _needsReviewOnly;
+            var prevHide = _hideWinnerOnly;
+
             _status = (StatusFilter)GUILayout.Toolbar((int)_status, STATUS_LABELS);
             EditorGUILayout.BeginHorizontal();
             _nameFilter = EditorGUILayout.TextField("Name contains", _nameFilter);
             EditorGUILayout.LabelField("Type", GUILayout.Width(32));
-            if (GUILayout.Button(_typeFilter.Length == 0 ? "(any type)" : _typeFilter, EditorStyles.popup, GUILayout.Width(240)))
+            // Reserve the button rect explicitly — GetLastRect-after-Button is unreliable here because
+            // OnGUI also measures _panelTop from GetLastRect after DrawStats on the same frame.
+            Rect typeBtn = GUILayoutUtility.GetRect(240, EditorGUIUtility.singleLineHeight, GUILayout.Width(240));
+            string typeLabel = _typeFilter.Length == 0 ? "(any type)" : _typeFilter;
+            if (EditorGUI.DropdownButton(typeBtn, new GUIContent(typeLabel), FocusType.Keyboard, EditorStyles.popup))
             {
-                var rect = GUILayoutUtility.GetLastRect();
-                new TypeDropdown(_typeDdState, _types, picked => { _typeFilter = picked; Repaint(); }).Show(rect);
+                var dd = new TypeDropdown(_typeDdState, _types, picked =>
+                {
+                    _typeFilter = picked;
+                    _viewDirty = true;
+                    Repaint();
+                });
+                AdvancedDropdownHeight.ShowCapped(dd, typeBtn);
             }
             _needsReviewOnly = GUILayout.Toggle(_needsReviewOnly, "needs review only", GUILayout.Width(140));
             _hideWinnerOnly = GUILayout.Toggle(_hideWinnerOnly, "hide winner-only", GUILayout.Width(140));
             EditorGUILayout.EndHorizontal();
-            ApplyFilter();
+
+            if (_viewDirty
+                || prevStatus != _status
+                || prevName != _nameFilter
+                || prevType != _typeFilter
+                || prevNeeds != _needsReviewOnly
+                || prevHide != _hideWinnerOnly)
+            {
+                ApplyFilter();
+                _viewDirty = false;
+            }
         }
 
         void DrawStats()
         {
             var s = _result.Stats;
             int need = _elemStatus.Values.Count(v => v == "new" || v == "changed");
+            int resolved = _elemStatus.Values.Count(v => v == "resolved");
             int orphans = _patchOrphans.Count;
             EditorGUILayout.LabelField(
-                $"conflicts {s.Conflicts} (needs review {need}, odin {s.OdinConflicts}) · new {s.New} · identical {s.Identical} · roots {s.Roots} · showing {_view.Count}"
+                $"conflicts {s.Conflicts} (needs review {need}, resolved {resolved}, odin {s.OdinConflicts}) · new {s.New} · identical {s.Identical} · roots {s.Roots} · showing {_view.Count}"
                 + (orphans > 0 ? $" · patch orphans {orphans}" : ""),
                 EditorStyles.miniLabel);
             DrawPatchOrphans();
@@ -632,8 +807,12 @@ namespace HK.CompatPatcher
         bool NeedsReview(ElementRow r)
         {
             if (r.Status != ElemStatus.Conflict) return false;
+            if (_patchNames.Contains(r.Name)) return false;
             return _elemStatus.TryGetValue(ElemKey(r), out var s) && (s == "new" || s == "changed");
         }
+
+        bool IsResolved(ElementRow r) =>
+            r != null && _elemStatus.TryGetValue(ElemKey(r), out var s) && s == "resolved";
 
         string GetCell(ElementRow r, Col c)
         {
@@ -645,7 +824,8 @@ namespace HK.CompatPatcher
                 case Col.Winner: return r.Status == ElemStatus.Conflict && _choice.TryGetValue(ElemKey(r), out var ch) ? ch : r.Winner;
                 case Col.Status:
                     string s = r.Status == ElemStatus.Conflict && _elemStatus.TryGetValue(ElemKey(r), out var st) ? st : r.Status.ToString();
-                    if (_patchNames.Contains(r.Name)) s += "  ✓in patch";
+                    if (IsResolved(r)) s = "✓resolved";
+                    if (_patchNames.Contains(r.Name)) s += (s.Length > 0 ? "  " : "") + "✓in patch";
                     return s;
                 case Col.Diffs: return r.Summary;
                 default: return "";
@@ -676,7 +856,15 @@ namespace HK.CompatPatcher
                 Rect rr = new Rect(0, i * ROW_H, totalW, ROW_H);
                 if (r == _selected) EditorGUI.DrawRect(rr, ROW_SEL);
                 else if ((i & 1) == 1) EditorGUI.DrawRect(rr, ROW_ALT);
-                if (Event.current.type == EventType.MouseDown && rr.Contains(mouse)) { _selected = r; Repaint(); }
+                if (Event.current.type == EventType.MouseDown && rr.Contains(mouse))
+                {
+                    if (_selected != r)
+                    {
+                        _selected = r;
+                        InvalidateDetailDiffs();
+                    }
+                    Repaint();
+                }
                 for (int vc = 0; vc < visible.Length; vc++)
                 {
                     Rect cell = _header.GetCellRect(vc, rr);
@@ -704,7 +892,7 @@ namespace HK.CompatPatcher
             {
                 var row = _selected;
                 string key = ElemKey(row);
-                EditorGUILayout.LabelField($"{row.Name}   ·   {row.TypeHint}   ·   {string.Join("/", row.Contributors)}", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField($"{row.Name}   ·   {FriendlyType(row)}   ·   {string.Join("/", row.Contributors)}", EditorStyles.boldLabel);
 
                 if (row.Conflict == null)
                 {
@@ -726,6 +914,7 @@ namespace HK.CompatPatcher
                 else
                 {
                     bool inPatch = _patchNames.Contains(row.Name);
+                    bool resolved = IsResolved(row);
                     string statusTag = _elemStatus.TryGetValue(key, out var st) ? "   [" + st + "]" : "";
                     EditorGUILayout.LabelField("Which mod's version wins?" + statusTag, EditorStyles.miniBoldLabel);
                     string chosen = _choice.TryGetValue(key, out var ch) ? ch : row.Winner;
@@ -744,24 +933,23 @@ namespace HK.CompatPatcher
                         if (GUILayout.Button("Import chosen into Patch/", GUILayout.Width(200)))
                             ImportChosen(row, _choice.TryGetValue(key, out var c2) ? c2 : row.Winner);
                     }
+                    using (new EditorGUI.DisabledScope(resolved || inPatch))
+                    {
+                        if (GUILayout.Button("Mark resolved (accept chosen)", GUILayout.Width(210)))
+                            MarkResolved(row, _choice.TryGetValue(key, out var c3) ? c3 : row.Winner);
+                    }
                     if (GUILayout.Button("Compare side-by-side", GUILayout.Width(180))) OpenCompare(row);
                     EditorGUILayout.EndHorizontal();
                     if (inPatch)
                         EditorGUILayout.LabelField("✓ In patch — use Compare side-by-side to inspect/edit the patch version.", EditorStyles.miniLabel);
+                    else if (resolved)
+                        EditorGUILayout.LabelField("✓ Resolved — winner accepted without import. You can still Import chosen if you change your mind.", EditorStyles.miniLabel);
 
                     EditorGUILayout.Space(2);
-                    string diffWinner = row.Winner;
-                    bool diffOdin = row.Conflict.Odin;
-                    List<Diff> diffList = row.Conflict.Diffs;
-                    var patchEls = FindPatchHkElements(row.Name);
-                    if (patchEls.Count > 0)
-                    {
-                        var patchEl = patchEls.FirstOrDefault(e => e.TypeHint == row.TypeHint) ?? patchEls[0];
-                        diffList = ConflictAnalyzer.ComputeDiffs(patchEl, row.Elements.ToDictionary(kv => kv.Key, kv => kv.Value));
-                        diffWinner = "Patch";
-                        diffOdin = patchEl.Odin;
-                    }
-                    DiffGui.DrawTable(diffList, diffWinner, diffOdin);
+                    EnsureDetailDiffs(row);
+                    DiffGui.DrawTable(_detailDiffList ?? row.Conflict.Diffs,
+                        _detailDiffWinner ?? row.Winner,
+                        _detailDiffList != null ? _detailDiffOdin : row.Conflict.Odin);
                 }
             }
 
@@ -809,22 +997,42 @@ namespace HK.CompatPatcher
                     string fp = ElementFingerprint(row);
                     _elemFp[key] = fp;
                     if (_prior.TryGetValue(key, out var pd) && pd.fp == fp)
-                    { _elemStatus[key] = "carried"; _choice[key] = row.Contributors.Contains(pd.choice) ? pd.choice : row.Winner; }
+                    {
+                        _elemStatus[key] = "resolved";
+                        _choice[key] = row.Contributors.Contains(pd.choice) ? pd.choice : row.Winner;
+                    }
                     else if (_prior.ContainsKey(key))
-                    { _elemStatus[key] = "changed"; _choice[key] = row.Winner; }
-                    else { _elemStatus[key] = "new"; _choice[key] = row.Winner; }
+                    {
+                        _elemStatus[key] = "changed";
+                        _choice[key] = row.Contributors.Contains(_prior[key].choice) ? _prior[key].choice : row.Winner;
+                    }
+                    else
+                    {
+                        _elemStatus[key] = "new";
+                        _choice[key] = row.Winner;
+                    }
                 }
 
                 ShowCompareProgress(0.7, 0.75, "Compat Patcher", 0, "Resolving type names…");
                 ResolveTypeNames();
-                _types = _result.Rows.Select(FriendlyType).Where(x => !string.IsNullOrEmpty(x)).Distinct().OrderBy(x => x).ToList();
-                _typeFilter = "";
+                _types = _result.Rows
+                    .Where(r => r.Status != ElemStatus.Root)
+                    .Select(FriendlyType)
+                    .Where(x => !string.IsNullOrEmpty(x))
+                    .Distinct()
+                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (_typeFilter.Length > 0 && !_types.Contains(_typeFilter)) _typeFilter = "";
                 _selected = null;
                 ShowCompareProgress(0.75, 0.8, "Compat Patcher", 0, "Scanning patch directory…");
                 ScanPatch();
                 ComputePatchOrphans();
                 ShowCompareProgress(0.8, 1.0, "Compat Patcher", 0, "Validating load order (Vanilla → mods)…");
                 Validate((sub, label) => ShowCompareProgress(0.8, 1.0, "Compat Patcher", sub, label));
+                InvalidateDetailDiffs();
+                _viewDirty = true;
+                ApplyFilter();
+                _viewDirty = false;
             }
             catch (Exception e) { Debug.LogError("[CompatPatcher] Compare failed: " + e); }
             finally { EditorUtility.ClearProgressBar(); }
@@ -912,19 +1120,143 @@ namespace HK.CompatPatcher
                     name = r.Name,
                     typeHint = r.TypeHint,
                     typeName = FriendlyType(r),
+                    typeKey = r.Type,
                     versions = versions,
                     winner = r.Winner,
                     odin = r.Conflict?.Odin ?? false,
                     diffs = r.Conflict?.Diffs ?? new List<Diff>(),
-                    inPatch = _patchNames.Contains(r.Name)
+                    inPatch = _patchNames.Contains(r.Name),
+                    resolved = IsResolved(r),
                 });
             }
-            CompatCompareWindow.Show(items, idx);
+            CompatCompareWindow.Show(items, idx, OnCompareResolveAsWinner);
         }
 
-        // an element's mappers (UIMapper, DescriptorMapper, …) live under the same name, different type
-        static IEnumerable<HkElement> MappersFor(HkMod mod, HkElement el) =>
-            mod.Elements.Values.Where(e => e.Name == el.Name && e.Type != el.Type && !e.IsRoot);
+        void OnCompareResolveAsWinner(CompatCompareWindow.CompareItem item)
+        {
+            if (item == null || _result == null) return;
+            var row = _result.Rows.FirstOrDefault(r =>
+                r.Name == item.name && (r.Type == item.typeKey || r.TypeHint == item.typeHint));
+            if (row == null || row.Status != ElemStatus.Conflict)
+            {
+                Debug.LogWarning($"[CompatPatcher] Resolve as winner: no conflict row for '{item.name}'.");
+                return;
+            }
+            MarkResolved(row, item.winner);
+            item.resolved = true;
+        }
+
+        void MarkResolved(ElementRow row, string choiceMod, bool persist = true)
+        {
+            if (row == null || row.Status != ElemStatus.Conflict) return;
+            string key = ElemKey(row);
+            if (string.IsNullOrEmpty(choiceMod)) choiceMod = row.Winner;
+            _choice[key] = choiceMod;
+            if (!_elemFp.ContainsKey(key)) _elemFp[key] = ElementFingerprint(row);
+            _elemStatus[key] = "resolved";
+            if (persist)
+            {
+                PersistSidecar();
+                _viewDirty = true;
+                ApplyFilter();
+                _viewDirty = false;
+                Repaint();
+            }
+        }
+
+        /// <summary>
+        /// Mass actions operate on the current filtered list (<see cref="_view"/>), not every conflict.
+        /// Skips already-in-patch and ✓resolved rows.
+        /// </summary>
+        List<ElementRow> MassActionTargets()
+        {
+            ApplyFilter();
+            return _view.Where(r =>
+                r.Status == ElemStatus.Conflict
+                && !_patchNames.Contains(r.Name)
+                && !IsResolved(r)
+                && NeedsReview(r)).ToList();
+        }
+
+        void MassResolveAsWinner()
+        {
+            if (_result == null) return;
+            var pending = MassActionTargets();
+            if (pending.Count == 0)
+            {
+                EditorUtility.DisplayDialog("Compat Patcher",
+                    "No conflicts in the current filtered list need review (or all are already in patch / resolved).", "OK");
+                return;
+            }
+            if (!EditorUtility.DisplayDialog("Resolve all as winner",
+                $"Mark {pending.Count} conflict(s) from the current filtered list as resolved, accepting each load-order winner?\n\n"
+                + $"Showing {_view.Count} row(s) with current filters.\n"
+                + "Does not import into Patch/. Writes the sidecar so this is remembered next session.",
+                "Resolve", "Cancel")) return;
+
+            foreach (var row in pending)
+                MarkResolved(row, row.Winner, persist: false);
+            PersistSidecar();
+            _viewDirty = true;
+            ApplyFilter();
+            _viewDirty = false;
+            Repaint();
+            Debug.Log($"[CompatPatcher] Mass resolve as winner: {pending.Count} (filtered) → sidecar.");
+            EditorUtility.DisplayDialog("Compat Patcher", $"Marked {pending.Count} conflict(s) resolved (winner accepted).", "OK");
+        }
+
+        string EnsureSidecarPath()
+        {
+            if (string.IsNullOrEmpty(_sidecarPath))
+                _sidecarPath = PatchBuilder.PatchDir + "/CompatPatch.sidecar.json";
+            return _sidecarPath;
+        }
+
+        /// <summary>
+        /// Write resolved decisions + current mod list (name/path) to the sidecar.
+        /// Called on Mark resolved / mass resolve / Export.
+        /// </summary>
+        void PersistSidecar()
+        {
+            string path = EnsureSidecarPath();
+            var bySig = Sidecar.LoadIndex(path);
+
+            if (_result != null)
+            {
+                foreach (var row in _result.Rows)
+                {
+                    if (row.Status != ElemStatus.Conflict) continue;
+                    string key = ElemKey(row);
+                    if (!_elemStatus.TryGetValue(key, out var st)) continue;
+                    if (st == "resolved")
+                    {
+                        bySig[key] = new Sidecar.Decision
+                        {
+                            sig = key,
+                            fp = _elemFp.TryGetValue(key, out var fp) ? fp : ElementFingerprint(row),
+                            choice = _choice.TryGetValue(key, out var c) ? c : row.Winner,
+                            kind = "element",
+                            element = row.Name,
+                        };
+                    }
+                    else if (st == "new")
+                        bySig.Remove(key);
+                    // "changed": keep prior decision in file (stale fp) so next Compare still sees "changed"
+                }
+            }
+
+            var sources = _sources.Select(s => new Sidecar.Source { name = s.name, path = s.path }).ToList();
+            Sidecar.Save(path, sources, bySig.Values);
+            _sidecarPath = path;
+            // Import only the sidecar file (not a full Refresh) so the Project window sees it without
+            // stalling the editor after mass import/resolve.
+            string assetPath = path.Replace('\\', '/');
+            int assetsIdx = assetPath.IndexOf("/Assets/", StringComparison.OrdinalIgnoreCase);
+            if (assetsIdx >= 0)
+                AssetDatabase.ImportAsset(assetPath.Substring(assetsIdx + 1), ImportAssetOptions.ForceUpdate);
+            else if (assetPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);
+        }
 
         void ImportChosen(ElementRow row, string sourceModName)
         {
@@ -932,22 +1264,31 @@ namespace HK.CompatPatcher
             if (mod == null || row.Elements == null || !row.Elements.TryGetValue(sourceModName, out var el) || el == null)
             { Debug.LogWarning($"[CompatPatcher] '{row.Name}' has no loaded version from mod '{sourceModName}' (re-run Compare?)."); return; }
 
-            var set = new Dictionary<string, (HkMod mod, HkElement el)>();
-            set[el.Key] = (mod, el);
-            foreach (var m in MappersFor(mod, el)) if (!set.ContainsKey(m.Key)) set[m.Key] = (mod, m);
-            PatchBuilder.ImportElements(set.Values);
+            // Primary element only — mappers are separate conflict rows; import those explicitly if needed.
+            PatchBuilder.ImportElement(mod, el);
             ScanPatch();
+            // Import settles the conflict for review purposes too.
+            if (row.Status == ElemStatus.Conflict)
+                MarkResolved(row, sourceModName);
             SelectInPatch(el.TypeHint, el.Name);
         }
 
         void MassImport()
         {
-            var conflicts = _result.Rows.Where(r => r.Status == ElemStatus.Conflict && !_patchNames.Contains(r.Name)).ToList();
+            var conflicts = MassActionTargets();
+            if (conflicts.Count == 0)
+            {
+                EditorUtility.DisplayDialog("Compat Patcher",
+                    "No unresolved conflicts in the current filtered list to import.", "OK");
+                return;
+            }
             if (!EditorUtility.DisplayDialog("Import all conflicts",
-                $"Import the chosen version of {conflicts.Count} conflict elements (plus their mappers) into {PatchBuilder.PatchDir}?",
+                $"Import the chosen version of {conflicts.Count} unresolved conflict(s) from the current filtered list into {PatchBuilder.PatchDir}?\n\n"
+                + $"Showing {_view.Count} row(s) with current filters.\n"
+                + "Skips ✓resolved and ✓in patch.\n"
+                + "Attached mappers are not auto-imported — only rows that are conflicts themselves.",
                 "Import", "Cancel")) return;
 
-            // pass 1: each conflict's own chosen element (a mapper that is itself a conflict keeps its own choice)
             var chosen = new Dictionary<string, (HkMod mod, HkElement el)>();
             foreach (var row in conflicts)
             {
@@ -955,14 +1296,22 @@ namespace HK.CompatPatcher
                 var mod = _mods.FirstOrDefault(m => m.Name == c);
                 if (mod != null && row.Elements.TryGetValue(c, out var el) && el != null) chosen[el.Key] = (mod, el);
             }
-            // pass 2: fill in mappers that aren't their own conflict row (identical / single-mod), from the same mod
-            foreach (var kv in chosen.Values.ToList())
-                foreach (var m in MappersFor(kv.mod, kv.el))
-                    if (!chosen.ContainsKey(m.Key)) chosen[m.Key] = (kv.mod, m);
             int n = PatchBuilder.ImportElements(chosen.Values);
             ScanPatch();
-            Debug.Log($"[CompatPatcher] Mass import: {n} elements (incl. mappers) → {PatchBuilder.PatchDir}.");
-            EditorUtility.DisplayDialog("Compat Patcher", $"Imported {n} elements (chosen versions + mappers) into the patch.", "OK");
+            foreach (var row in conflicts)
+            {
+                string c = _choice.TryGetValue(ElemKey(row), out var v) ? v : row.Winner;
+                string key = ElemKey(row);
+                _choice[key] = c;
+                if (!_elemFp.ContainsKey(key)) _elemFp[key] = ElementFingerprint(row);
+                _elemStatus[key] = "resolved";
+            }
+            PersistSidecar();
+            _viewDirty = true;
+            ApplyFilter();
+            _viewDirty = false;
+            Debug.Log($"[CompatPatcher] Mass import: {n} elements (filtered) → {PatchBuilder.PatchDir}.");
+            EditorUtility.DisplayDialog("Compat Patcher", $"Imported {n} elements (chosen versions) into the patch.", "OK");
         }
 
         void SelectInPatch(string typeHint, string name)
@@ -974,29 +1323,18 @@ namespace HK.CompatPatcher
 
         void Export()
         {
-            string sidecar = string.IsNullOrEmpty(_sidecarPath)
-                ? PatchBuilder.PatchDir + "/CompatPatch.sidecar.json" : _sidecarPath;
-            Directory.CreateDirectory(Path.GetDirectoryName(sidecar));
-
-            var decisions = new List<Sidecar.Decision>();
-            foreach (var row in _result.Rows)
+            if (_result == null)
             {
-                if (row.Status != ElemStatus.Conflict) continue;
-                string key = ElemKey(row);
-                decisions.Add(new Sidecar.Decision
-                {
-                    sig = key, fp = _elemFp.TryGetValue(key, out var fp) ? fp : "",
-                    choice = _choice.TryGetValue(key, out var c) ? c : row.Winner,
-                    kind = "element", element = row.Name
-                });
+                EditorUtility.DisplayDialog("Compat Patcher", "Run Compare first.", "OK");
+                return;
             }
-            Sidecar.Save(sidecar, _result.LoadOrder, decisions);
-            _sidecarPath = sidecar;
-            AssetDatabase.Refresh();
-            Debug.Log($"[CompatPatcher] Sidecar written: {sidecar}  ({decisions.Count} element decisions).");
+            PersistSidecar();
+            int n = Sidecar.LoadIndex(_sidecarPath).Count;
+            Debug.Log($"[CompatPatcher] Sidecar written: {_sidecarPath}  ({n} resolved decision(s)).");
             EditorUtility.DisplayDialog("Compat Patcher",
-                $"Sidecar written to:\n{sidecar}\n\n{decisions.Count} per-element decisions recorded.\n\n" +
-                "Use “Import chosen into Patch/” per element to build the patch (Assets/Databases/Patch/).", "OK");
+                $"Sidecar written to:\n{_sidecarPath}\n\n{n} resolved decision(s) recorded.\n\n"
+                + "✓resolved = winner/choice accepted without import.\n✓in patch = imported into Patch/.\n\n"
+                + "Next Compare with this sidecar path restores resolved rows automatically.", "OK");
         }
     }
 }

@@ -27,9 +27,11 @@ namespace HK.CompatPatcher
             "m_GameObject","m_Enabled","m_EditorHideFlags","m_Script","m_EditorClassIdentifier","m_Name"
         };
 
-        // first present of these identifies a list entry across mods (else index)
+        // first present of these identifies a list entry across mods (else index).
+        // EffectId first so SimulationEventEffect rows (Type|TargetID|refs) do not collide on
+        // a shared TargetID=Empire alone.
         static readonly string[] EntryKeys =
-            { "serializableElementName", "TargetProperty", "Name", "TargetID", "Type", "Descriptor" };
+            { "EffectId", "serializableElementName", "TargetProperty", "Name", "TargetID", "Type", "Descriptor" };
 
         public const string Missing = "∅"; // ∅
 

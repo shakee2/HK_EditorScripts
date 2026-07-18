@@ -12,10 +12,11 @@ namespace HK.CompatPatcher
     /// Side-by-side inspector of one element across the mods that define it, plus (if present) the
     /// version already in Assets/Databases/Patch/. A searchable list on the left switches which element
     /// is compared (type filter + optional group-by-type, same pattern as Database Browser). Each column
-    /// stacks the element then its matching UIMapper/DescriptorMapper(s). Source columns use staged text
+    /// stacks the element then its matching UIMapper/DescriptorMapper(s), each headed with concrete type
+    /// + element name. Source columns use staged text
     /// imports for folder/zip/unitypackage, or the mounted live object for assetbundle sources (no scratch
     /// file). The Patch column is the real asset and editable, saved on close. Scratch staging is deleted
-    /// when switching elements and on close.
+    /// when switching elements and on close. Compare Import brings only the primary element (not mappers).
     /// </summary>
     public class CompatCompareWindow : EditorWindow
     {
@@ -30,11 +31,16 @@ namespace HK.CompatPatcher
             public bool odin;            // true if Odin element
             public List<Diff> diffs;     // pre-computed diffs (empty when there are no differences)
             public bool inPatch;         // true if an element with this name is already in Assets/Databases/Patch/
+            public bool resolved;        // true if sidecar / Mark resolved accepted the winner (no import)
+            /// <summary>Element Type key (guid:fileID or FullName) for matching the main-window row.</summary>
+            public string typeKey;
         }
 
         class Panel
         {
-            public string label;
+            /// <summary>Concrete CLR type name (e.g. TechnologyDefinition), not the collection stem.</summary>
+            public string typeName;
+            public string elementName;
             public UnityEngine.Object obj;
             public Editor editor;
             public string stagePath;   // non-null → scratch (delete on close)
@@ -59,6 +65,7 @@ namespace HK.CompatPatcher
             public int itemIndex; // into _items when !isHeader
         }
 
+        Action<CompareItem> _onResolveAsWinner;
         List<CompareItem> _items = new List<CompareItem>();
         readonly List<int> _filtered = new List<int>();   // indices into _items matching search+type
         readonly List<DisplayRow> _display = new List<DisplayRow>();
@@ -79,6 +86,8 @@ namespace HK.CompatPatcher
         float _listWidth = 320f;
         bool _draggingSplit;
         GUIStyle _headerStyle;
+        GUIStyle _panelTypeStyle;
+        GUIStyle _panelNameStyle;
 
         const float LIST_ROW_H = 18f;
         const float TYPE_COL_W = 110f;
@@ -89,11 +98,12 @@ namespace HK.CompatPatcher
         static readonly Color HEADER_BG = new Color(0f, 0f, 0f, 0.18f);
         static readonly Color ROW_LINE = new Color(0f, 0f, 0f, 0.12f);
 
-        public static void Show(List<CompareItem> items, int index)
+        public static void Show(List<CompareItem> items, int index, Action<CompareItem> onResolveAsWinner = null)
         {
             var w = GetWindow<CompatCompareWindow>(typeof(CompatPatcherWindow));
             w.titleContent = new GUIContent("Compare elements");
             w._items = items ?? new List<CompareItem>();
+            w._onResolveAsWinner = onResolveAsWinner;
             w._typeFilter = EditorPrefs.GetString(PrefTypeFilter, "");
             w._groupByType = EditorPrefs.GetBool(PrefGroupByType, false);
             w._viewDirty = true;
@@ -112,13 +122,13 @@ namespace HK.CompatPatcher
             foreach (var (mod, modObj, el) in item.versions)
             {
                 var col = new Column { header = mod, mod = modObj, el = el };
-                AddStaged(col, el.TypeHint, modObj, el);
-                foreach (var m in MatchingMappers(modObj, el)) AddStaged(col, m.TypeHint, modObj, m);
+                AddStaged(col, modObj, el);
+                foreach (var m in MatchingMappers(modObj, el)) AddStaged(col, modObj, m);
                 if (col.panels.Count > 0) _cols.Add(col);
             }
             var patchCol = new Column { header = "Patch (editable)" };
-            foreach (var (path, obj) in FindPatchObjects(item.name))
-                patchCol.panels.Add(new Panel { label = Path.GetFileNameWithoutExtension(path), obj = obj, editor = Editor.CreateEditor(obj), stagePath = null, editable = true });
+            foreach (var (_, obj) in FindPatchObjects(item.name))
+                patchCol.panels.Add(MakePanel(obj, stagePath: null, editable: true));
             if (patchCol.panels.Count > 0) _cols.Add(patchCol);
             RecomputeDisplayDiffs(item);
             Repaint();
@@ -127,12 +137,22 @@ namespace HK.CompatPatcher
         static IEnumerable<HkElement> MatchingMappers(HkMod mod, HkElement el) =>
             mod.Elements.Values.Where(e => e.Name == el.Name && e.Type != el.Type && !e.IsRoot);
 
-        void AddStaged(Column col, string label, HkMod mod, HkElement el)
+        void AddStaged(Column col, HkMod mod, HkElement el)
         {
             var (obj, _, stage) = PatchBuilder.StageElement(mod, el);
             if (obj == null) { PatchBuilder.CleanupStage(stage); return; }
-            col.panels.Add(new Panel { label = label, obj = obj, editor = Editor.CreateEditor(obj), stagePath = stage, editable = false });
+            col.panels.Add(MakePanel(obj, stage, editable: false));
         }
+
+        static Panel MakePanel(UnityEngine.Object obj, string stagePath, bool editable) => new Panel
+        {
+            typeName = obj != null ? obj.GetType().Name : "?",
+            elementName = obj != null ? obj.name : "?",
+            obj = obj,
+            editor = obj != null ? Editor.CreateEditor(obj) : null,
+            stagePath = stagePath,
+            editable = editable,
+        };
 
         static IEnumerable<(string path, UnityEngine.Object obj)> FindPatchObjects(string elementName)
         {
@@ -236,16 +256,18 @@ namespace HK.CompatPatcher
 
             EditorGUILayout.BeginHorizontal();
             EditorGUILayout.LabelField("Type", GUILayout.Width(32));
-            if (GUILayout.Button(_typeFilter.Length == 0 ? "(any)" : _typeFilter, EditorStyles.popup))
+            Rect typeBtn = GUILayoutUtility.GetRect(10, EditorGUIUtility.singleLineHeight, GUILayout.ExpandWidth(true));
+            string typeLabel = _typeFilter.Length == 0 ? "(any)" : _typeFilter;
+            if (EditorGUI.DropdownButton(typeBtn, new GUIContent(typeLabel), FocusType.Keyboard, EditorStyles.popup))
             {
-                var rect = GUILayoutUtility.GetLastRect();
-                new TypeDropdown(_typeDdState, _types, picked =>
+                var dd = new TypeDropdown(_typeDdState, _types, picked =>
                 {
                     _typeFilter = picked;
                     EditorPrefs.SetString(PrefTypeFilter, _typeFilter);
                     _viewDirty = true;
                     Repaint();
-                }).Show(rect);
+                });
+                AdvancedDropdownHeight.ShowCapped(dd, typeBtn);
             }
             bool g = GUILayout.Toggle(_groupByType, "Group", EditorStyles.miniButton, GUILayout.Width(54));
             if (g != _groupByType)
@@ -295,8 +317,10 @@ namespace HK.CompatPatcher
                 float typeW = _groupByType ? 0f : TYPE_COL_W;
                 Rect label = new Rect(rr.x + 4 + indent, rr.y, rr.width - 4 - indent - typeW, rr.height);
                 string tip = ItemType(_items[i]);
-                string rowLabel = (_items[i].inPatch ? "● " : "  ") + _items[i].name;
+                string mark = _items[i].inPatch ? "● " : _items[i].resolved ? "○ " : "  ";
+                string rowLabel = mark + _items[i].name;
                 if (_items[i].inPatch) tip = "In patch\n" + tip;
+                else if (_items[i].resolved) tip = "Resolved (winner OK)\n" + tip;
                 GUI.Label(label, new GUIContent(rowLabel, tip),
                     i == _index ? EditorStyles.boldLabel : EditorStyles.label);
                 if (!_groupByType)
@@ -323,8 +347,28 @@ namespace HK.CompatPatcher
             EditorGUILayout.BeginVertical();
             if (_index < 0 || _index >= _items.Count) { EditorGUILayout.HelpBox("Select an element from the list.", MessageType.None); EditorGUILayout.EndVertical(); return; }
             var item = _items[_index];
+            EnsurePanelStyles();
             EditorGUILayout.LabelField($"{item.name}   ·   {ItemType(item)}", EditorStyles.boldLabel);
-            EditorGUILayout.LabelField("Source columns are read-only (staged); the Patch column is editable and saved on close. Element then its UIMapper stacked.", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField(
+                "Source columns are read-only (staged); Patch is editable and saved on close. "
+                + "Each stacked block is a separate element (type + name). Import brings only the primary element — not attached mappers.",
+                EditorStyles.miniLabel);
+
+            EditorGUILayout.BeginHorizontal();
+            using (new EditorGUI.DisabledScope(item.inPatch || item.resolved || _onResolveAsWinner == null))
+            {
+                if (GUILayout.Button($"Resolve as winner ({item.winner})", GUILayout.Width(280)))
+                {
+                    _onResolveAsWinner(item);
+                    item.resolved = true;
+                    Repaint();
+                }
+            }
+            if (item.inPatch)
+                EditorGUILayout.LabelField("● In patch", EditorStyles.miniLabel);
+            else if (item.resolved)
+                EditorGUILayout.LabelField("○ Resolved — winner accepted (sidecar)", EditorStyles.miniLabel);
+            EditorGUILayout.EndHorizontal();
 
             DrawDiffSection(item);
 
@@ -347,9 +391,11 @@ namespace HK.CompatPatcher
                     }
                 }
                 c.scroll = EditorGUILayout.BeginScrollView(c.scroll);
-                foreach (var p in c.panels)
+                for (int pi = 0; pi < c.panels.Count; pi++)
                 {
-                    EditorGUILayout.LabelField(p.label + (p.editable ? "" : "  (read-only)"), EditorStyles.miniBoldLabel);
+                    var p = c.panels[pi];
+                    if (pi > 0) EditorGUILayout.Space(12);
+                    DrawPanelHeader(p);
                     EditorGUILayout.BeginVertical(EditorStyles.helpBox);
                     // DisabledScope is intentionally not used here: it would also disable the
                     // embedded inspector's tabs, but we need to be able to switch tabs even for
@@ -360,7 +406,6 @@ namespace HK.CompatPatcher
                     catch (Exception ex) { EditorGUILayout.HelpBox("Embedded inspector failed: " + ex.Message, MessageType.Warning); }
                     EditorGUILayout.EndVertical();
                     EditorGUILayout.EndVertical();
-                    EditorGUILayout.Space(4);
                 }
                 EditorGUILayout.EndScrollView();
                 EditorGUILayout.EndVertical();
@@ -368,6 +413,21 @@ namespace HK.CompatPatcher
             EditorGUILayout.EndHorizontal();
             EditorGUIUtility.labelWidth = prevLabel;
             EditorGUILayout.EndVertical();
+        }
+
+        void EnsurePanelStyles()
+        {
+            if (_panelTypeStyle != null) return;
+            _panelTypeStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 14, wordWrap = true };
+            _panelNameStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 13, wordWrap = true };
+        }
+
+        void DrawPanelHeader(Panel p)
+        {
+            EditorGUILayout.LabelField(p.typeName ?? "?", _panelTypeStyle);
+            string name = p.elementName ?? "?";
+            if (!p.editable) name += "  (read-only)";
+            EditorGUILayout.LabelField(name, _panelNameStyle);
         }
 
         void DrawDiffSection(CompareItem item)
@@ -414,21 +474,16 @@ namespace HK.CompatPatcher
             _displayDiffOdin = winner.Odin;
         }
 
-        static IEnumerable<HkElement> MappersFor(HkMod mod, HkElement el) =>
-            mod.Elements.Values.Where(e => e.Name == el.Name && e.Type != el.Type && !e.IsRoot);
-
-        // Mirrors CompatPatcherWindow.ImportChosen but for the compare window's per-mod columns:
-        // imports this column's primary element plus its UIMapper/DescriptorMapper(s) into the patch,
-        // then refreshes the Patch column on the spot so the user can see the new editable copy.
+        // Imports only this column's primary element (not attached mappers — import those from their
+        // own conflict rows if needed), then refreshes the Patch column in place.
         void ImportThisVersion(Column c)
         {
-            var set = new Dictionary<string, (HkMod mod, HkElement el)>();
-            set[c.el.Key] = (c.mod, c.el);
-            foreach (var m in MappersFor(c.mod, c.el))
-                if (!set.ContainsKey(m.Key)) set[m.Key] = (c.mod, m);
-            int n = PatchBuilder.ImportElements(set.Values);
-            Debug.Log($"[CompatPatcher] Compare import: {c.el.Name} from {c.mod.Name} (+{n - 1} mapper(s)) → {PatchBuilder.PatchDir}.");
+            PatchBuilder.ImportElement(c.mod, c.el);
+            Debug.Log($"[CompatPatcher] Compare import: {c.el.Name} ({c.el.LiveObject?.GetType().Name ?? c.el.TypeHint}) from {c.mod.Name} → {PatchBuilder.PatchDir}.");
             RefreshPatchColumn();
+            // Keep list marker in sync if this was resolve-only before.
+            if (_index >= 0 && _index < _items.Count)
+                _items[_index].resolved = true;
         }
 
         // Rebuild only the Patch column in place so the imported element shows up as an editable panel
@@ -448,8 +503,8 @@ namespace HK.CompatPatcher
             }
             var item = _items[_index];
             var patchCol = new Column { header = "Patch (editable)" };
-            foreach (var (path, obj) in FindPatchObjects(item.name))
-                patchCol.panels.Add(new Panel { label = Path.GetFileNameWithoutExtension(path), obj = obj, editor = Editor.CreateEditor(obj), stagePath = null, editable = true });
+            foreach (var (_, obj) in FindPatchObjects(item.name))
+                patchCol.panels.Add(MakePanel(obj, stagePath: null, editable: true));
             if (patchCol.panels.Count > 0) _cols.Add(patchCol);
             item.inPatch = true;
         }
@@ -476,8 +531,11 @@ namespace HK.CompatPatcher
             readonly Action<string> _onPick;
             public TypeDropdown(AdvancedDropdownState state, List<string> types, Action<string> onPick) : base(state)
             {
-                _types = types; _onPick = onPick;
-                minimumSize = new Vector2(260, 340);
+                _types = types ?? new List<string>();
+                _onPick = onPick;
+                int rows = Math.Min(_types.Count + 1, 22);
+                float h = 44f + rows * 18f;
+                minimumSize = new Vector2(220, Mathf.Clamp(h, 100f, AdvancedDropdownHeight.DefaultMaxHeight));
             }
             protected override AdvancedDropdownItem BuildRoot()
             {

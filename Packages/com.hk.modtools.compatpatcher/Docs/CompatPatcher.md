@@ -53,14 +53,15 @@ For each element present in ≥2 mods, in load order (**last = winner**), diff w
 | *new*               | single-mod only, no conflict                | none — but editable via the browser |
 
 Field/entry diffs are **structured**: dicts recurse; list entries align by identity key
-(`serializableElementName`, `TargetProperty`, `Name`, `TargetID`, `Type`, `Descriptor`); keyless positional
+(`EffectId`, `serializableElementName`, `TargetProperty`, `Name`, `TargetID`, `Type`, `Descriptor`); keyless positional
 lists (e.g. RPN `ConstantStack`) compare as one unit. Diffs are **N-way** — every row shows each mod's value.
 
 ### Odin-node payloads
-Some types (e.g. `TechnologyDefinition`) keep their real lists in the Odin `SerializationNodes` stream, not
-plain YAML. In-editor these are read as **live typed objects** via the `DescriptorPropertyIndex` reflection
-reader (Effects → PropertyEffects → RPN, with `BuildFormula` giving readable infix), so their fields diff and
-display like any other. (The standalone prototype falls back to element-reference-set diff for these.)
+Some types keep lists in the Odin `SerializationNodes` stream (e.g. `TechnologyDefinition.SimulationEventEffects`,
+`NarrativeEventDefinition` → `Choices[].NarrativeEventEffects`). For **live** objects (assetbundle mounts)
+`LiveElementBuilder` reflection-merges those effect trees into the element body before Flatten, so Amount /
+enums / refs StructDiff like ordinary fields. YAML-only sources without a live object still fall back to
+element-reference-set diff (`RefDiff`) for opaque Odin shells.
 
 ## Workflow
 
@@ -91,7 +92,7 @@ flowchart LR
    `DatatableElementCollectionUtility.GetOrCreateDatatableElementCollection` + `TryDuplicateDatatableElements`
    (`ensureUniqueName:false` → overrides by name) — the same calls `OverrideVanillaElement` uses. Scratch
    staging is deleted afterwards.
-3. **Compare** → element map + diffs + carried/needs-review status.
+3. **Compare** → element map + diffs + resolved/needs-review status.
 4. **Browse, filter, decide** in the window (below).
 5. Resolved/edited elements are written into **`Assets/Databases/Patch/`** (the patch mod, "Mod C"), and the
    sidecar is refreshed.
@@ -109,7 +110,7 @@ ping-on-click, dropdown+text filters) where **rows are elements across the loade
 - Name (substring)
 - Type (dropdown, populated from loaded elements)
 - Defined-by (which mod[s] touch it)
-- Resolution (`ADD` / `PICK` / needs-review / carried)
+- Resolution (`ADD` / `PICK` / needs-review / resolved)
 
 **Columns:** name · type · defined-by · winner · status · diff summary (`2 ADD, 1 PICK`).
 
@@ -126,15 +127,17 @@ object-level field merging; until then a mixed element is handled by importing o
   rendered with the normal inspector (`Editor.CreateEditor`, as `DatabaseBrowser` does), in parallel columns,
   for visual comparison before choosing.
 - **Import chosen into Patch/** — duplicates the *chosen* mod's version into the Patch collection (honours the
-  radio), via the `OverrideVanillaElement` mechanism. Also the path for **New** elements and manual
-  edits/rebalancing (edit in the inspector afterwards).
+  radio), via the `OverrideVanillaElement` mechanism. Primary element only — matching mappers are not
+  auto-imported. Also marks the conflict **resolved** in the sidecar.
+- **Mark resolved / Resolve all as winner / Compare “Resolve as winner”** — accept winner/choice without
+  importing; sidecar is the memory (`✓resolved`, same review weight as `✓in patch`).
 
 ## Incremental re-patch (the time-saver)
 
-The patch carries a **sidecar** recording each decision + a **fingerprint** of the source values it was made
-against. On re-run:
+The patch carries a **sidecar** recording each **resolved** decision + a **fingerprint** of the source values
+it was made against. On re-run:
 
-- source values **unchanged** → decision **carried** (hidden from review).
+- source values **unchanged** → decision **resolved** (hidden from review).
 - source values **changed since the patch was built** → **resurfaces** for review, pre-filled with the prior
   choice.
 - collisions not in the sidecar → **new**.
@@ -143,7 +146,7 @@ Two mechanisms cooperate: **ADD/union** decisions are self-verifying (if the pat
 contains the union, so nothing shows missing); **PICK/CUSTOM** decisions need the sidecar so an unchanged
 divergence isn't re-flagged just because a loser still disagrees with the winner.
 
-*Validated on ENC + VIP:* 428 elements with diffs on first solve → **0** on unchanged re-run (all carried);
+*Validated on ENC + VIP:* 428 elements with diffs on first solve → **0** on unchanged re-run (all resolved);
 perturbing one value resurfaces **exactly one** element.
 
 ## Output
@@ -168,7 +171,8 @@ both delivery forms (a companion asset in the folder; included in the exported p
 | Need | Existing code |
 |---|---|
 | Table UI, filters, sort, virtualized rows | `DescriptorPropertyIndex.cs` |
-| Deep-read Odin types (Effects/PropertyEffects/RPN→infix) | `DescriptorPropertyIndex` reflection reader |
+| Live Odin SimulationEventEffects → Flat (tech/narrative/civic/NP) | `SimulationEventEffectFlattener` + `LiveElementBuilder` |
+| Descriptor PropertyEffects / RPN→infix (inspector tools) | `DescriptorPropertyIndex` / `PropertyEffectDrawer` |
 | Import an element into the mod to edit | `VanillaDatabaseMount.OverrideVanillaElement` (generalise source) |
 | Reference graph / dangling-ref detection | `DescriptorPropertyIndex.HarvestReferences` |
 | Diff engine, N-way classification, sidecar round-trip | standalone prototype `hk_conflict_report.py` |

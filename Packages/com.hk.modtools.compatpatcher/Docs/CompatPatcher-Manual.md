@@ -40,12 +40,14 @@ After Compare with assetbundles, expand **Loaded mod bundles (excl. vanilla)** t
 
 ### 2. Prior Sidecar (Optional)
 
-If you've patched these mods before and exported a sidecar (`CompatPatch.sidecar.json`), paste its path in the **Prior sidecar** field or click **…** to browse.
+If you've patched these mods before, point **Prior sidecar** at `CompatPatch.sidecar.json` (or click **…** / **Load mods**). That refills the mod list (name + path, load order). Marking conflicts **resolved** (or importing them) writes this file automatically — default path `Assets/Databases/Patch/CompatPatch.sidecar.json`.
 
-The sidecar records your previous decisions. On re-run:
-- **Unchanged elements** → your decision is **carried** (hidden from review)
-- **Changed elements** → resurface for review, pre-filled with your prior choice
-- **New collisions** → flagged as **new**
+The sidecar records **explicit resolve decisions** (not every conflict). On re-Compare:
+- **Unchanged sources** → still **✓resolved** (hidden under “needs review only”)
+- **Sources changed** → resurface as **changed** for review
+- **New collisions** → **new**
+
+**✓resolved** = you accepted the winner/choice without needing a Patch override. **✓in patch** = you imported into `Patch/`. Both clear “needs review.”
 
 ### 3. Compare
 
@@ -57,6 +59,8 @@ Press **Compare** (requires at least 2 mods). The patcher:
 4. Scans **`Assets/Databases/Patch/`** for **orphans** (see below)
 5. Validates the load order against crash-causing patterns
 6. Populates the three panels below
+
+Use **Resolve all as winner** to mark still-unreviewed conflicts in the **current filtered list** as resolved (accepts each load-order winner, writes sidecar, no import).
 
 ### Patch orphans (after Compare)
 
@@ -97,14 +101,16 @@ A table of all elements across the loaded mods. Columns:
 | **Type** | Element class (e.g. `TechnologyDefinition`) |
 | **By** | Which mods define it |
 | **Winner** | Load-order winner (or your chosen mod) |
-| **Status** | `new` / `changed` / `carried` / `conflict` / `identical` + `✓in patch` if already imported |
+| **Status** | `new` / `changed` / `✓resolved` / `conflict` / `identical` + `✓in patch` if imported |
 | **Diffs** | Summary like `2 ADD, 1 PICK` |
+
+Click a row to select it and see details in Panel 3.
 
 **Filters** (AND-combined):
 - **Status toolbar**: Conflicts / All / New / Identical
 - **Name contains**: substring filter
 - **Type**: dropdown populated from loaded elements
-- **needs review only**: hides carried/identical
+- **needs review only**: only conflicts still needing a decision (hides ✓resolved / ✓in patch)
 - **hide winner-only**: hides conflicts where the only diffs are `ExtraInWinner` (already in the winner mod, no action needed)
 
 Click a row to select it and see details in Panel 3.
@@ -116,6 +122,7 @@ For the selected element:
 **If it's a conflict** (present in multiple mods with differences):
 - **Which mod's version wins?** — radio buttons for each contributing mod (defaults to load-order winner)
 - **Import chosen into Patch/** — duplicates that mod's version into `Assets/Databases/Patch/`
+- **Mark resolved (accept chosen)** — winner/choice is fine; no import. Writes the sidecar (`✓resolved`)
 - **Compare side-by-side** — opens the Compare window (see below)
 - **Differences table** — read-only field-by-field diff showing:
   - `MISSING in winner` — a field/entry another mod has that the winner lacks
@@ -126,9 +133,10 @@ For the selected element:
 - **Import & Edit into Patch/** — bring it into the patch so you can edit it
 - **Compare side-by-side** — view it in the Compare window
 
-**If it's already in the patch** (`✓in patch`):
-- The Import button is disabled (already there)
-- Use **Compare side-by-side** to edit the patch version directly
+**If it's already handled** (`✓resolved` and/or `✓in patch`):
+- Resolved = accepted without Patch override; In patch = imported. Both leave “needs review.”
+- Import is disabled when already in patch; Mark resolved is disabled when already resolved or in patch.
+- Use **Compare side-by-side** to inspect (and edit the patch version if present).
 
 ---
 
@@ -139,12 +147,14 @@ Click **Compare side-by-side** from the detail panel to open a separate window s
 - **Left**: searchable list of elements (from your current filtered view), with type filter and optional Group-by-type (same pattern as Database Browser)
 - **Right**: one column per contributing mod + a **Patch** column (if the element is already in the patch)
 
-Each column stacks the element and its matching mappers (UIMapper, DescriptorMapper, etc.).
+Each column stacks the element and its matching mappers (UIMapper, DescriptorMapper, etc.) as separate blocks. Each block is headed with the **concrete type** and **element name** (not the collection file stem).
 
 - **Source columns** are read-only (staged scratch copies)
 - **Patch column** is editable — changes are saved on close
 
-Click **Import this version into Patch/** on any source column to bring that mod's version into the patch. The Patch column refreshes in place so you can immediately edit it.
+Click **Import this version into Patch/** on any source column to bring that mod's **primary element only** into the patch (same as the main window — attached mappers are not auto-imported). The Patch column refreshes in place so you can immediately edit it.
+
+Click **Resolve as winner** to accept the load-order winner without importing (`✓resolved` + sidecar). List markers: **●** = in patch, **○** = resolved.
 
 > **Tip:** Use this window when you need to see the full inspector view of each version before deciding, or when you want to import a version and hand-edit it.
 
@@ -152,20 +162,28 @@ Click **Import this version into Patch/** on any source column to bring that mod
 
 ## Resolving Conflicts
 
+Two ways to settle a conflict:
+
+| Action | Result |
+|---|---|
+| **Mark resolved** / **Resolve as winner** | Accept chosen/winner — no `Patch/` file. Sidecar remembers (`✓resolved`). |
+| **Import chosen** | Copy into `Assets/Databases/Patch/` (`✓in patch`) and also mark resolved in the sidecar. |
+
 ### Per-Element Resolution
 
 For each conflict:
 1. Select the element in the list
-2. Choose which mod's version wins (radio button)
-3. Click **Import chosen into Patch/**
+2. Choose which mod's version wins (radio button), or leave the load-order winner
+3. Either **Mark resolved (accept chosen)** or **Import chosen into Patch/**
 
-The element (plus its mappers) is duplicated into `Assets/Databases/Patch/`. The status changes to `✓in patch`.
+### Mass actions
 
-### Mass Import
+Both operate on the **current filtered list** only (status / name / type / needs-review / hide-winner-only):
 
-Click **Import all conflicts (chosen)** to import the chosen version of every unresolved conflict at once. A confirmation dialog shows the count.
+- **Resolve all as winner** — mark listed unresolved conflicts resolved (load-order winner each). Sidecar only; no import.
+- **Import all conflicts (chosen)** — import listed unresolved conflicts' chosen versions into `Patch/`.
 
-> This imports the whole-element version for each conflict. If you need per-field merging (e.g. take field A from Mod X and field B from Mod Y), import one version then hand-edit it in the inspector or via the Compare window's Patch column.
+> Import is whole-element. For per-field merges, import one version then hand-edit in the inspector or the Compare window's Patch column.
 
 ### Import & Edit (New Elements)
 
@@ -177,16 +195,15 @@ For elements that exist in only one mod (status `new`), click **Import & Edit in
 
 The time-saver: when a source mod updates, you don't re-review everything.
 
-1. After your first patch, click **Export sidecar** to save `CompatPatch.sidecar.json` (default location: `Assets/Databases/Patch/`)
-2. Next time you open the patcher, load the same mods + the sidecar path
-3. Press **Compare**
+1. Work as usual — **Mark resolved** / Import auto-writes the sidecar (or click **Export sidecar**)
+2. Next session: same mods + **Prior sidecar** path → **Compare**
 
 Results:
-- **Unchanged** → decisions are **carried** (hidden unless you uncheck "needs review only")
-- **Changed** → resurfaces with status `changed`, pre-filled with your prior choice
+- **Unchanged** → still **✓resolved** (hidden under “needs review only”)
+- **Changed** → resurfaces as `changed`, pre-filled with your prior choice
 - **New collisions** → status `new`
 
-The sidecar records a **fingerprint** of the source values for each decision. If the fingerprint matches, the decision is carried. If it differs, the element resurfaces.
+The sidecar stores a **fingerprint** of the source values per resolved decision. Match → stay resolved; differ → review again.
 
 ---
 
@@ -232,7 +249,7 @@ The sidecar travels with both forms (companion file in the folder, or included i
 The patcher keys on `(type, name)`, not file path. If Mod A splits an element across two files and Mod B puts it in one, they still collide if the name matches.
 
 ### Odin Elements
-Some element types (e.g. `TechnologyDefinition`) store their real lists in an Odin serialization stream, not plain YAML. The patcher handles these via reflection — they diff and display like any other element, but the diff shows **references only** (not full field values). Use **Compare side-by-side** to see the full inspector view.
+Some element types keep lists in an Odin serialization stream (e.g. `TechnologyDefinition.SimulationEventEffects`, narrative `Choices[].NarrativeEventEffects`). For **live / assetbundle** sources the patcher reflection-merges those effect trees into the compare body, so field diffs (Amount, UnlockAction enums, refs, …) show like any other StructDiff row. Pure-Odin elements that still have no Flatten body (e.g. some YAML-only unitypackage carriers without a live object) fall back to **references only** — use **Compare side-by-side** for the full inspector.
 
 ### Winner-Only Diffs
 If a conflict's only diffs are `ExtraInWinner` (the winner has something others don't), it's usually safe to ignore — the winner already includes those entries. Toggle **hide winner-only** to filter these out.
@@ -248,12 +265,12 @@ After Compare with `.assetbundle` mods, open **Loaded mod bundles (excl. vanilla
 The validation panel caches vanilla databases for the session. If you change the Humankind folder or remount vanilla, use **Tools → Debug → Compat Patcher → Clear Vanilla Validation Cache** to force a reload.
 
 ### Mapper Elements
-When you import an element, its matching mappers (UIMapper, DescriptorMapper, etc.) are imported automatically. If a mapper is itself a conflict, it keeps its own resolution choice.
+Import (main window or Compare) brings **only the chosen/primary element** — matching mappers (UIMapper, DescriptorMapper, etc.) are not auto-imported. If a mapper itself conflicts, resolve and import that row separately.
 
 ### Re-Patching Workflow
-1. First time: add mods → Compare → resolve → Export sidecar
-2. Source mod updates: add updated mod + sidecar path → Compare → only changed elements need review
-3. Repeat — the sidecar accumulates decisions, so unchanged elements stay hidden
+1. First time: add mods → Compare → Mark resolved and/or Import → sidecar auto-saves
+2. Source mod updates: same mods + sidecar path → Compare → only changed/new need review
+3. Repeat — resolved fingerprints keep unchanged rows out of “needs review”
 
 ---
 
