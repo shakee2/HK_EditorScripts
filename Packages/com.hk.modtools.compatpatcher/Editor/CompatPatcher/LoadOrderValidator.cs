@@ -46,8 +46,8 @@ namespace HK.CompatPatcher
     ///   :4747 unlock references a resource no vanilla-or-mod defines
     ///   :4299 PresentationPawn references a PresentationUnitDefinition that doesn't exist after merge
     ///   :4369 PresentationSecondaryPawn (mount) references a PresentationUnitDefinition that doesn't exist
-    ///   :4139 emblematic constructible placed in a common family level
-    ///   :4144 common constructible placed in an emblematic family level
+    ///   :4139 emblematic Unit/SettlementImprovement placed in a common family level
+    ///   :4144 common Unit/SettlementImprovement placed in an emblematic family level
     ///
     /// Evaluate checks the order **incrementally at every load step** (Vanilla, +Mod A, +Mod A+B, …), because
     /// the game validates as each mod loads and resets at the first bad step — so a hazard Mod B introduces is
@@ -67,7 +67,8 @@ namespace HK.CompatPatcher
         // Resolved element/effect types (null if the game assemblies aren't loaded).
         readonly Type tConstructible, tResource, tTech, tCivic, tNationalProject, tNPLeveling,
                       tEmpireWideParticipation, tUnlockConstructible, tUnlockResource,
-                      tPresentationUnit, tPresentationPawn, tPresentationMount;
+                      tPresentationUnit, tPresentationPawn, tPresentationMount,
+                      tUnitDefinition, tSettlementImprovement;
 
         // Vanilla base for this instance (empty until a successful mount; then pointed at the shared cache).
         Dictionary<string, Object> _vConstruct = new Dictionary<string, Object>();
@@ -137,6 +138,9 @@ namespace HK.CompatPatcher
             tPresentationUnit = FindType(NSW + "PresentationUnitDefinition");
             tPresentationPawn = FindType(NSW + "PresentationPawnDefinition");
             tPresentationMount = FindType(NSW + "PresentationSecondaryPawnDefinition");
+            // InitializeFamilies only runs for these two U types — not NationalProject / districts / etc.
+            tUnitDefinition = FindType(NS + "UnitDefinition");
+            tSettlementImprovement = FindType(NS + "SettlementImprovementDefinition");
         }
 
         public static LoadOrderValidator Build()
@@ -409,16 +413,29 @@ namespace HK.CompatPatcher
             }
         }
 
-        // Replay InitializeFamilies (:4139 + :4144): for each constructible family, within each level
-        // all constructibles must share the same emblematic/common status. The first constructible in a
-        // level sets the level type; subsequent ones must match.
+        // Replay InitializeFamilies (:4139 + :4144): for each Unit/SettlementImprovement family, within
+        // each level all constructibles must share the same emblematic/common status. The first
+        // constructible in a level sets the level type; subsequent ones must match.
+        // Scoped to UnitDefinition + SettlementImprovementDefinition only — that's the only U pair
+        // DataController.InitializeFamilies is invoked with (NationalProject families are never checked).
         void EvaluateFamilies(Dictionary<string, Object> construct, Dictionary<string, string> source,
                               List<Finding> findings)
         {
-            if (tConstructible == null) return;
+            if (tUnitDefinition == null && tSettlementImprovement == null) return;
+            // Two separate family namespaces (UnitFamilyDefinition vs SettlementImprovementFamilyDefinition);
+            // bucket per constructible type so a shared family *string* can't falsely mix them.
+            EvaluateFamiliesOfType(construct, tUnitDefinition, findings);
+            EvaluateFamiliesOfType(construct, tSettlementImprovement, findings);
+        }
+
+        static void EvaluateFamiliesOfType(Dictionary<string, Object> construct, Type elementType,
+                                           List<Finding> findings)
+        {
+            if (elementType == null) return;
             var byFamilyLevel = new Dictionary<string, Dictionary<int, List<object>>>();
             foreach (var kv in construct)
             {
+                if (!elementType.IsInstanceOfType(kv.Value)) continue;
                 var family = GetString(kv.Value, "SerializableFamily");
                 if (string.IsNullOrEmpty(family)) continue;
                 var levelObj = kv.Value.GetType().GetField("Level", ALL)?.GetValue(kv.Value);
@@ -462,16 +479,19 @@ namespace HK.CompatPatcher
             }
         }
 
+        // Matches InitializeFamilies' FactionNames.Length check. Read the *serialized* field, not the
+        // runtime FactionNames property — that property is only filled by InitializeStaticStrings(),
+        // which vanilla mounts never get and bundle mods do. Using FactionNames produced mass false
+        // :4139s (uninitialized vanilla emblematics looked "common", initialized mod ones "emblematic").
         static bool HasFactionPrerequisite(object constructible)
         {
             var fpField = constructible.GetType().GetField("FactionPrerequisite", ALL);
             if (fpField == null) return false;
             var fp = fpField.GetValue(constructible);
             if (fp == null) return false;
-            var fnProp = fp.GetType().GetProperty("FactionNames");
-            if (fnProp == null) return false;
-            var fn = fnProp.GetValue(fp) as Array;
-            return fn != null && fn.Length > 0;
+            var namesField = fp.GetType().GetField("serializableFactionNames", ALL);
+            if (namesField == null) return false;
+            return namesField.GetValue(fp) is Array { Length: > 0 };
         }
 
         // ---- reflection helpers ------------------------------------------

@@ -61,8 +61,13 @@ in the same unlock event keep the old one).
 - `:4747` — an unlock event references a **resource** neither vanilla nor any loaded mod defines.
 - `:4299` — a **PresentationPawnDefinition** references a **PresentationUnitDefinition** that doesn't exist after merge.
 - `:4369` — a **PresentationSecondaryPawnDefinition** (mount) references a **PresentationUnitDefinition** that doesn't exist after merge.
-- `:4139` — an **emblematic** constructible (has faction prerequisites) placed in a **common** family level.
-- `:4144` — a **common** constructible (no faction prerequisites) placed in an **emblematic** family level.
+- `:4139` — an **emblematic** Unit/SettlementImprovement (has faction names) placed in a **common** family level.
+- `:4144` — a **common** Unit/SettlementImprovement (no faction names) placed in an **emblematic** family level.
+
+> Emblematic detection reads `FactionPrerequisite.serializableFactionNames` (the serialized field), not the
+> runtime `FactionNames` property. That property is only filled by `InitializeStaticStrings()`, which vanilla
+> mounts never get and bundle mods do — using it produced mass false `:4139`s. Scoped to `UnitDefinition` +
+> `SettlementImprovementDefinition` only (`InitializeFamilies` is never called for NationalProject).
 
 **Checked at every load step, not just the final merge.** The game applies mods incrementally and validates
 as each one loads, resetting at the **first** bad step. So the validator evaluates each cumulative prefix —
@@ -106,8 +111,9 @@ These are the only `LogError`s that can clear the mod list in a shipped game. Gr
 - `:4718` Unlock event targets an `EmpireWideConstructionParticipationDefinition` (illegal unlock target).
 - `:4299` / `:4369` **Unit/mount presentation definition invalid for a pawn** — a `PresentationUnitDefinition`
   referenced by name doesn't resolve after merge (visual mapper vs definition mismatch).
-- `:4144` / `:4139` **Common constructible in an emblematic family level / emblematic in a common level** —
-  family-level layout broken when mods redefine family membership.
+- `:4144` / `:4139` **Common Unit/SettlementImprovement in an emblematic family level / emblematic in a common level** —
+  family-level layout broken when mods redefine family membership. (Only these two types — NationalProject
+  families are never validated by `InitializeFamilies`.)
 
 **Single-mod-internal (each mod already passes alone; combining rarely changes them, but listed for completeness):**
 - `:3989` / `:3994` / `:4002` statistic reporter: empty/dangling statistic reference, or missing DeedEvaluator.

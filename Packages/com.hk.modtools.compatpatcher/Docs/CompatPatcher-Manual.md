@@ -202,8 +202,8 @@ The validation panel runs automatically on every Compare. It checks the merged d
 | `:4747` | Unlock references a resource that doesn't exist |
 | `:4299` | PresentationPawn references a missing PresentationUnit |
 | `:4369` | PresentationSecondaryPawn references a missing PresentationUnit |
-| `:4139` | Emblematic constructible in a common family level |
-| `:4144` | Common constructible in an emblematic family level |
+| `:4139` | Emblematic unit/settlement-improvement in a common family level |
+| `:4144` | Common unit/settlement-improvement in an emblematic family level |
 
 Findings are attributed to the mod whose load step first triggers the hazard (`IntroducedBy`). The panel also compares against the reversed load order to identify **order-sensitive** hazards — those you can fix by reordering rather than editing.
 
