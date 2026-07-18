@@ -181,7 +181,7 @@ For each conflict:
 Both operate on the **current filtered list** only (status / name / type / needs-review / hide-winner-only):
 
 - **Resolve all as winner** — mark listed unresolved conflicts resolved (load-order winner each). Sidecar only; no import.
-- **Import all conflicts (chosen)** — import listed unresolved conflicts' chosen versions into `Patch/`.
+- **Import all conflicts (Winner Mod)** — import listed unresolved conflicts' load-order winner versions into `Patch/` (ignores per-row radio choice).
 
 > Import is whole-element. For per-field merges, import one version then hand-edit in the inspector or the Compare window's Patch column.
 
@@ -295,7 +295,7 @@ Good — your load order is clean. If you expected hazards, check that vanilla d
 The source mod was updated since your last sidecar export. Review the diff and re-export the sidecar.
 
 ### Patch Folder Is Empty
-You haven't imported anything yet. Select conflicts and click **Import chosen into Patch/**, or use **Import all conflicts (chosen)**.
+You haven't imported anything yet. Select conflicts and click **Import chosen into Patch/**, or use **Import all conflicts (Winner Mod)**.
 
 ### Validation Panel Shows "Vanilla databases not mounted"
 Set the Humankind folder in the Mod Editor (Mercury → Mod Editor → Settings), then Compare again. Without vanilla, the validator can only check mods against each other.

@@ -144,6 +144,48 @@ public static class PawnFragmentProbe
                 }
 
             }
+            if (f.Name == "SettlementStabilityPrerequisite")
+            {
+                sb.AppendLine($"\n-- SettlementStabilityPrerequisite --");
+                object v2 = v ?? f.GetValue(obj);
+                if (v2 != null)
+                {
+                    foreach (var subField in v2.GetType().GetFields(ALL))
+                    {
+                        object subValue = null;
+                        try { subValue = subField.GetValue(v2); } catch { subValue = "<unreadable>"; }
+
+                        if (subField.FieldType.IsEnum)
+                        {
+                            sb.AppendLine($"    -> {subField.Name} : {subField.FieldType.Name} = {subValue}");
+                            continue;
+                        }
+
+                        if (subValue is System.Collections.IList list)
+                        {
+                            sb.AppendLine($"    -> {subField.Name} : {subField.FieldType.Name} ({list.Count} items)");
+                            if (list.Count == 0)
+                                sb.AppendLine($"        [empty]");
+                            else
+                            {
+                                for (int i = 0; i < list.Count; i++)
+                                {
+                                    object item = list[i];
+                                    sb.AppendLine($"        [{i}] ({item?.GetType().Name ?? "null"}) {Trunc(item)}");
+                                }
+                            }
+                            continue;
+                        }
+
+                        sb.AppendLine($"    -> {subField.Name} = {subValue}");
+                    }
+                }
+                else
+                {
+                    sb.AppendLine($"SettlementStabilityPrerequisite = <null>");
+                }
+                sb.AppendLine($"\n-- SettlementStabilityPrerequisite END --");
+            }
             if (f.Name == "Effects")
             {
                 sb.AppendLine($"\n-- Effects --");

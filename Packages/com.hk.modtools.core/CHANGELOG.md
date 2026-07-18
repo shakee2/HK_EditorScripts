@@ -9,6 +9,10 @@ Versions match namespaced git tags: `core/<semver>`.
 
 ## [Unreleased]
 
+### Added
+- Pawn Probe field dump: expand `SettlementStabilityPrerequisite` (enum `Operator` + nested
+  `PublicOrderEffects` list entries).
+
 ## [1.0.2] - 2026-07-18
 
 ### Fixed

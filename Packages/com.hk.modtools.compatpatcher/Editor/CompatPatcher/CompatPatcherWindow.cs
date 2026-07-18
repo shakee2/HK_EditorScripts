@@ -541,7 +541,7 @@ namespace HK.CompatPatcher
             {
                 if (GUILayout.Button("Resolve all as winner", GUILayout.Height(26), GUILayout.Width(160)))
                     MassResolveAsWinner();
-                if (GUILayout.Button("Import all conflicts (chosen)", GUILayout.Height(26), GUILayout.Width(210))) MassImport();
+                if (GUILayout.Button("Import all conflicts (Winner Mod)", GUILayout.Height(26), GUILayout.Width(230))) MassImport();
                 if (GUILayout.Button("Export sidecar", GUILayout.Height(26), GUILayout.Width(130))) Export();
             }
             EditorGUILayout.EndHorizontal();
@@ -1283,26 +1283,27 @@ namespace HK.CompatPatcher
                 return;
             }
             if (!EditorUtility.DisplayDialog("Import all conflicts",
-                $"Import the chosen version of {conflicts.Count} unresolved conflict(s) from the current filtered list into {PatchBuilder.PatchDir}?\n\n"
+                $"Import the Winner Mod version of {conflicts.Count} unresolved conflict(s) from the current filtered list into {PatchBuilder.PatchDir}?\n\n"
                 + $"Showing {_view.Count} row(s) with current filters.\n"
                 + "Skips ✓resolved and ✓in patch.\n"
+                + "Always uses each row's load-order winner (ignores per-row radio choice).\n"
                 + "Attached mappers are not auto-imported — only rows that are conflicts themselves.",
                 "Import", "Cancel")) return;
 
-            var chosen = new Dictionary<string, (HkMod mod, HkElement el)>();
+            var toImport = new Dictionary<string, (HkMod mod, HkElement el)>();
             foreach (var row in conflicts)
             {
-                string c = _choice.TryGetValue(ElemKey(row), out var v) ? v : row.Winner;
-                var mod = _mods.FirstOrDefault(m => m.Name == c);
-                if (mod != null && row.Elements.TryGetValue(c, out var el) && el != null) chosen[el.Key] = (mod, el);
+                string winner = row.Winner;
+                var mod = _mods.FirstOrDefault(m => m.Name == winner);
+                if (mod != null && row.Elements.TryGetValue(winner, out var el) && el != null)
+                    toImport[el.Key] = (mod, el);
             }
-            int n = PatchBuilder.ImportElements(chosen.Values);
+            int n = PatchBuilder.ImportElements(toImport.Values);
             ScanPatch();
             foreach (var row in conflicts)
             {
-                string c = _choice.TryGetValue(ElemKey(row), out var v) ? v : row.Winner;
                 string key = ElemKey(row);
-                _choice[key] = c;
+                _choice[key] = row.Winner;
                 if (!_elemFp.ContainsKey(key)) _elemFp[key] = ElementFingerprint(row);
                 _elemStatus[key] = "resolved";
             }
@@ -1310,8 +1311,8 @@ namespace HK.CompatPatcher
             _viewDirty = true;
             ApplyFilter();
             _viewDirty = false;
-            Debug.Log($"[CompatPatcher] Mass import: {n} elements (filtered) → {PatchBuilder.PatchDir}.");
-            EditorUtility.DisplayDialog("Compat Patcher", $"Imported {n} elements (chosen versions) into the patch.", "OK");
+            Debug.Log($"[CompatPatcher] Mass import: {n} elements (Winner Mod, filtered) → {PatchBuilder.PatchDir}.");
+            EditorUtility.DisplayDialog("Compat Patcher", $"Imported {n} elements (Winner Mod versions) into the patch.", "OK");
         }
 
         void SelectInPatch(string typeHint, string name)
