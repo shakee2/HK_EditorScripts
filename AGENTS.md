@@ -11,11 +11,10 @@ the linked doc wins — fix this file. Verify any file/line ref before relying o
   `com.hk.modtools.unitvisuals`. Before v1.1.0 this was a single root-level package
   (`com.shakee.hk-editorscripts`) — that layout is retired; see [README.md's migration
   section](README.md#migrating-from-the-pre-110-single-package-layout) if you find references to it.
-- Consumed by the mod project **`…/HK_Re-Imagined`** as local packages via its `Packages/manifest.json`
-  (one entry per `com.hk.modtools.*` package you want; that repo is where you playtest/validate, this
-  repo just holds the tool source). See that repo's `AGENTS.md` for the broader modding context
-  (decompiled game source location, Mod Tools editor DLLs, reset-gate gotchas, etc.) — don't duplicate
-  that here.
+- Consumed by Humankind mod Unity projects as UPM packages via each consumer's `Packages/manifest.json`
+  (local `file:` while developing, or git URL + tag for a release). This repo holds the tool source;
+  validate by opening a consuming project in the Unity editor. Broader modding context (decompiled game
+  paths, Mod Tools DLLs, reset-gate gotchas) belongs in that consumer's docs — don't duplicate it here.
 - **`com.hk.modtools.shared` is a real, declared `package.json` dependency of the other three** — not a
   reflection/soft dependency. `com.hk.modtools.core` merges what used to be separate `ModTools/`,
   `Upgrades/`, and `Debug/` folders into one package specifically so `DatabaseBrowser.cs`'s calls into
@@ -118,8 +117,8 @@ package's `Editor/` (see the README table for feature-area descriptions):
   types goes through Mercury's editor/runtime assemblies already available in the consuming project,
   not through any of these asmdefs' references lists.
 - **Validate in the consuming project, not here** — this repo has no compile target of its own; after
-  editing, open/reload `HK_Re-Imagined` (or whichever project references these packages) to confirm the
-  scripts compile and the window(s) behave correctly. Note that a brand-new `.cs` file added here won't
+  editing, open/reload whichever Unity project references these packages to confirm the scripts
+  compile and the window(s) behave correctly. Note that a brand-new `.cs` file added here won't
   have a `.meta` until Unity generates one on the consumer's next domain reload — commit that generated
   `.meta` back into this repo afterward so the GUID is stable for everyone else.
 - **Hardening new code that shares Mod Tools resources** — our peer is Amplitude's Mod Editor, not
@@ -176,7 +175,8 @@ package's `Editor/` (see the README table for feature-area descriptions):
 
 ## Commit conventions
 - Commit/PR only when asked; branch off `main` first. Co-author trailer per repo norm.
-- Because a change here is usually paired with a change in `HK_Re-Imagined` (package bump/testing),
-  double check which repo's changes you're actually committing before running `git commit`.
+- **This repo is the package source.** Normal commit/push for tool work happens here. Consuming Unity
+  projects that reference these packages via UPM (`file:` or git URL) are separate repos — do not
+  commit or push those unless that project's user **explicitly** asks.
 - A change to one package's tools often only needs a tag on that one package — you don't need to bump
   every package's version just because you touched one of them.

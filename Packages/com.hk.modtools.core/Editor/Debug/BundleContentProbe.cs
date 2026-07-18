@@ -16,10 +16,11 @@ using AssetDatabase = Amplitude.Framework.Asset.AssetDatabase;
 /// </summary>
 public class BundleContentProbe : EditorWindow
 {
-    const string ProviderName = "hkreimagined.bundleprobe";
+    const string ProviderName = "hk.modtools.bundleprobe";
 
-    string _bundlePath = @"Assets\AssetBundles\StandaloneWindows64\HK Re-Imagined\hk re-imagined.assetbundle";
-    string _nameFilter = "Erika";
+    // Project-relative path to the mod's built assetbundle (set per project before Dump).
+    string _bundlePath = @"Assets\AssetBundles\StandaloneWindows64\";
+    string _nameFilter = "";
     IAssetProvider _provider;
 
     [MenuItem("Tools/shakee's Tools/Debug/Inspect Built Mod Bundle", false, 8)]
@@ -39,7 +40,8 @@ public class BundleContentProbe : EditorWindow
         EditorGUILayout.HelpBox(
             "Mounts the project's own built bundle (the same file deployed to the game's Community " +
             "folder) and dumps what it finds for the name filter — confirms whether a baked asset " +
-            "actually shipped, intact, rather than guessing from in-game symptoms.",
+            "actually shipped, intact, rather than guessing from in-game symptoms.\n\n" +
+            "Set Bundle path to your mod's .assetbundle under Assets/AssetBundles/…",
             MessageType.Info);
         _bundlePath = EditorGUILayout.TextField("Bundle path (relative)", _bundlePath);
         _nameFilter = EditorGUILayout.TextField("Name filter", _nameFilter);
