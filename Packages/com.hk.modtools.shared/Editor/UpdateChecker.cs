@@ -1166,17 +1166,19 @@ namespace HK.ModTools.Shared
         }
 
         /// <summary>
-        /// Builds the What's new range for <paramref name="row"/>: every tagged version
-        /// <c>&gt; installed</c> and <c>&lt;= latest</c>, newest first. Uses the CHANGELOG at the
-        /// latest tag when present; versions without a matching <c>## [x.y.z]</c> section get a
-        /// placeholder body. Returns <see cref="ChangelogRange.Loading"/> while the fetch is in flight.
+        /// Builds the changelog range for <paramref name="row"/>. When an update is available:
+        /// versions <c>(installed, latest]</c>. When already on the latest: versions
+        /// <c>&lt;= installed</c> (history through the current release). Newest first.
+        /// Uses the CHANGELOG at the latest tag when present; versions without a matching
+        /// <c>## [x.y.z]</c> section get a placeholder body. Returns
+        /// <see cref="ChangelogRange.Loading"/> while the fetch is in flight.
         /// </summary>
         internal static ChangelogRange GetChangelogRange(PackageRow row)
         {
             var result = new ChangelogRange();
             if (row == null || !row.HasRelease || !row.IsInstalled)
             {
-                result.Error = "No update range to show.";
+                result.Error = "No changelog to show.";
                 return result;
             }
 
@@ -1197,7 +1199,10 @@ namespace HK.ModTools.Shared
 
             string raw = changelogByTag[row.LatestTag];
             var byVersion = ParseChangelogSections(raw);
-            var versions = ListVersionsInRange(row.Catalog.ShortName, installed, row.LatestVersion);
+            // Update path: only notes you haven't installed yet. Up-to-date: history through current.
+            var versions = row.UpdateAvailable
+                ? ListVersionsInRange(row.Catalog.ShortName, afterExclusive: installed, throughInclusive: row.LatestVersion)
+                : ListVersionsInRange(row.Catalog.ShortName, afterExclusive: null, throughInclusive: installed);
 
             foreach (var v in versions)
             {
@@ -1212,16 +1217,22 @@ namespace HK.ModTools.Shared
             }
 
             if (result.Blocks.Count == 0)
-                result.Error = "No versions between the installed release and the latest tag.";
+                result.Error = row.UpdateAvailable
+                    ? "No versions between the installed release and the latest tag."
+                    : "No tagged versions at or below the installed release.";
 
             return result;
         }
 
-        /// <summary>Tagged versions for <paramref name="shortName"/> with <c>after &lt; v &lt;= through</c>, newest first.</summary>
+        /// <summary>
+        /// Tagged versions for <paramref name="shortName"/> with
+        /// <c>(afterExclusive, throughInclusive]</c> when <paramref name="afterExclusive"/> is set,
+        /// or <c>v &lt;= throughInclusive</c> when it is null. Newest first.
+        /// </summary>
         internal static List<Version> ListVersionsInRange(string shortName, Version afterExclusive, Version throughInclusive)
         {
             var list = new List<Version>();
-            if (cachedTagNames == null || string.IsNullOrEmpty(shortName) || afterExclusive == null || throughInclusive == null)
+            if (cachedTagNames == null || string.IsNullOrEmpty(shortName) || throughInclusive == null)
                 return list;
 
             string prefix = shortName + "/";
@@ -1230,8 +1241,9 @@ namespace HK.ModTools.Shared
                 if (!tag.StartsWith(prefix, StringComparison.Ordinal)) continue;
                 Version v = ParseSemVer(tag.Substring(prefix.Length));
                 if (v == null) continue;
-                if (v > afterExclusive && v <= throughInclusive)
-                    list.Add(v);
+                if (v > throughInclusive) continue;
+                if (afterExclusive != null && v <= afterExclusive) continue;
+                list.Add(v);
             }
 
             list.Sort((a, b) => b.CompareTo(a));

@@ -6,9 +6,9 @@ using UnityEngine;
 namespace HK.ModTools.Shared
 {
     /// <summary>
-    /// Utility popup opened from Options when a package has an update: one collapsible card per
-    /// version between the installed release and the latest tag (newest first), filled from that
-    /// package's <c>CHANGELOG.md</c>.
+    /// Utility popup opened from Options: one collapsible card per relevant version from that
+    /// package's <c>CHANGELOG.md</c> (update delta, or history through the installed release when
+    /// already up to date). Newest first.
     /// </summary>
     public class ChangelogPopupWindow : EditorWindow
     {
@@ -19,12 +19,12 @@ namespace HK.ModTools.Shared
         bool _requested;
         static GUIStyle _bodyStyle;
 
-        /// <summary>Opens (or focuses) the What's new popup for <paramref name="row"/>.</summary>
+        /// <summary>Opens (or focuses) the changelog popup for an installed package with a release.</summary>
         internal static void Open(UpdateChecker.PackageRow row)
         {
-            if (row == null || !row.UpdateAvailable) return;
+            if (row == null || !row.IsInstalled || !row.HasRelease) return;
 
-            string title = "What's new — " + row.Catalog.DisplayName;
+            string title = (row.UpdateAvailable ? "What's new — " : "Changelog — ") + row.Catalog.DisplayName;
             var window = GetWindow<ChangelogPopupWindow>(utility: true, title: title, focus: true);
             window._row = row;
             window._foldouts.Clear();
@@ -72,7 +72,10 @@ namespace HK.ModTools.Shared
 
             string from = _row.Installed != null ? "v" + _row.Installed.version : "?";
             string to = _row.LatestVersion != null ? "v" + _row.LatestVersion : "?";
-            EditorGUILayout.LabelField($"{_row.Catalog.DisplayName}: {from} → {to}", EditorStyles.boldLabel);
+            string header = _row.UpdateAvailable
+                ? $"{_row.Catalog.DisplayName}: {from} → {to}"
+                : $"{_row.Catalog.DisplayName}: {from} (current)";
+            EditorGUILayout.LabelField(header, EditorStyles.boldLabel);
             EditorGUILayout.LabelField(_row.Catalog.Name, EditorStyles.miniLabel);
             EditorGUILayout.Space(4);
 

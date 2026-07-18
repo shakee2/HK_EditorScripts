@@ -199,11 +199,15 @@ namespace HK.ModTools.Shared
                         if (GUILayout.Button("Check for Update", GUILayout.Width(130)))
                             UpdateChecker.CheckAllNow(manual: true);
 
+                        if (row.HasRelease)
+                        {
+                            string notesLabel = row.UpdateAvailable ? "What's new" : "Changelog";
+                            if (GUILayout.Button(notesLabel, GUILayout.Width(90)))
+                                ChangelogPopupWindow.Open(row);
+                        }
+
                         if (row.UpdateAvailable)
                         {
-                            if (GUILayout.Button("What's new", GUILayout.Width(90)))
-                                ChangelogPopupWindow.Open(row);
-
                             string updateLabel = $"Update to v{row.LatestVersion}";
                             if (GUILayout.Button(updateLabel, GUILayout.Width(150)))
                                 UpdateChecker.UpdateToLatest(row.Catalog.Name);
