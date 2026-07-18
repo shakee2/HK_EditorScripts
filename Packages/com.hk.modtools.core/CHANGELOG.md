@@ -9,6 +9,14 @@ Versions match namespaced git tags: `core/<semver>`.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-07-18
+
+### Fixed
+- Formula autocomplete: replace spans the full identifier (including text after the caret) so
+  confirming mid-name no longer leaves a trailing fragment (e.g. `…Gainn`).
+- Formula autocomplete: the already-present property is kept and pinned at the top of the list
+  so default confirm is a no-op (avoids accidental swaps like Food ↔ Fame).
+
 ## [1.0.1] - 2026-07-16
 
 ### Added
