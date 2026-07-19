@@ -12,6 +12,15 @@ Versions match namespaced git tags: `shared/<semver>`.
 ### Added
 - `WindowMinimize` — fake minimize for floating tool windows (lower-right strip stack; paired siblings share one slot). Stack state persists across domain reload via SessionState; orphaned strip-locked windows are rescued if session is missing.
 
+### Fixed
+- Suppress console spam from known-benign Amplitude editor NREs: scenario `NarrativeEventDefinition`s
+  (Solomon Islands / War in the Pacific — `EnumerateSimulationEventVariables` +
+  `SimulationEventVariablePropertyDrawer.RefreshTypeOfVariable`) and
+  `PresentationPawnAbstractDefinitionCustomInspector.OnPreviewEnable`. Filter covers
+  `LogException` and `LogFormat(Exception, …)`, is re-asserted after domain reload / delayCall
+  (other tools can steal the log handler), and wraps every Amplitude bundle mount
+  (`VanillaDatabaseMount` + Compat Patcher mod mounts — OnValidate runs on register for any provider).
+
 ## [1.1.0] - 2026-07-18
 
 ### Added

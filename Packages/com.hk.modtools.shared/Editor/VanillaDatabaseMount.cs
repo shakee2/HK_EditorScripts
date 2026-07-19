@@ -4,23 +4,78 @@ using System.IO;
 using System.Linq;
 using Amplitude.Framework.Asset;
 using Amplitude.Mercury.Production.Modification;
+using UnityEditor;
 using UnityEngine;
+using AssetDatabase = Amplitude.Framework.Asset.AssetDatabase;
 
+/// <summary>
+/// Suppresses known-benign Amplitude editor NullReferenceExceptions that clutter the Console
+/// without indicating a problem in our tools:
+/// <list type="bullet">
+/// <item>Scenario <c>NarrativeEventDefinition</c>s (War in the Pacific / Solomon Islands) —
+///   <c>EnumerateSimulationEventVariables</c> (OnValidate / mount) and
+///   <c>SimulationEventVariablePropertyDrawer.RefreshTypeOfVariable</c> (inspector). Variables
+///   only resolve after scenario start.</item>
+/// <item><c>PresentationPawnAbstractDefinitionCustomInspector.OnPreviewEnable</c> — Amplitude's
+///   pawn preview setup NREs for some definitions when the inspector opens.</item>
+/// </list>
+/// Installed for the whole editor session and re-asserted around every Amplitude bundle mount —
+/// OnValidate runs on <c>LoadAsset</c> for any provider (vanilla or mod), and Unity may log via
+/// either <see cref="ILogHandler.LogException"/> or <c>LogFormat(LogType.Exception, …)</c>.
+/// </summary>
 sealed class NarrativeNreFilter : ILogHandler
 {
     readonly ILogHandler _inner;
     public NarrativeNreFilter(ILogHandler inner) { _inner = inner; }
 
     public void LogFormat(LogType logType, UnityEngine.Object context, string format, params object[] args)
-        => _inner.LogFormat(logType, context, format, args);
+    {
+        if (logType == LogType.Exception && LooksBenign(FormatMessage(format, args)))
+            return;
+        _inner.LogFormat(logType, context, format, args);
+    }
 
     public void LogException(Exception exception, UnityEngine.Object context)
     {
-        if (exception is NullReferenceException
-            && exception.StackTrace != null
-            && exception.StackTrace.Contains("NarrativeEventDefinition.EnumerateSimulationEventVariables"))
+        if (IsBenignAmplitudeEditorNre(exception))
             return;
         _inner.LogException(exception, context);
+    }
+
+    internal static bool IsBenignAmplitudeEditorNre(Exception exception)
+    {
+        if (exception is not NullReferenceException)
+            return false;
+        // Prefer StackTrace; fall back to ToString() — some Unity log paths leave StackTrace thin.
+        return LooksBenign(exception.StackTrace) || LooksBenign(exception.ToString());
+    }
+
+    internal static bool LooksBenign(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return false;
+        return text.Contains("NarrativeEventDefinition.EnumerateSimulationEventVariables")
+            || (text.Contains("SimulationEventVariablePropertyDrawer")
+                && text.Contains("RefreshTypeOfVariable"))
+            || text.Contains("PresentationPawnAbstractDefinitionCustomInspector.OnPreviewEnable");
+    }
+
+    static string FormatMessage(string format, object[] args)
+    {
+        if (args == null || args.Length == 0)
+            return format ?? string.Empty;
+        try { return string.Format(format ?? string.Empty, args); }
+        catch
+        {
+            // Args weren't format placeholders — concatenate for the signature search.
+            var sb = new System.Text.StringBuilder(format ?? string.Empty);
+            foreach (var a in args)
+            {
+                if (a == null) continue;
+                sb.Append('\n').Append(a);
+            }
+            return sb.ToString();
+        }
     }
 }
 
@@ -31,6 +86,7 @@ sealed class NarrativeNreFilter : ILogHandler
 /// project (no more Assets/VanillaReference). Source path is derived from the
 /// "Humankind Folder" already configured in the Mod Editor (ModuleEditor.MercuryFolderPath).
 /// </summary>
+[InitializeOnLoad]
 public static class VanillaDatabaseMount
 {
     const string BundleFolderName = "MercuryDatabases";
@@ -38,6 +94,53 @@ public static class VanillaDatabaseMount
 
     static IAssetProvider s_provider;
     static string s_lastError;
+
+    static VanillaDatabaseMount()
+    {
+        EnsureBenignNarrativeNreFilter();
+        // Other InitializeOnLoad tools (Odin, Amplitude) may replace the log handler after us;
+        // re-assert once the editor is idle and after every domain reload settles.
+        EditorApplication.delayCall += EnsureBenignNarrativeNreFilter;
+        AssemblyReloadEvents.afterAssemblyReload += EnsureBenignNarrativeNreFilter;
+    }
+
+    /// <summary>
+    /// Keep <see cref="NarrativeNreFilter"/> at the head of Unity's log handler chain so
+    /// OnValidate / inspector NREs from the known-bad scenario narrative events stay quiet.
+    /// Call before any <c>TryMountAssetBundle</c> that may load NarrativeEventDefinitions
+    /// (vanilla or mod — Amplitude re-validates on register).
+    /// </summary>
+    public static void EnsureBenignNarrativeNreFilter()
+    {
+        if (Debug.unityLogger.logHandler is NarrativeNreFilter)
+            return;
+        Debug.unityLogger.logHandler = new NarrativeNreFilter(Debug.unityLogger.logHandler);
+    }
+
+    /// <summary>
+    /// Run <paramref name="action"/> with the benign-narrative NRE filter forced outermost
+    /// for the duration (covers mount-time OnValidate even if another tool stole the handler).
+    /// </summary>
+    public static void WithBenignNarrativeNreFilter(Action action)
+    {
+        if (action == null) return;
+        var previous = Debug.unityLogger.logHandler;
+        if (previous is NarrativeNreFilter)
+        {
+            action();
+            return;
+        }
+        var filter = new NarrativeNreFilter(previous);
+        Debug.unityLogger.logHandler = filter;
+        try { action(); }
+        finally
+        {
+            if (Debug.unityLogger.logHandler == filter)
+                Debug.unityLogger.logHandler = previous;
+            // Prefer leaving the session-wide filter installed.
+            EnsureBenignNarrativeNreFilter();
+        }
+    }
 
     // Every vanilla object handed out by LoadAllOfType is remembered here against the
     // AssetDescriptor of the collection that owns it (main asset or sub-asset alike), since
@@ -60,17 +163,15 @@ public static class VanillaDatabaseMount
 
     static bool MountBundle(string bundlePath, out IAssetProvider provider)
     {
-        var original = Debug.unityLogger.logHandler;
-        Debug.unityLogger.logHandler = new NarrativeNreFilter(original);
-        try
+        IAssetProvider result = null;
+        bool ok = false;
+        WithBenignNarrativeNreFilter(() =>
         {
-            return AssetDatabase.TryMountAssetBundle(ProviderName, bundlePath, uint.MaxValue,
-                out provider, Amplitude.Framework.Asset.AssetBundle.Options.None);
-        }
-        finally
-        {
-            Debug.unityLogger.logHandler = original;
-        }
+            ok = AssetDatabase.TryMountAssetBundle(ProviderName, bundlePath, uint.MaxValue,
+                out result, Amplitude.Framework.Asset.AssetBundle.Options.None);
+        });
+        provider = result;
+        return ok;
     }
 
     public static bool TryMount(out string error)

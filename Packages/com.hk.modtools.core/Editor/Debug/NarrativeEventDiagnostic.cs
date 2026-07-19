@@ -5,12 +5,14 @@ using UnityEngine;
 using AssetDatabase = Amplitude.Framework.Asset.AssetDatabase;
 
 /// <summary>
-/// Diagnostic: the vanilla "MercuryDatabases" bundle throws a NullReferenceException from
-/// Amplitude.Mercury.Data.Simulation.NarrativeEventDefinition.OnValidate every time it's mounted
-/// (also reproduces in a stock project, so it's a pre-existing vanilla-data issue, not ours).
+/// Diagnostic: a few vanilla scenario NarrativeEventDefinitions (War in the Pacific / Solomon
+/// Islands) throw NullReferenceException from OnValidate /
+/// EnumerateSimulationEventVariables — their simulation-event variables only resolve after
+/// scenario start. Same assets also NRE from SimulationEventVariablePropertyDrawer when selected
+/// in the inspector; VanillaDatabaseMount's NarrativeNreFilter swallows both for normal use.
 /// This loads the bundle directly (bypassing the Amplitude provider wrapper, which caches objects
 /// and won't re-trigger OnValidate) and probes each NarrativeEventDefinition main asset one at a
-/// time, watching for the exception, to name the offending asset.
+/// time, watching for the exception, to name the offending asset(s).
 /// </summary>
 static class NarrativeEventDiagnostic
 {

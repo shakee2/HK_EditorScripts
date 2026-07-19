@@ -94,8 +94,16 @@ namespace HK.CompatPatcher
             }
 
             // Not mounted — mount. Lookup key MUST be the filename (what Mount will register).
-            if (!AssetDatabase.TryMountAssetBundle(providerName, full, uint.MaxValue, out var provider,
-                    Amplitude.Framework.Asset.AssetBundle.Options.None) || provider == null)
+            // NarrativeEventDefinition.OnValidate NREs on a few scenario events during LoadAsset;
+            // swallow those via shared's filter (also covers mod bundles that include those assets).
+            IAssetProvider provider = null;
+            bool mounted = false;
+            VanillaDatabaseMount.WithBenignNarrativeNreFilter(() =>
+            {
+                mounted = AssetDatabase.TryMountAssetBundle(providerName, full, uint.MaxValue, out provider,
+                    Amplitude.Framework.Asset.AssetBundle.Options.None);
+            });
+            if (!mounted || provider == null)
                 throw new InvalidDataException("Failed to mount assetbundle: " + full);
 
             Track(full, provider.Name ?? providerName, label);
