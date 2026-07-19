@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using Amplitude.Framework;
+using Amplitude.Framework.Asset;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -32,9 +34,19 @@ namespace HK.CompatPatcher
         readonly Dictionary<string, Dictionary<string, HashSet<string>>> _byUnlock =
             new Dictionary<string, Dictionary<string, HashSet<string>>>(StringComparer.Ordinal);
 
-        Dictionary<string, string> _loc; // %key → text
+        Dictionary<string, string> _loc; // %key → text (vanilla archive + project overrides)
         readonly Dictionary<string, string> _elementLabelCache =
             new Dictionary<string, string>(StringComparer.Ordinal);
+        // modName → (%key → text) read from that mod's own LocalizedStringElement collections.
+        // Assetbundle sources only — other source types would need staging to read their loc, so
+        // their %keys stay raw (unresolved) in the diff, same as before.
+        readonly Dictionary<string, Dictionary<string, string>> _modLoc =
+            new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
+        // element base name → resolved UIMapper Title text. Built once (full scan of the mapper
+        // types); without it every un-localized element — every unit, since the mappers are
+        // Tech/Civic/NationalProject — re-scanned all three types, so scrolling a type list paid an
+        // O(elements × assets) hit the first time each row was revealed.
+        Dictionary<string, string> _uiMapperTitles;
 
         public bool VanillaAvailable { get; private set; }
         public string Note { get; private set; }
@@ -46,7 +58,11 @@ namespace HK.CompatPatcher
             if (mods != null)
             {
                 foreach (var mod in mods)
-                    if (mod != null) idx.ScanMod(mod);
+                {
+                    if (mod == null) continue;
+                    idx.ScanMod(mod);
+                    idx.LoadModLocalization(mod);
+                }
             }
             return idx;
         }
@@ -313,7 +329,20 @@ namespace HK.CompatPatcher
 
         string ResolveTitleFromUiMapper(string elementName)
         {
+            EnsureUiMapperTitles();
+            return _uiMapperTitles.TryGetValue(elementName, out var text) ? text : null;
+        }
+
+        /// <summary>
+        /// Scan the UIMapper types once and build element-name → Title-text. Keyed by both the
+        /// mapper's own name and its base name (minus the <c>UIMapper</c>/<c>_UIMapper</c> suffix)
+        /// so a bare element id resolves — the inverse of the old per-element name comparison.
+        /// </summary>
+        void EnsureUiMapperTitles()
+        {
+            if (_uiMapperTitles != null) return;
             EnsureLoc();
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var typeName in new[]
                      {
                          "Amplitude.Mercury.UI.TechnologyUIMapper",
@@ -325,12 +354,8 @@ namespace HK.CompatPatcher
                 if (t == null) continue;
                 foreach (var o in VanillaDatabaseMount.LoadAllOfType(t))
                 {
-                    if (o == null) continue;
-                    if (o.name != elementName
-                        && o.name != elementName + "UIMapper"
-                        && o.name != elementName + "_UIMapper")
-                        continue;
-                    string titleKey = null;
+                    if (o == null || string.IsNullOrEmpty(o.name)) continue;
+                    string titleKey;
                     try
                     {
                         var f = FindField(o.GetType(), "Title");
@@ -338,13 +363,139 @@ namespace HK.CompatPatcher
                     }
                     catch { continue; }
                     if (string.IsNullOrEmpty(titleKey)) continue;
-                    if (_loc != null && _loc.TryGetValue(titleKey, out var text) && !string.IsNullOrEmpty(text))
-                        return text.Trim();
-                    // Title field sometimes stores plain text already.
-                    if (!titleKey.StartsWith("%", StringComparison.Ordinal))
-                        return titleKey.Trim();
+
+                    string text;
+                    if (_loc != null && _loc.TryGetValue(titleKey, out var loc) && !string.IsNullOrEmpty(loc))
+                        text = loc.Trim();
+                    else if (!titleKey.StartsWith("%", StringComparison.Ordinal))
+                        text = titleKey.Trim(); // Title field sometimes stores plain text already.
+                    else
+                        continue;
+
+                    foreach (var baseName in MapperBaseNames(o.name))
+                        if (!map.ContainsKey(baseName)) map[baseName] = text;
                 }
             }
+            _uiMapperTitles = map;
+        }
+
+        static IEnumerable<string> MapperBaseNames(string mapperName)
+        {
+            yield return mapperName;
+            if (mapperName.EndsWith("_UIMapper", StringComparison.Ordinal))
+                yield return mapperName.Substring(0, mapperName.Length - "_UIMapper".Length);
+            else if (mapperName.EndsWith("UIMapper", StringComparison.Ordinal))
+                yield return mapperName.Substring(0, mapperName.Length - "UIMapper".Length);
+        }
+
+        /// <summary>
+        /// Resolve a raw diff field value that is a localization key (<c>%…</c>) to display text,
+        /// preferring the owning mod's own localization (assetbundle sources) and falling back to
+        /// the vanilla/project dictionary. Returns null when the value isn't a <c>%key</c> or nothing
+        /// resolves — the caller then shows the raw key unchanged.
+        /// </summary>
+        public string ResolveLocalizedValue(string modName, string rawValue)
+        {
+            if (string.IsNullOrEmpty(rawValue) || rawValue[0] != '%') return null;
+
+            if (!string.IsNullOrEmpty(modName)
+                && _modLoc.TryGetValue(modName, out var d)
+                && d.TryGetValue(rawValue, out var t) && !string.IsNullOrEmpty(t))
+                return t;
+
+            EnsureLoc();
+            if (_loc != null && _loc.TryGetValue(rawValue, out var g) && !string.IsNullOrEmpty(g))
+                return g;
+            return null;
+        }
+
+        /// <summary>
+        /// Read a mod's own <c>LocalizedStringElement</c> collections (LineId → text) from its
+        /// mounted assetbundle so mod-authored <c>%keys</c> resolve in the diff. Assetbundle sources
+        /// only: other source types aren't mounted, so their loc would require staging. Best-effort —
+        /// any failure leaves the mod's keys raw rather than breaking index build.
+        /// </summary>
+        void LoadModLocalization(HkMod mod)
+        {
+            if (mod == null || !mod.FromAssetBundle || string.IsNullOrEmpty(mod.Path)) return;
+            if (!CompatBundleMounts.TryGetProvider(mod.Path, out var provider) || provider == null) return;
+
+            Dictionary<string, string> dict = null;
+            try
+            {
+                var descriptors = new List<AssetDescriptor>();
+                provider.AddAllAssetDescriptors(descriptors, AssetProviderOption.AskForType);
+                foreach (var desc in descriptors)
+                {
+                    var ct = desc.GetAssetType();
+                    if (ct == null) continue;
+                    // LocalizedStringElementCollection (mod runtime loc) / LocalizedStringTranslationCollection.
+                    if ((ct.Name ?? "").IndexOf("LocalizedString", StringComparison.Ordinal) < 0) continue;
+                    if (!typeof(DatatableElementCollection).IsAssignableFrom(ct)) continue;
+
+                    DatatableElementCollection coll;
+                    try { coll = provider.LoadAsset<DatatableElementCollection>(desc); }
+                    catch { continue; }
+                    if (coll == null) continue;
+                    try { coll.Initialize(); } catch { }
+                    var et = coll.DatatableElementType;
+                    if (et == null) continue;
+
+                    foreach (var el in provider.FetchAllSubAssetsOfType(desc.Guid, et))
+                    {
+                        if (el == null || ReferenceEquals(el, coll)) continue;
+                        string key = GetLocKey(el);
+                        if (string.IsNullOrEmpty(key)) continue;
+                        string text = GetLocText(el);
+                        if (string.IsNullOrEmpty(text)) continue;
+                        (dict ??= new Dictionary<string, string>(StringComparer.Ordinal))[key] = text;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[CompatPatcher] Reading localization from mod '{mod.Name}' failed: {e.Message}");
+            }
+
+            if (dict != null && dict.Count > 0)
+                _modLoc[mod.Name] = dict;
+        }
+
+        // LocalizedStringElement.LineId (the %key). Falls back to Id / the Unity object name.
+        static string GetLocKey(Object el)
+        {
+            string key = GetMember(el, "LineId") as string;
+            if (string.IsNullOrEmpty(key)) key = GetMember(el, "Id") as string;
+            if (string.IsNullOrEmpty(key) && el != null) key = el.name;
+            return key;
+        }
+
+        // Concatenate CompactedNodes[].TextValue (usually one Terminal node). Falls back to a plain
+        // Body/Text/Value string field for translation-shaped rows.
+        static string GetLocText(Object el)
+        {
+            if (GetMember(el, "CompactedNodes") is System.Collections.IEnumerable nodes)
+            {
+                var sb = new StringBuilder();
+                foreach (var n in nodes)
+                {
+                    if (n == null) continue;
+                    if (GetMember(n, "TextValue") is string tv && tv.Length > 0) sb.Append(tv);
+                }
+                if (sb.Length > 0) return sb.ToString();
+            }
+            return (GetMember(el, "Body") as string)
+                ?? (GetMember(el, "Text") as string)
+                ?? (GetMember(el, "Value") as string);
+        }
+
+        static object GetMember(object obj, string name)
+        {
+            if (obj == null) return null;
+            var f = FindField(obj.GetType(), name);
+            if (f != null) { try { return f.GetValue(obj); } catch { } }
+            var p = obj.GetType().GetProperty(name, All);
+            if (p != null && p.CanRead) { try { return p.GetValue(obj); } catch { } }
             return null;
         }
 

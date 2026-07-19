@@ -6,18 +6,33 @@ using System.Security.Cryptography;
 using System.Text;
 using HK.ModTools.Shared;
 using UnityEditor;
-using UnityEditor.IMGUI.Controls;
 using UnityEngine;
 
 namespace HK.CompatPatcher
 {
-    public class CompatPatcherWindow : EditorWindow
+    public partial class CompatPatcherWindow : EditorWindow
     {
         [Serializable] class SourceEntry { public string name; public string path; }
 
         enum StatusFilter { Conflicts, All, New, Identical }
         static readonly string[] STATUS_LABELS = { "Conflicts", "All", "New", "Identical" };
-        enum Col { Element, Type, By, Winner, Status, Diffs }
+
+        enum TypeSortMode { DiffDesc, NameAsc }
+
+        class TypeGroup
+        {
+            public string TypeName;
+            public List<ElementRow> Rows = new List<ElementRow>();
+            /// <summary>Cached name-sorted copy of <see cref="Rows"/> for the expanded child list.</summary>
+            public List<ElementRow> SortedRows;
+            public int DiffCount;
+            // Per-group draw caches. Groups are recreated on every RebuildTypeGroups(), which is
+            // called after any resolve/import/filter change, so these stay valid until the next
+            // rebuild and never need explicit invalidation.
+            public string StatsLabel;
+            public float StatsWidth = -1f;
+            public int PendingResolve = -1;
+        }
 
         enum PatchOrphanKind
         {
@@ -44,7 +59,8 @@ namespace HK.CompatPatcher
         [SerializeField] List<SourceEntry> _sources = new List<SourceEntry>();
         [SerializeField] string _sidecarPath = "";
         [SerializeField] bool _showMountedBundles;
-        [SerializeField] bool _showPatchOrphans = true;
+        [SerializeField] bool _showPatchOrphans;
+        [SerializeField] bool _showValidation;
 
         List<HkMod> _mods;
         AnalyzeResult _result;
@@ -57,6 +73,21 @@ namespace HK.CompatPatcher
         readonly List<PatchEntry> _patchEntries = new List<PatchEntry>();
         readonly List<PatchOrphan> _patchOrphans = new List<PatchOrphan>();
         List<ElementRow> _view = new List<ElementRow>();
+        readonly List<TypeGroup> _typeGroups = new List<TypeGroup>();
+        readonly HashSet<string> _expandedTypes = new HashSet<string>(StringComparer.Ordinal);
+        string _selectedType = "";
+        List<MassChange.Candidate> _patternCandidates = new List<MassChange.Candidate>();
+        bool _patternsDirty = true;
+        /// <summary>True while a deferred type-switch is tearing down Compare / rebuilding patterns.</summary>
+        bool _typeSwitchPending;
+        int _typeSwitchGen;
+        /// <summary>Type whose child list is deferred one tick after expand (avoids expand MouseUp hitch).</summary>
+        string _expandSettleType;
+        int _expandSettleGen;
+        bool _rightPaneCompare;
+        CompatCompareWindow _hostedCompare;
+        /// <summary>Element name highlighted in the type tree while embedded Compare is open.</summary>
+        string _selectedElementName = "";
 
         // Load-order validation (recomputed every Compare): findings for the current order and for a
         // reversed order, so we can tell the user which hazards are order-caused vs intrinsic.
@@ -64,46 +95,68 @@ namespace HK.CompatPatcher
         List<Finding> _altFindings = new List<Finding>();
         string _altOrderName = "";
         string _validationNote = "";
-        Vector2 _validationScroll;
-        float _panelTop;   // Y where the 3 panels start (measured after the variable-height top controls)
+        float _panelTop;   // Y where the workspace starts (after cards)
+        float _typeListWidth = 280f;
+        bool _draggingTypeSplit;
 
         StatusFilter _status = StatusFilter.Conflicts;
         string _nameFilter = "";
-        List<string> _types = new List<string>();
-        string _typeFilter = "";
-        AdvancedDropdownState _typeDdState = new AdvancedDropdownState();
         readonly Dictionary<string, string> _typeName = new Dictionary<string, string>(); // "guid:fileID" -> class name
         bool _needsReviewOnly;
         bool _hideWinnerOnly = true; // conflicts whose only diffs are ExtraInWinner (already in winner mod) are hidden by default
-        bool _showResolvedDiffs; // carried per-diff Resolve rows in detail panel
 
-        MultiColumnHeader _header;
-        MultiColumnHeaderState _headerState;
-        Vector2 _tableScroll, _detailScroll;
-        ElementRow _selected;
-        readonly HashSet<string> _multiSelect = new HashSet<string>(); // ElemKey multi-select for Mass Change
+        Vector2 _typeListScroll, _patternScroll, _validationCardScroll, _orphanCardScroll;
+        readonly Dictionary<string, Vector2> _typeElemScroll = new Dictionary<string, Vector2>(StringComparer.Ordinal);
         bool _viewDirty = true;
-        // Cached Patch-vs-mods diffs for the selected conflict (FindPatchHkElements+ComputeDiffs is disk-heavy).
-        ElementRow _detailDiffRow;
-        List<Diff> _detailDiffList;
-        string _detailDiffWinner;
-        bool _detailDiffOdin;
         const float ROW_H = 18f;
+        const float TYPE_ELEM_MAX_H = 240f;
+        const float EL_ROW_H = 20f;
         static readonly Color ROW_ALT = new Color(1f, 1f, 1f, 0.03f);
         static readonly Color ROW_SEL = new Color(0.3f, 0.5f, 0.9f, 0.28f);
+        static readonly Color EL_CARD_BG = new Color(0f, 0f, 0f, 0.18f);
+        static readonly Color DOT_PATCH = new Color(0.35f, 0.78f, 0.42f, 1f);
+        static readonly Color DOT_RESOLVED = new Color(0.92f, 0.72f, 0.28f, 1f);
+        static readonly Color DOT_REVIEW = new Color(0.90f, 0.35f, 0.32f, 1f);
+        static readonly Color DOT_OTHER = new Color(0.55f, 0.55f, 0.55f, 1f);
+
+        const string PrefShowValidation = "CompatPatcher.ShowValidation";
+        const string PrefShowOrphans = "CompatPatcher.ShowOrphans";
+        const string PrefTypeListWidth = "CompatPatcher.TypeListWidth";
+        const string PrefTypeSort = "CompatPatcher.TypeSort";
+
+        TypeSortMode _typeSort = TypeSortMode.DiffDesc;
 
         [MenuItem("Tools/shakee's Tools/Compatibility Patcher", false, 4)]
         static void Open() => GetWindow<CompatPatcherWindow>("Compat Patcher");
 
-        void OnEnable() { wantsMouseMove = false; BuildHeader(); ScanPatch(); }
-        void OnFocus() { ScanPatch(); _viewDirty = true; InvalidateDetailDiffs(); Repaint(); }
+        void OnEnable()
+        {
+            wantsMouseMove = false;
+            ScanPatch();
+            _showValidation = EditorPrefs.GetBool(PrefShowValidation, false);
+            _showPatchOrphans = EditorPrefs.GetBool(PrefShowOrphans, false);
+            _typeListWidth = EditorPrefs.GetFloat(PrefTypeListWidth, 280f);
+            _typeSort = (TypeSortMode)EditorPrefs.GetInt(PrefTypeSort, (int)TypeSortMode.DiffDesc);
+        }
+
+        void OnFocus()
+        {
+            ScanPatch();
+            _viewDirty = true;
+            _patternsDirty = true;
+            Repaint();
+        }
+
+        void OnDisable()
+        {
+            ExitEmbeddedCompare();
+        }
 
         // Always know which elements already live in Assets/Databases/Patch/ (any layout).
         void ScanPatch()
         {
             _patchNames.Clear();
             _patchEntries.Clear();
-            InvalidateDetailDiffs();
             try
             {
                 if (!Directory.Exists(PatchBuilder.PatchDir)) return;
@@ -130,11 +183,7 @@ namespace HK.CompatPatcher
             catch { /* patch folder may not exist yet */ }
         }
 
-        void InvalidateDetailDiffs()
-        {
-            _detailDiffRow = null;
-            _detailDiffList = null;
-        }
+        void InvalidateDetailDiffs() { /* detail DiffGui removed — patterns + Compare hold diffs */ }
 
         /// <summary>
         /// Patch entries that no longer need to override the compared mods: gone from all mods,
@@ -258,29 +307,6 @@ namespace HK.CompatPatcher
             return result;
         }
 
-        void EnsureDetailDiffs(ElementRow row)
-        {
-            if (row == null || row.Conflict == null)
-            {
-                InvalidateDetailDiffs();
-                return;
-            }
-            if (_detailDiffRow == row && _detailDiffList != null) return;
-
-            _detailDiffRow = row;
-            _detailDiffList = row.Conflict.Diffs;
-            _detailDiffWinner = row.Winner;
-            _detailDiffOdin = row.Conflict.Odin;
-
-            var patchEls = FindPatchHkElements(row.Name);
-            if (patchEls.Count == 0) return;
-            var patchEl = patchEls.FirstOrDefault(e => e.TypeHint == row.TypeHint) ?? patchEls[0];
-            _detailDiffList = ConflictAnalyzer.ComputeDiffs(patchEl, row.Elements.ToDictionary(kv => kv.Key, kv => kv.Value));
-            ConflictAnalyzer.FinalizeDiffs(_detailDiffList, row.Type, row.Name, _prior);
-            _detailDiffWinner = "Patch";
-            _detailDiffOdin = patchEl.Odin;
-        }
-
         static string ElemKey(ElementRow r) => r.Type + "|" + r.Name;
 
         /// <summary>
@@ -353,52 +379,6 @@ namespace HK.CompatPatcher
             }
         }
 
-        // Searchable type dropdown (same control DatabaseBrowser uses).
-        class TypeDropdown : AdvancedDropdown
-        {
-            readonly List<string> _types;
-            readonly Action<string> _onPick;
-            public TypeDropdown(AdvancedDropdownState state, List<string> types, Action<string> onPick) : base(state)
-            {
-                _types = types ?? new List<string>();
-                _onPick = onPick;
-                // minSize floor only — height cap + anchor is AdvancedDropdownHeight.ShowCapped.
-                int rows = Math.Min(_types.Count + 1, 22);
-                float h = 44f + rows * 18f;
-                minimumSize = new Vector2(240, Mathf.Clamp(h, 100f, AdvancedDropdownHeight.DefaultMaxHeight));
-            }
-            protected override AdvancedDropdownItem BuildRoot()
-            {
-                var root = new AdvancedDropdownItem("Type");
-                root.AddChild(new AdvancedDropdownItem("(any type)"));
-                foreach (var t in _types) root.AddChild(new AdvancedDropdownItem(t));
-                return root;
-            }
-            protected override void ItemSelected(AdvancedDropdownItem item)
-                => _onPick(item.name == "(any type)" ? "" : item.name);
-        }
-
-        // ---- header -------------------------------------------------------
-        void BuildHeader()
-        {
-            var cols = new[]
-            {
-                MakeCol("Element", 240, 120), MakeCol("Type", 170, 80), MakeCol("By", 120, 60),
-                MakeCol("Winner", 90, 50), MakeCol("Status", 90, 50), MakeCol("Diffs", 160, 60),
-            };
-            _headerState = new MultiColumnHeaderState(cols);
-            _header = new MultiColumnHeader(_headerState);
-            _header.ResizeToFit();
-        }
-
-        static MultiColumnHeaderState.Column MakeCol(string t, float w, float min) =>
-            new MultiColumnHeaderState.Column
-            {
-                headerContent = new GUIContent(t), width = w, minWidth = min,
-                autoResize = true, canSort = false, allowToggleVisibility = false,
-                headerTextAlignment = TextAlignment.Left,
-            };
-
         // ---- GUI ----------------------------------------------------------
         void OnGUI()
         {
@@ -412,41 +392,19 @@ namespace HK.CompatPatcher
             DrawSources();
             EditorGUILayout.Space(4);
             DrawSidecarAndActions();
-            if (_result == null) { EditorGUILayout.HelpBox("Add the mods (load order top→bottom, last wins) and press Compare.", MessageType.Info); return; }
+            if (_result == null)
+            {
+                EditorGUILayout.HelpBox("Add the mods (load order top→bottom, last wins) and press Compare.", MessageType.Info);
+                return;
+            }
             EditorGUILayout.Space(4);
-            DrawFilters();
-            DrawStats();
+            DrawPostCompareChrome();
 
-            // The top controls above are variable-height (mod rows), so measure where they end and lay the
-            // three panels out as absolute Rects from there (same approach as DatabaseBrowser). Measuring only
-            // on Repaint — when GetLastRect is valid — and caching keeps it stable across the Layout pass.
             if (Event.current.type == EventType.Repaint)
                 _panelTop = GUILayoutUtility.GetLastRect().yMax + 2f;
             float top = _panelTop > 1f ? _panelTop : 140f;
-
-            // Three independent fixed containers — validation, the element list, and the per-element detail —
-            // each drawn into its own Rect, so a selection changing the (variable-height) detail never reflows
-            // the list: content changes stay contained inside each panel's scroll.
             Rect rest = new Rect(0, top, position.width, Mathf.Max(0f, position.height - top));
-            LayoutThreePanels(rest, out Rect vRect, out Rect tRect, out Rect dRect);
-            DrawValidation(vRect);
-            DrawTable(tRect);
-            DrawDetail(dRect);
-        }
-
-        // Split the remaining window area into validation (top), list (middle, gets the slack), detail (bottom).
-        static void LayoutThreePanels(Rect rest, out Rect v, out Rect t, out Rect d)
-        {
-            const float gap = 4f;
-            float h = rest.height;
-            float vH = Mathf.Clamp(h * 0.22f, 48f, 170f);
-            float dH = Mathf.Clamp(h * 0.34f, 120f, 340f);
-            float tH = h - vH - dH - gap * 2f;
-            if (tH < 120f) { dH = Mathf.Max(90f, dH - (120f - tH)); tH = h - vH - dH - gap * 2f; } // give the list a floor
-            if (tH < 40f) { tH = Mathf.Max(40f, h - vH - gap); dH = Mathf.Max(0f, h - vH - tH - gap * 2f); }
-            v = new Rect(rest.x, rest.y, rest.width, vH);
-            t = new Rect(rest.x, v.yMax + gap, rest.width, tH);
-            d = new Rect(rest.x, t.yMax + gap, rest.width, dH);
+            DrawWorkspace(rest);
         }
 
         void DrawSources()
@@ -558,19 +516,6 @@ namespace HK.CompatPatcher
                 if (GUILayout.Button("Export sidecar", GUILayout.Height(26), GUILayout.Width(130))) Export();
             }
             EditorGUILayout.EndHorizontal();
-            if (_result != null && _multiSelect.Count > 0)
-            {
-                EditorGUILayout.BeginHorizontal();
-                EditorGUILayout.LabelField(
-                    $"Mass Change selection: {_multiSelect.Count} row(s) (Ctrl/Cmd+click in list)",
-                    EditorStyles.miniLabel);
-                if (GUILayout.Button("Clear selection", GUILayout.Width(120)))
-                {
-                    _multiSelect.Clear();
-                    Repaint();
-                }
-                EditorGUILayout.EndHorizontal();
-            }
         }
 
         /// <summary>
@@ -623,163 +568,6 @@ namespace HK.CompatPatcher
             Repaint();
         }
 
-        // ---- load-order validation panel (container 1) -------------------
-        void DrawValidation(Rect rect)
-        {
-            GUILayout.BeginArea(rect);
-            _validationScroll = EditorGUILayout.BeginScrollView(_validationScroll);
-
-            // Fallback/availability note (e.g. vanilla bundle not mounted) — show regardless of findings.
-            if (!string.IsNullOrEmpty(_validationNote))
-                EditorGUILayout.HelpBox(_validationNote, MessageType.Warning);
-
-            int errors = _findings.Count(f => f.Severity == FindingSeverity.Error);
-            int warns = _findings.Count - errors;
-
-            // Order-caused = hazards whose presence or resolution differs under the reversed order. Those are
-            // the ones the user can influence by reordering; the rest only a patch edit can fix.
-            var altByKey = _altFindings.GroupBy(f => f.Key).ToDictionary(g => g.Key, g => g.First());
-            var goneInReverse = _findings.Where(f => !altByKey.ContainsKey(f.Key)).ToList();
-            var detailChangedInReverse = _findings.Where(f => altByKey.TryGetValue(f.Key, out var a) && a.Detail != f.Detail).ToList();
-            var introducedInReverse = _altFindings.Where(f => !_findings.Any(x => x.Key == f.Key)).ToList();
-            var orderSensitiveKeys = new HashSet<string>(
-                goneInReverse.Select(f => f.Key)
-                .Concat(detailChangedInReverse.Select(f => f.Key))
-                .Concat(introducedInReverse.Select(f => f.Key)));
-
-            if (_findings.Count == 0 && introducedInReverse.Count == 0)
-            {
-                EditorGUILayout.HelpBox("Load-order validation: no known load-time hazards detected in this order.", MessageType.Info);
-            }
-            else
-            {
-                EditorGUILayout.LabelField(
-                    $"Load-order validation — {errors} error(s), {warns} warning(s)  ·  order-sensitive: {orderSensitiveKeys.Count}",
-                    EditorStyles.boldLabel);
-
-                foreach (var f in _findings.OrderBy(f => f.Severity).ThenBy(f => f.Element, StringComparer.OrdinalIgnoreCase))
-                {
-                    bool orderSensitive = orderSensitiveKeys.Contains(f.Key);
-                    EditorGUILayout.HelpBox(f.Line + (orderSensitive ? "  [order-sensitive]" : ""),
-                        f.Severity == FindingSeverity.Error ? MessageType.Error : MessageType.Warning);
-                }
-
-                // If reordering would change the picture, tell the user so they can act on it (▲▼ then Compare).
-                if (orderSensitiveKeys.Count > 0)
-                {
-                    var sb = new System.Text.StringBuilder();
-                    sb.Append("Load order matters here. Under the reverse order (").Append(_altOrderName).Append(") ");
-                    if (goneInReverse.Count > 0) sb.Append(goneInReverse.Count).Append(" of these would not occur; ");
-                    if (detailChangedInReverse.Count > 0) sb.Append(detailChangedInReverse.Count).Append(" resolve differently; ");
-                    if (introducedInReverse.Count > 0) sb.Append(introducedInReverse.Count).Append(" new hazards would appear; ");
-                    sb.Append("Reorder with ▲▼ above and press Compare again to re-validate.");
-                    EditorGUILayout.HelpBox(sb.ToString(), MessageType.Warning);
-                }
-            }
-
-            EditorGUILayout.EndScrollView();
-            GUILayout.EndArea();
-        }
-
-        void DrawFilters()
-        {
-            var prevStatus = _status;
-            var prevName = _nameFilter;
-            var prevType = _typeFilter;
-            var prevNeeds = _needsReviewOnly;
-            var prevHide = _hideWinnerOnly;
-
-            _status = (StatusFilter)GUILayout.Toolbar((int)_status, STATUS_LABELS);
-            EditorGUILayout.BeginHorizontal();
-            _nameFilter = EditorGUILayout.TextField("Name contains", _nameFilter);
-            EditorGUILayout.LabelField("Type", GUILayout.Width(32));
-            // Reserve the button rect explicitly — GetLastRect-after-Button is unreliable here because
-            // OnGUI also measures _panelTop from GetLastRect after DrawStats on the same frame.
-            Rect typeBtn = GUILayoutUtility.GetRect(240, EditorGUIUtility.singleLineHeight, GUILayout.Width(240));
-            string typeLabel = _typeFilter.Length == 0 ? "(any type)" : _typeFilter;
-            if (EditorGUI.DropdownButton(typeBtn, new GUIContent(typeLabel), FocusType.Keyboard, EditorStyles.popup))
-            {
-                var dd = new TypeDropdown(_typeDdState, _types, picked =>
-                {
-                    _typeFilter = picked;
-                    _viewDirty = true;
-                    Repaint();
-                });
-                AdvancedDropdownHeight.ShowCapped(dd, typeBtn);
-            }
-            _needsReviewOnly = GUILayout.Toggle(_needsReviewOnly, "needs review only", GUILayout.Width(140));
-            _hideWinnerOnly = GUILayout.Toggle(_hideWinnerOnly, "hide winner-only", GUILayout.Width(140));
-            EditorGUILayout.EndHorizontal();
-
-            if (_viewDirty
-                || prevStatus != _status
-                || prevName != _nameFilter
-                || prevType != _typeFilter
-                || prevNeeds != _needsReviewOnly
-                || prevHide != _hideWinnerOnly)
-            {
-                ApplyFilter();
-                _viewDirty = false;
-            }
-        }
-
-        void DrawStats()
-        {
-            var s = _result.Stats;
-            int need = _elemStatus.Values.Count(v => v == "new" || v == "changed");
-            int resolved = _elemStatus.Values.Count(v => v == "resolved");
-            int orphans = _patchOrphans.Count;
-            EditorGUILayout.LabelField(
-                $"conflicts {s.Conflicts} (needs review {need}, resolved {resolved}, odin {s.OdinConflicts}) · new {s.New} · identical {s.Identical} · roots {s.Roots} · showing {_view.Count}"
-                + (orphans > 0 ? $" · patch orphans {orphans}" : ""),
-                EditorStyles.miniLabel);
-            DrawPatchOrphans();
-        }
-
-        void DrawPatchOrphans()
-        {
-            if (_result == null) return;
-            int n = _patchOrphans.Count;
-            string title = n == 0
-                ? "Patch orphans — none"
-                : $"Patch orphans — {n} (Patch/ overrides that no longer match a live conflict)";
-            _showPatchOrphans = EditorGUILayout.Foldout(_showPatchOrphans, title, true);
-            if (!_showPatchOrphans) return;
-
-            if (n == 0)
-            {
-                EditorGUILayout.HelpBox(
-                    "Every element in Assets/Databases/Patch/ either still conflicts across the compared mods, or Patch/ is empty.",
-                    MessageType.None);
-                return;
-            }
-
-            EditorGUILayout.HelpBox(
-                "These Patch/ elements still load last and override. Gone = dropped by all mods. Sole = only one mod left. Identical = mods agree now. Remove if the override is stale; keep if you still want a custom edit.",
-                MessageType.Warning);
-
-            PatchOrphan toRemove = null;
-            foreach (var o in _patchOrphans.OrderBy(x => x.Kind).ThenBy(x => x.Entry.Name, StringComparer.OrdinalIgnoreCase))
-            {
-                EditorGUILayout.BeginHorizontal();
-                EditorGUILayout.LabelField($"[{KindLabel(o.Kind)}]  {o.Entry.Name}  ({o.Entry.TypeHint})", GUILayout.MinWidth(280));
-                EditorGUILayout.LabelField(o.Detail, EditorStyles.miniLabel);
-                if (GUILayout.Button("Compare", GUILayout.Width(72)))
-                    OpenCompareOrphan(o);
-                if (GUILayout.Button("Ping", GUILayout.Width(44)))
-                    PingPatchEntry(o.Entry);
-                if (GUILayout.Button("Remove", GUILayout.Width(64)))
-                    toRemove = o;
-                EditorGUILayout.EndHorizontal();
-            }
-
-            if (toRemove != null)
-                RemovePatchOrphan(toRemove);
-        }
-
-        /// <summary>
-        /// Side-by-side for a Patch orphan: nav list is the current orphan set (Patch always present).
-        /// </summary>
         void OpenCompareOrphan(PatchOrphan focus)
         {
             if (focus?.Entry == null || _mods == null) return;
@@ -798,7 +586,7 @@ namespace HK.CompatPatcher
                     "Could not open Compare for this orphan (no mod or Patch version found).", "OK");
                 return;
             }
-            CompatCompareWindow.Show(items, idx, OnCompareResolveAsWinner, _unlockIndex);
+            CompatCompareWindow.Show(items, idx, OnCompareResolveAsWinner, _unlockIndex, OnCompareImported);
         }
 
         CompatCompareWindow.CompareItem BuildCompareItemForOrphan(PatchOrphan o)
@@ -914,7 +702,6 @@ namespace HK.CompatPatcher
                  (_status == StatusFilter.New && r.Status == ElemStatus.New) ||
                  (_status == StatusFilter.Identical && r.Status == ElemStatus.Identical)) &&
                 (nm.Length == 0 || (r.Name ?? "").ToLowerInvariant().Contains(nm)) &&
-                (_typeFilter.Length == 0 || FriendlyType(r) == _typeFilter) &&
                 (!_needsReviewOnly || NeedsReview(r)) &&
                 (!_hideWinnerOnly || !IsWinnerOnlyConflict(r))
             ).ToList();
@@ -954,202 +741,8 @@ namespace HK.CompatPatcher
         bool IsResolved(ElementRow r) =>
             r != null && _elemStatus.TryGetValue(ElemKey(r), out var s) && s == "resolved";
 
-        string GetCell(ElementRow r, Col c)
-        {
-            switch (c)
-            {
-                case Col.Element: return r.Name;
-                case Col.Type: return FriendlyType(r);
-                case Col.By: return string.Join("/", r.Contributors);
-                case Col.Winner: return r.Status == ElemStatus.Conflict && _choice.TryGetValue(ElemKey(r), out var ch) ? ch : r.Winner;
-                case Col.Status:
-                    string s = r.Status == ElemStatus.Conflict && _elemStatus.TryGetValue(ElemKey(r), out var st) ? st : r.Status.ToString();
-                    if (IsResolved(r)) s = "✓resolved";
-                    if (_patchNames.Contains(r.Name)) s += (s.Length > 0 ? "  " : "") + "✓in patch";
-                    return s;
-                case Col.Diffs: return r.Summary;
-                default: return "";
-            }
-        }
-
-        // ---- element list (container 2) ----------------------------------
-        void DrawTable(Rect rect)
-        {
-            if (_header == null) BuildHeader();
-            GUILayout.BeginArea(rect);
-            float totalW = _headerState.widthOfAllVisibleColumns;
-            var visible = _headerState.visibleColumns;
-            Rect headerRect = GUILayoutUtility.GetRect(10, 100000, _header.height, _header.height);
-            _header.OnGUI(headerRect, _tableScroll.x);
-
-            float viewH = Mathf.Max(0f, rect.height - _header.height - 2f); // fill the panel below its header
-            Rect bodyArea = GUILayoutUtility.GetRect(10, 100000, viewH, viewH, GUILayout.ExpandWidth(true));
-            Rect content = new Rect(0, 0, totalW, _view.Count * ROW_H);
-            _tableScroll = GUI.BeginScrollView(bodyArea, _tableScroll, content);
-
-            Vector2 mouse = Event.current.mousePosition;
-            int first = Mathf.Max(0, Mathf.FloorToInt(_tableScroll.y / ROW_H));
-            int last = Mathf.Min(_view.Count, Mathf.CeilToInt((_tableScroll.y + bodyArea.height) / ROW_H) + 1);
-            for (int i = first; i < last; i++)
-            {
-                var r = _view[i];
-                Rect rr = new Rect(0, i * ROW_H, totalW, ROW_H);
-                bool multiOn = _multiSelect.Contains(ElemKey(r));
-                if (r == _selected || multiOn) EditorGUI.DrawRect(rr, ROW_SEL);
-                else if ((i & 1) == 1) EditorGUI.DrawRect(rr, ROW_ALT);
-                if (Event.current.type == EventType.MouseDown && rr.Contains(mouse))
-                {
-                    bool ctrl = Event.current.control || Event.current.command;
-                    string ek = ElemKey(r);
-                    if (ctrl)
-                    {
-                        if (!_multiSelect.Add(ek)) _multiSelect.Remove(ek);
-                        _selected = r;
-                        InvalidateDetailDiffs();
-                    }
-                    else
-                    {
-                        if (_selected != r)
-                        {
-                            _selected = r;
-                            InvalidateDetailDiffs();
-                        }
-                    }
-                    Repaint();
-                }
-                for (int vc = 0; vc < visible.Length; vc++)
-                {
-                    Rect cell = _header.GetCellRect(vc, rr);
-                    string text = GetCell(r, (Col)visible[vc]);
-                    GUI.Label(cell, new GUIContent(text ?? "", text ?? ""), EditorStyles.miniLabel);
-                }
-            }
-            GUI.EndScrollView();
-            GUILayout.EndArea();
-        }
-
-        // ---- per-element detail (container 3) ----------------------------
-        // Everything lives inside one scroll view bounded to the panel Rect, so the (variable-height) content
-        // never reflows the list above — selecting a different element only changes what scrolls here.
-        void DrawDetail(Rect rect)
-        {
-            GUILayout.BeginArea(rect);
-            _detailScroll = EditorGUILayout.BeginScrollView(_detailScroll);
-
-            if (_selected == null)
-            {
-                EditorGUILayout.HelpBox("Select an element from the list above.", MessageType.None);
-            }
-            else
-            {
-                var row = _selected;
-                string key = ElemKey(row);
-                EditorGUILayout.LabelField($"{(_unlockIndex != null ? _unlockIndex.FormatElementLabel(row.Name) : row.Name)}   ·   {FriendlyType(row)}   ·   {string.Join("/", row.Contributors)}", EditorStyles.boldLabel);
-
-                if (row.Conflict == null)
-                {
-                    bool inPatch = _patchNames.Contains(row.Name);
-                    EditorGUILayout.HelpBox(row.Status == ElemStatus.New
-                        ? "New element (single mod). Import & Edit to bring it into the patch and adjust."
-                        : row.Status == ElemStatus.Root ? "Collection/container object — not a gameplay element."
-                        : "Identical across mods — no action needed.", MessageType.None);
-                    EditorGUILayout.BeginHorizontal();
-                    using (new EditorGUI.DisabledScope(row.Status == ElemStatus.Root || inPatch))
-                    {
-                        if (GUILayout.Button("Import & Edit into Patch/", GUILayout.Width(200))) ImportChosen(row, row.Winner);
-                    }
-                    if (GUILayout.Button("Compare side-by-side", GUILayout.Width(180))) OpenCompare(row);
-                    EditorGUILayout.EndHorizontal();
-                    if (inPatch)
-                        EditorGUILayout.LabelField("✓ In patch — use Compare side-by-side to inspect/edit the patch version.", EditorStyles.miniLabel);
-                }
-                else
-                {
-                    bool inPatch = _patchNames.Contains(row.Name);
-                    bool resolved = IsResolved(row);
-                    string statusTag = _elemStatus.TryGetValue(key, out var st) ? "   [" + st + "]" : "";
-                    EditorGUILayout.LabelField("Which mod's version wins?" + statusTag, EditorStyles.miniBoldLabel);
-                    string chosen = _choice.TryGetValue(key, out var ch) ? ch : row.Winner;
-                    foreach (var mod in row.Contributors)
-                    {
-                        EditorGUILayout.BeginHorizontal();
-                        bool isChosen = chosen == mod;
-                        if (GUILayout.Toggle(isChosen, "", GUILayout.Width(18)) && !isChosen) _choice[key] = mod;
-                        EditorGUILayout.LabelField(mod + (mod == row.Winner ? "  (load-order winner)" : ""), GUILayout.Width(220));
-                        EditorGUILayout.EndHorizontal();
-                    }
-
-                    EditorGUILayout.BeginHorizontal();
-                    using (new EditorGUI.DisabledScope(inPatch))
-                    {
-                        if (GUILayout.Button("Import chosen into Patch/", GUILayout.Width(200)))
-                            ImportChosen(row, _choice.TryGetValue(key, out var c2) ? c2 : row.Winner);
-                    }
-                    using (new EditorGUI.DisabledScope(resolved || inPatch))
-                    {
-                        if (GUILayout.Button("Mark resolved (accept chosen)", GUILayout.Width(210)))
-                            MarkResolved(row, _choice.TryGetValue(key, out var c3) ? c3 : row.Winner);
-                    }
-                    if (GUILayout.Button("Compare side-by-side", GUILayout.Width(180))) OpenCompare(row);
-                    EditorGUILayout.EndHorizontal();
-                    if (inPatch)
-                        EditorGUILayout.LabelField("✓ In patch — use Compare side-by-side to inspect/edit the patch version.", EditorStyles.miniLabel);
-                    else if (resolved)
-                        EditorGUILayout.LabelField("✓ Resolved — winner accepted without import. You can still Import chosen if you change your mind.", EditorStyles.miniLabel);
-
-                    EditorGUILayout.Space(2);
-                    EnsureDetailDiffs(row);
-                    var detailDiffs = _detailDiffList ?? row.Conflict.Diffs;
-                    int resolvedN = detailDiffs?.Count(d => d.Status == "carried") ?? 0;
-                    if (resolvedN > 0)
-                    {
-                        EditorGUILayout.BeginHorizontal();
-                        _showResolvedDiffs = GUILayout.Toggle(_showResolvedDiffs,
-                            $"Show resolved ({resolvedN})", EditorStyles.miniButton, GUILayout.Width(130));
-                        EditorGUILayout.EndHorizontal();
-                    }
-                    DiffGui.DrawTable(detailDiffs,
-                        _detailDiffWinner ?? row.Winner,
-                        _detailDiffList != null ? _detailDiffOdin : row.Conflict.Odin,
-                        onApplyPattern: (diff, srcMod) => ApplyMassChangeFromDiff(diff, srcMod),
-                        countInPatchForPath: CountPatchMatchesForDiff,
-                        onResolveDiff: ResolveDetailDiff,
-                        hideResolved: !_showResolvedDiffs,
-                        unlockIndex: _unlockIndex,
-                        currentElementName: row.Name,
-                        winnerRefsOnElement: UnlockCarrierIndex.CollectClassifiableRefNamesFromElement(
-                            WinnerElementForDetail(row)));
-                }
-            }
-
-            EditorGUILayout.EndScrollView();
-            GUILayout.EndArea();
-        }
-
-        HkElement WinnerElementForDetail(ElementRow row)
-        {
-            if (row == null) return null;
-            string w = _detailDiffWinner ?? row.Winner;
-            if (string.Equals(w, "Patch", StringComparison.Ordinal))
-            {
-                var patchEls = FindPatchHkElements(row.Name);
-                if (patchEls.Count == 0) return null;
-                return patchEls.FirstOrDefault(e => e.TypeHint == row.TypeHint) ?? patchEls[0];
-            }
-            if (row.Elements != null && row.Elements.TryGetValue(w, out var el))
-                return el;
-            return null;
-        }
-
         // One monotonically-increasing 0..1 bar across the whole Compare, so the user sees steady
-        // progress instead of the bar snapping to 0.5f for validate / jumping near 1.0 after the mod
-        // read. Phases are weighted roughly by their typical cost on a multi-mod project.
-        //   0.00 .. 0.50  reading each mod in order
-        //   0.50 .. 0.70  conflict analysis (per-element sub-progress)
-        //   0.70 .. 0.75  resolving type names
-        //   0.75 .. 0.80  scanning the patch directory
-        //   0.80 .. 1.00  load-order validation (per-mod sub-progress)
-        // The `sub` argument is each phase's own 0..1; the helper maps it into its slot and repaints.
+        // progress instead of the bar snapping between phases.
         void ShowCompareProgress(double start, double end, string title, double sub, string detail)
         {
             double f = start + (end - start) * Math.Max(0, Math.Min(1, sub));
@@ -1199,26 +792,20 @@ namespace HK.CompatPatcher
 
                 ShowCompareProgress(0.7, 0.75, "Compat Patcher", 0, "Resolving type names…");
                 ResolveTypeNames();
-                _types = _result.Rows
-                    .Where(r => r.Status != ElemStatus.Root)
-                    .Select(FriendlyType)
-                    .Where(x => !string.IsNullOrEmpty(x))
-                    .Distinct()
-                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                if (_typeFilter.Length > 0 && !_types.Contains(_typeFilter)) _typeFilter = "";
-                _selected = null;
-                _multiSelect.Clear();
+                _selectedType = "";
+                _expandedTypes.Clear();
+                _patternsDirty = true;
                 ShowCompareProgress(0.75, 0.8, "Compat Patcher", 0, "Scanning patch directory…");
                 ScanPatch();
                 ComputePatchOrphans();
                 ShowCompareProgress(0.78, 0.82, "Compat Patcher", 0, "Building unlock carrier index…");
                 _unlockIndex = UnlockCarrierIndex.Build(_mods);
+
                 ShowCompareProgress(0.8, 1.0, "Compat Patcher", 0, "Validating load order (Vanilla → mods)…");
                 Validate((sub, label) => ShowCompareProgress(0.8, 1.0, "Compat Patcher", sub, label));
-                InvalidateDetailDiffs();
-                _viewDirty = true;
                 ApplyFilter();
+                RebuildTypeGroups();
+                AutoExpandHazardCardsAfterCompare();
                 _viewDirty = false;
             }
             catch (Exception e) { Debug.LogError("[CompatPatcher] Compare failed: " + e); }
@@ -1290,20 +877,6 @@ namespace HK.CompatPatcher
             return BitConverter.ToString(h).Replace("-", "").Substring(0, 12).ToLowerInvariant();
         }
 
-        void OpenCompare(ElementRow row)
-        {
-            // hand the compare window the whole current view so it can switch elements from a list
-            var items = new List<CompatCompareWindow.CompareItem>();
-            int idx = 0;
-            foreach (var r in _view)
-            {
-                var item = BuildCompareItem(r);
-                if (item == null) continue;
-                if (r == row) idx = items.Count;
-                items.Add(item);
-            }
-            CompatCompareWindow.Show(items, idx, OnCompareResolveAsWinner, _unlockIndex);
-        }
 
         CompatCompareWindow.CompareItem BuildCompareItem(ElementRow r)
         {
@@ -1341,6 +914,34 @@ namespace HK.CompatPatcher
             item.resolved = true;
         }
 
+        /// <summary>
+        /// Compare Import landed an element in Patch/ — refresh ● markers / filters and treat as resolved.
+        /// </summary>
+        void OnCompareImported(CompatCompareWindow.CompareItem item, string sourceMod)
+        {
+            ScanPatch();
+            if (item != null)
+            {
+                item.inPatch = true;
+                item.resolved = true;
+                if (_result != null)
+                {
+                    var row = _result.Rows.FirstOrDefault(r =>
+                        r.Name == item.name && (r.Type == item.typeKey || r.TypeHint == item.typeHint));
+                    if (row != null && row.Status == ElemStatus.Conflict)
+                    {
+                        string choice = !string.IsNullOrEmpty(sourceMod) ? sourceMod : item.winner;
+                        MarkResolved(row, choice);
+                        return;
+                    }
+                }
+            }
+            // Non-conflict import (or row missing): still rebuild list markers.
+            RebuildTypeGroups();
+            _patternsDirty = true;
+            Repaint();
+        }
+
         void MarkResolved(ElementRow row, string choiceMod, bool persist = true)
         {
             if (row == null || row.Status != ElemStatus.Conflict) return;
@@ -1354,6 +955,8 @@ namespace HK.CompatPatcher
                 PersistSidecar();
                 _viewDirty = true;
                 ApplyFilter();
+                RebuildTypeGroups();
+                _patternsDirty = true;
                 _viewDirty = false;
                 Repaint();
             }
@@ -1394,37 +997,14 @@ namespace HK.CompatPatcher
             PersistSidecar();
             _viewDirty = true;
             ApplyFilter();
+            RebuildTypeGroups();
+            _patternsDirty = true;
             _viewDirty = false;
             Repaint();
             Debug.Log($"[CompatPatcher] Mass resolve as winner: {pending.Count} (filtered) → sidecar.");
             EditorUtility.DisplayDialog("Compat Patcher", $"Marked {pending.Count} conflict(s) resolved (winner accepted).", "OK");
         }
 
-        void ResolveDetailDiff(Diff d)
-        {
-            if (d == null || _selected == null) return;
-            if (string.IsNullOrEmpty(d.Sig) || string.IsNullOrEmpty(d.Fp))
-                ConflictAnalyzer.FinalizeDiffs(new[] { d }, _selected.Type, _selected.Name, _prior);
-            var decision = new Sidecar.Decision
-            {
-                sig = d.Sig,
-                fp = d.Fp,
-                choice = _detailDiffWinner ?? _selected.Winner ?? "accepted",
-                kind = "diff",
-                element = _selected.Name,
-            };
-            Sidecar.UpsertDecision(EnsureSidecarPath(), decision);
-            _prior[d.Sig] = decision;
-            d.Status = "carried";
-            d.Choice = decision.choice;
-            // Keep conflict.Diffs in sync when detail list is a live recompute copy.
-            if (_selected.Conflict?.Diffs != null)
-            {
-                foreach (var cd in _selected.Conflict.Diffs)
-                    if (cd.Sig == d.Sig) { cd.Status = "carried"; cd.Choice = decision.choice; }
-            }
-            Repaint();
-        }
 
         string EnsureSidecarPath()
         {
@@ -1479,34 +1059,30 @@ namespace HK.CompatPatcher
                 AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);
         }
 
+
         void OpenMassChange()
         {
-            if (_result == null || _view == null || _view.Count == 0)
+            if (_result == null)
             {
-                EditorUtility.DisplayDialog("Mass Change",
-                    "No rows in the current filtered view. Compare mods and set filters (e.g. Type) first.", "OK");
+                EditorUtility.DisplayDialog("Mass Change", "Compare mods first.", "OK");
                 return;
             }
-
-            IEnumerable<ElementRow> scopeRows = _view;
-            HashSet<string> customKeys = null;
-            if (_multiSelect.Count > 0)
+            ApplyFilter();
+            RebuildTypeGroups();
+            var g = _typeGroups.FirstOrDefault(x => x.TypeName == _selectedType);
+            var scopeRows = g != null ? g.Rows : _view;
+            if (scopeRows == null || scopeRows.Count == 0)
             {
-                customKeys = new HashSet<string>(_multiSelect);
-                scopeRows = _view.Where(r => customKeys.Contains(ElemKey(r))).ToList();
-                if (!scopeRows.Any())
-                {
-                    EditorUtility.DisplayDialog("Mass Change",
-                        "Custom selection has no rows in the current filtered view. Clear selection or adjust filters.", "OK");
-                    return;
-                }
+                EditorUtility.DisplayDialog("Mass Change",
+                    "No rows in scope. Select a type with conflicts, or adjust filters.", "OK");
+                return;
             }
 
             var candidates = MassChange.ComputeCandidates(scopeRows);
             if (candidates.Count == 0)
             {
                 EditorUtility.DisplayDialog("Mass Change",
-                    "No field-level conflict diffs in scope. Filter to conflict elements that differ on concrete fields.", "OK");
+                    "No field-level conflict diffs in scope.", "OK");
                 return;
             }
 
@@ -1515,18 +1091,20 @@ namespace HK.CompatPatcher
                 candidates,
                 pathByName,
                 new HashSet<string>(_patchNames),
-                customKeys,
+                null,
                 ElemKey,
                 onDone: () =>
                 {
                     ScanPatch();
-                    InvalidateDetailDiffs();
+                    _patternsDirty = true;
                     _viewDirty = true;
                     ApplyFilter();
+                    RebuildTypeGroups();
                     _viewDirty = false;
                     Repaint();
                 });
         }
+
 
         Dictionary<string, string> BuildPatchPathByName()
         {
@@ -1539,77 +1117,7 @@ namespace HK.CompatPatcher
             return d;
         }
 
-        int CountPatchMatchesForDiff(Diff diff)
-        {
-            if (diff == null || _view == null) return 0;
-            var pool = _multiSelect.Count > 0
-                ? _view.Where(r => _multiSelect.Contains(ElemKey(r)))
-                : _view.AsEnumerable();
-            int n = 0;
-            foreach (var row in pool)
-            {
-                if (!_patchNames.Contains(row.Name) || row.Conflict?.Diffs == null) continue;
-                if (row.Conflict.Diffs.Any(d => d.Path == diff.Path && d.Kind == diff.Kind))
-                    n++;
-            }
-            return n;
-        }
 
-        void ApplyMassChangeFromDiff(Diff diff, string sourceMod)
-        {
-            if (diff == null || string.IsNullOrEmpty(sourceMod)) return;
-            var parsed = FieldApplier.Parse(diff.Path, diff.Kind,
-                diff.Values.FirstOrDefault(kv => kv.Key == sourceMod).Value);
-            if (!FieldApplier.IsSupported(parsed))
-            {
-                EditorUtility.DisplayDialog("Mass Change",
-                    "Unsupported pattern: " + (parsed.UnsupportedReason ?? "?"), "OK");
-                return;
-            }
-
-            var pool = (_multiSelect.Count > 0
-                ? _view.Where(r => _multiSelect.Contains(ElemKey(r)))
-                : _view).Where(r => r.Conflict?.Diffs != null
-                    && r.Conflict.Diffs.Any(d => d.Path == diff.Path && d.Kind == diff.Kind)).ToList();
-
-            int inPatch = pool.Count(r => _patchNames.Contains(r.Name));
-            int notInPatch = pool.Count - inPatch;
-            if (inPatch == 0)
-            {
-                EditorUtility.DisplayDialog("Mass Change",
-                    "No matching elements in Patch for this pattern. Import into Patch/ first.", "OK");
-                return;
-            }
-
-            string confirm =
-                $"Apply field change to {inPatch} Patch element(s)?\n\n"
-                + $"Path: {diff.Path}\nSource mod: {sourceMod}\n";
-            if (notInPatch > 0)
-                confirm += $"\n{notInPatch} matching row(s) not in Patch will be skipped.";
-            if (!EditorUtility.DisplayDialog("Mass Change", confirm, "Apply", "Cancel")) return;
-
-            var candidate = new MassChange.Candidate
-            {
-                Path = diff.Path,
-                Kind = diff.Kind,
-                Sources = new List<string> { sourceMod },
-                Elements = pool,
-                Preview = diff.Values.TryGetValue(sourceMod, out var pv) ? pv : null,
-                Action = sourceMod,
-                ApplyKind = parsed.Kind,
-            };
-            var stats = MassChange.Apply(new[] { candidate }, BuildPatchPathByName(),
-                _multiSelect.Count > 0 ? _multiSelect : null, ElemKey);
-            ScanPatch();
-            InvalidateDetailDiffs();
-            _viewDirty = true;
-            ApplyFilter();
-            _viewDirty = false;
-            EditorUtility.DisplayDialog("Mass Change",
-                $"Applied: {stats.Applied}\nAlready had value: {stats.SkippedAlready}\n"
-                + $"Not in Patch: {stats.SkippedNotInPatch}\nFailed: {stats.Failed}", "OK");
-            Repaint();
-        }
 
         void ImportChosen(ElementRow row, string sourceModName)
         {
@@ -1623,6 +1131,12 @@ namespace HK.CompatPatcher
             // Import settles the conflict for review purposes too.
             if (row.Status == ElemStatus.Conflict)
                 MarkResolved(row, sourceModName);
+            else
+            {
+                RebuildTypeGroups();
+                _patternsDirty = true;
+                Repaint();
+            }
             SelectInPatch(el.TypeHint, el.Name);
         }
 
@@ -1663,6 +1177,8 @@ namespace HK.CompatPatcher
             PersistSidecar();
             _viewDirty = true;
             ApplyFilter();
+            RebuildTypeGroups();
+            _patternsDirty = true;
             _viewDirty = false;
             Debug.Log($"[CompatPatcher] Mass import: {n} elements (Winner Mod, filtered) → {PatchBuilder.PatchDir}.");
             EditorUtility.DisplayDialog("Compat Patcher", $"Imported {n} elements (Winner Mod versions) into the patch.", "OK");

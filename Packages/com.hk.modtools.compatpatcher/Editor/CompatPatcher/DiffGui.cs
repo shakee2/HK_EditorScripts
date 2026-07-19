@@ -430,6 +430,14 @@ namespace HK.CompatPatcher
                     || d.Path.IndexOf("serializableElementName=", StringComparison.Ordinal) >= 0
                     || d.Path.EndsWith(".Descriptor", StringComparison.Ordinal)
                     || d.Path.IndexOf(".Descriptor.", StringComparison.Ordinal) >= 0);
+
+            // A |-joined name-set leaf (from TryFlattenRefNameList) prints the whole list per mod
+            // even when only one entry differs. Show just the per-mod differences and hide the
+            // entries every mod shares. Applies only to this well-defined leaf shape, so unit
+            // descriptor sets and tech unlock lists alike collapse to the actual change.
+            if (TryDrawNameSetRows(d, winner, unlockIndex, pathLooksUnlockRef))
+                return;
+
             foreach (var kv in d.Values.OrderBy(k => k.Key == "*winner*" ? "" : k.Key))
             {
                 string who = kv.Key == "*winner*" ? winner + " (winner)" : kv.Key;
@@ -448,12 +456,92 @@ namespace HK.CompatPatcher
                     && kv.Value != null && kv.Value != UnityYaml.Missing
                     && LooksLikeUnlockElementName(kv.Value))
                     display = Short(kv.Value) + "  [" + unlockIndex.KindTag(kv.Value) + "]";
+                else if (unlockIndex != null && kv.Value != null && kv.Value.Length > 1
+                    && kv.Value[0] == '%')
+                {
+                    // Mod-authored %key: resolve against the owning mod's own localization (falls
+                    // back to vanilla/project) so the reader sees the real text, not the raw key.
+                    string modName = kv.Key == "*winner*" ? winner : kv.Key;
+                    string locText = unlockIndex.ResolveLocalizedValue(modName, kv.Value);
+                    if (!string.IsNullOrEmpty(locText))
+                        display = Short(locText) + "   [" + kv.Value + "]";
+                }
                 EditorGUILayout.BeginHorizontal();
                 EditorGUILayout.LabelField(who, GUILayout.Width(150));
                 EditorGUILayout.SelectableLabel(display, EditorStyles.miniLabel,
                     GUILayout.Height(EditorGUIUtility.singleLineHeight));
                 EditorGUILayout.EndHorizontal();
             }
+        }
+
+        /// <summary>
+        /// When <paramref name="d"/> is a <c>|</c>-joined name-set leaf shared by ≥2 mods, draw one
+        /// row per mod showing only the entries that mod does NOT share with every other, plus a
+        /// grey note listing the hidden shared entries. Returns false (draw nothing) for any value
+        /// that isn't this shape — scalars, formulas, canon dicts, enums, single-entry sets — so the
+        /// caller falls back to the plain full-value rows.
+        /// </summary>
+        static bool TryDrawNameSetRows(Diff d, string winner, UnlockCarrierIndex unlockIndex, bool tagNames)
+        {
+            int presentCount = 0, multiCount = 0;
+            foreach (var kv in d.Values)
+            {
+                string v = kv.Value;
+                if (v == UnityYaml.Missing || v == "[]") continue;
+                if (string.IsNullOrEmpty(v)) return false;
+                // Anything with a space/paren/brace/'='/',' is a formula, canon dict/list, or enum —
+                // never a bare name set. Names are identifier-shaped (Effect_Unit_Era6_Tier4).
+                if (v.IndexOf(' ') >= 0 || v.IndexOf('(') >= 0 || v.IndexOf('{') >= 0
+                    || v.IndexOf('=') >= 0 || v.IndexOf(',') >= 0)
+                    return false;
+                presentCount++;
+                if (v.IndexOf('|') >= 0) multiCount++;
+            }
+            // Need ≥2 present mods to have a shared set, and at least one multi-entry list to trim.
+            if (presentCount < 2 || multiCount == 0) return false;
+
+            HashSet<string> common = null;
+            foreach (var kv in d.Values)
+            {
+                if (kv.Value == UnityYaml.Missing || kv.Value == "[]") continue;
+                var toks = new HashSet<string>(kv.Value.Split('|'));
+                if (common == null) common = toks;
+                else common.IntersectWith(toks);
+            }
+            common ??= new HashSet<string>();
+
+            foreach (var kv in d.Values.OrderBy(k => k.Key == "*winner*" ? "" : k.Key))
+            {
+                string who = kv.Key == "*winner*" ? winner + " (winner)" : kv.Key;
+                string display;
+                if (kv.Value == UnityYaml.Missing)
+                {
+                    display = "(absent)";
+                }
+                else
+                {
+                    var unique = kv.Value.Split('|')
+                        .Where(t => t.Length > 0 && !common.Contains(t))
+                        .OrderBy(t => t, StringComparer.Ordinal)
+                        .Select(t => tagNames && unlockIndex != null ? t + "  [" + unlockIndex.KindTag(t) + "]" : t)
+                        .ToList();
+                    display = unique.Count == 0 ? "(only shared entries)" : string.Join("   |   ", unique);
+                }
+                EditorGUILayout.BeginHorizontal();
+                EditorGUILayout.LabelField(who, GUILayout.Width(150));
+                EditorGUILayout.SelectableLabel(display, EditorStyles.miniLabel,
+                    GUILayout.Height(EditorGUIUtility.singleLineHeight));
+                EditorGUILayout.EndHorizontal();
+            }
+
+            if (common.Count > 0)
+            {
+                string shared = Short(string.Join(", ", common.OrderBy(x => x, StringComparer.Ordinal)));
+                EditorGUILayout.LabelField(
+                    $"{common.Count} shared entr{(common.Count == 1 ? "y" : "ies")} hidden (identical in all): {shared}",
+                    EditorStyles.wordWrappedMiniLabel);
+            }
+            return true;
         }
 
         static bool LooksLikeUnlockElementName(string v) =>

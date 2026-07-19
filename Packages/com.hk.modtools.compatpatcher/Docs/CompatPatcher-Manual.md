@@ -58,7 +58,7 @@ Press **Compare** (requires at least 2 mods). The patcher:
 3. Diffs every element present in multiple mods
 4. Scans **`Assets/Databases/Patch/`** for **orphans** (see below)
 5. Validates the load order against crash-causing patterns
-6. Populates the three panels below
+6. Populates the workspace below (hazard cards + type/pattern browse)
 
 Use **Resolve all as winner** to mark still-unreviewed conflicts in the **current filtered list** as resolved (accepts each load-order winner, writes sidecar, no import).
 
@@ -76,91 +76,46 @@ Compare also diffs **`Assets/Databases/Patch/`** against the loaded mods. A fold
 
 ---
 
-## The Three Panels
+## After Compare — workspace
 
-### Panel 1: Load-Order Validation (top)
+### Hazard cards (collapsible)
 
-Shows hazards that would cause the game to reset to vanilla on load. Each finding includes:
-- **Severity**: ERROR (will reset) or warning
-- **Code**: the validation rule (e.g. `:4734` for mixed-family unlock events)
-- **Element**: the element that triggers the hazard
-- **Detail**: what's wrong and which mod introduces it
-- **[order-sensitive]**: tag if reordering would change the outcome
+**Load-order validation** and **Patch orphans** sit above the workspace as DiffGui-style foldout cards. They auto-expand when non-empty after Compare. Expand to read findings / orphan rows (Compare / Ping / Remove).
 
-If there are order-sensitive findings, the panel tells you how many would disappear or change under the reversed order — use **▲ ▼** to reorder and **Compare** again.
+### Filters
 
-> If vanilla databases aren't mounted, the panel shows a warning and only checks mods against each other (not against vanilla). Set the Humankind folder in the Mod Editor and Compare again for full validation.
+AND-combined scope for the type tree, pattern pane, and Compare nav:
 
-### Panel 2: Element List (middle)
-
-A table of all elements across the loaded mods. Columns:
-
-| Column | Meaning |
-|--------|---------|
-| **Element** | Element name |
-| **Type** | Element class (e.g. `TechnologyDefinition`) |
-| **By** | Which mods define it |
-| **Winner** | Load-order winner (or your chosen mod) |
-| **Status** | `new` / `changed` / `✓resolved` / `conflict` / `identical` + `✓in patch` if imported |
-| **Diffs** | Summary like `2 ADD, 1 PICK` |
-
-Click a row to select it and see details in Panel 3.
-
-**Filters** (AND-combined):
 - **Status toolbar**: Conflicts / All / New / Identical
 - **Name contains**: substring filter
-- **Type**: dropdown populated from loaded elements
 - **needs review only**: only conflicts still needing a decision (hides ✓resolved / ✓in patch)
-- **hide winner-only**: hides conflicts where the only diffs are `ExtraInWinner` (already in the winner mod, no action needed)
+- **hide winner-only**: hides conflicts where the only diffs are `ExtraInWinner`
 
-Click a row to select it and see details in Panel 3.
+### Left — types (expandable)
 
-### Panel 3: Element Detail (bottom)
+Types sorted by total diff load (`UnitDefinition`, `Descriptor`, …). Each row shows `N diffs · M els`.
 
-For the selected element:
+- **Select** a type (or use Select) to drive the pattern pane on the right.
+- **Expand** the type to list its filtered elements. **Click an element** to open side-by-side Compare on that **full** object; Compare’s nav list is the aggregated set for that type (same filter).
 
-**If it's a conflict** (present in multiple mods with differences):
-- **Which mod's version wins?** — radio buttons for each contributing mod (defaults to load-order winner)
-- **Import chosen into Patch/** — duplicates that mod's version into `Assets/Databases/Patch/`
-- **Mark resolved (accept chosen)** — winner/choice is fine; no import. Writes the sidecar (`✓resolved`)
-- **Compare side-by-side** — opens the Compare window (see below)
-- **Differences table** — read-only field-by-field diff showing:
-  - `MISSING in winner` — a field/entry another mod has that the winner lacks
-  - `CHANGED` — present everywhere but values differ
-  - `ONLY in winner` — the winner has something others don't (informational)
+### Right — patterns by frequency / embedded Compare
 
-**If it's new** (single mod only):
-- **Import & Edit into Patch/** — bring it into the patch so you can edit it
-- **Compare side-by-side** — view it in the Compare window
+Default: recurring field diffs for the selected type (most common first), with mass-apply.
 
-**If it's already handled** (`✓resolved` and/or `✓in patch`):
-- Resolved = accepted without Patch override; In patch = imported. Both leave “needs review.”
-- Import is disabled when already in patch; Mark resolved is disabled when already resolved or in patch.
-- Use **Compare side-by-side** to inspect (and edit the patch version if present).
+**Compare side-by-side** or clicking an element under the type **replaces this pattern pane** with full-element Compare (DiffGui above Odin columns). Use **← Patterns** to return. Click another element on the left to switch without leaving Compare. Orphan **Compare** still opens the floating Compare window.
 
 ---
 
-## Side-by-Side Compare Window
+## Side-by-Side Compare
 
-Click **Compare side-by-side** from the detail panel to open a separate window showing:
+**In the main window:** clicking an element (or **Compare side-by-side**) swaps the right-hand pattern list for an embedded Compare view — full element columns + collapsible DiffGui above them. Nav is the left type tree (and **← Patterns** returns to aggregated diffs).
 
-- **Left**: searchable list of elements (from your current filtered view), with type filter and optional Group-by-type (same pattern as Database Browser)
-- **Right**: one column per contributing mod + a **Patch** column (if the element is already in the patch)
+**Floating window:** still used for Patch orphans (**Compare** on an orphan row), with its own element list.
 
-Each column stacks the element and its matching mappers (UIMapper, DescriptorMapper, etc.) as separate blocks. Each block is headed with the **concrete type** and **element name** (not the collection file stem).
+- **Above inspectors**: collapsible **Differences for {element}**
+- **Columns**: one per contributing mod + **Patch/** (editable); each is the complete datatable element
 
-- **Source columns** are read-only (staged scratch copies)
-- **Patch column** is editable — changes are saved on close
-
-Click **Import this version into Patch/** on any source column to bring that mod's **primary element only** into the patch (same as the main window — attached mappers are not auto-imported). The Patch column refreshes in place so you can immediately edit it.
-
-Click **Resolve as winner** to accept the load-order winner without importing (`✓resolved` + sidecar). List markers: **●** = in patch, **○** = resolved.
-
-The diff strip uses **Patch as winner** when a Patch copy exists. **ONLY in winner** rows are hidden by default (toggle **Show winner-only**). Click **Resolve** on a difference row to dismiss it (sidecar per-diff decision); resolved rows stay hidden until the fingerprint changes on re-Compare.
-
-**Definition `Key`:** Mod Tools locks the byte/ushort Key on constructibles/techs/etc. Source mods often omit it (0) or copy vanilla's. The patcher ignores Key in conflict diffs; on Import it copies a non-zero Key from the source live object when the duplicate would otherwise stay 0. It does not invent new keys.
-
-> **Tip:** Use this window when you need to see the full inspector view of each version before deciding, or when you want to import a version and hand-edit it.
+Click **Import this version into Patch/** on a source column for the primary element only. **Resolve as winner** accepts the load-order winner without importing.
 
 ---
 

@@ -80,7 +80,7 @@ These windows have no dependencies on other `.cs` files beyond `com.hk.modtools.
 ## CompatPatcher Dependencies (`com.hk.modtools.compatpatcher`)
 
 **Primary files (all under `com.hk.modtools.compatpatcher`'s `Editor/CompatPatcher/`):**
-- `CompatPatcherWindow.cs` (main window)
+- `CompatPatcherWindow.cs` / `CompatPatcherWorkspaceGui.cs` (main window + type/pattern workspace)
 - `CompatCompareWindow.cs` (side-by-side compare)
 
 **Local `.cs` dependencies (all CompatPatcher folder):**
@@ -102,7 +102,7 @@ These windows have no dependencies on other `.cs` files beyond `com.hk.modtools.
 - `com.hk.modtools.shared: VanillaDatabaseMount.cs` (shared vanilla mount)
 - `com.hk.modtools.shared: WindowMinimize.cs` (floating minimize; Patcher + Compare paired)
 
-**Group:** `CompatPatcherWindow.cs`, `CompatCompareWindow.cs`, `CompatBundleMounts.cs`, `LiveElementBuilder.cs`, `ReflectionBodyMerge.cs`, `SimulationEventEffectFlattener.cs`, `AdvancedDropdownHeight.cs`, `UnityYaml.cs`, `ModReader.cs`, `ConflictAnalyzer.cs`, `PatchBuilder.cs`, `FieldApplier.cs`, `MassChange.cs`, `MassFieldChangeWindow.cs`, `Sidecar.cs`, `LoadOrderValidator.cs`, `DiffGui.cs` (all under `com.hk.modtools.compatpatcher`'s `Editor/CompatPatcher/`)
+**Group:** `CompatPatcherWindow.cs`, `CompatPatcherWorkspaceGui.cs`, `CompatCompareWindow.cs`, `CompatBundleMounts.cs`, `LiveElementBuilder.cs`, `ReflectionBodyMerge.cs`, `SimulationEventEffectFlattener.cs`, `AdvancedDropdownHeight.cs`, `UnityYaml.cs`, `ModReader.cs`, `ConflictAnalyzer.cs`, `PatchBuilder.cs`, `FieldApplier.cs`, `MassChange.cs`, `MassFieldChangeWindow.cs`, `Sidecar.cs`, `LoadOrderValidator.cs`, `DiffGui.cs` (all under `com.hk.modtools.compatpatcher`'s `Editor/CompatPatcher/`)
 
 **Confirmed fully decoupled from `com.hk.modtools.core`** — comments in this folder mention `DatabaseBrowser`/`DescriptorPropertyIndex` for readers' orientation only; no actual code reference exists. Only `com.hk.modtools.shared` is a real dependency.
 
@@ -166,6 +166,6 @@ These are static methods with `[MenuItem]` entries, not `EditorWindow` subclasse
 ## Quick Reference Groups for Export
 
 1. **Existing Package Group (`ExportModEditorScriptsPackage`, spans `shared` + `core`):** `shared: VanillaDatabaseMount.cs`, `shared: ArchiveTranslations.cs`, `core: ModTools/TechTreeData.cs`, `core: ModTools/TechTreeWindow.cs`, `core: ModTools/DatabaseBrowser.cs`, `core: ModTools/DescriptorPropertyIndex.cs`, `core: Upgrades/DescriptorMapperPreview.cs`, `core: Upgrades/UIPictoTint.shader`, `core: Upgrades/PropertyEffectDrawer.cs`, `core: Upgrades/InspectorAnalysisPanel.cs`, `core: Upgrades/InspectorDiagnostics.cs`, `core: Upgrades/DescriptorMapperGenerator.cs`, `core: Upgrades/LocalizationKeyDrawer.cs`, `core: Upgrades/InlineLocalizationEditor.cs`
-2. **CompatPatcher package (`com.hk.modtools.compatpatcher`):** `CompatPatcher/CompatPatcherWindow.cs`, `CompatPatcher/CompatCompareWindow.cs`, `CompatPatcher/CompatBundleMounts.cs`, `CompatPatcher/LiveElementBuilder.cs`, `CompatPatcher/ReflectionBodyMerge.cs`, `CompatPatcher/SimulationEventEffectFlattener.cs`, `CompatPatcher/UnityYaml.cs`, `CompatPatcher/ModReader.cs`, `CompatPatcher/ConflictAnalyzer.cs`, `CompatPatcher/PatchBuilder.cs`, `CompatPatcher/FieldApplier.cs`, `CompatPatcher/MassChange.cs`, `CompatPatcher/MassFieldChangeWindow.cs`, `CompatPatcher/Sidecar.cs`, `CompatPatcher/LoadOrderValidator.cs`, `CompatPatcher/DiffGui.cs`
+2. **CompatPatcher package (`com.hk.modtools.compatpatcher`):** `CompatPatcher/CompatPatcherWindow.cs`, `CompatPatcher/CompatPatcherWorkspaceGui.cs`, `CompatPatcher/CompatCompareWindow.cs`, `CompatPatcher/CompatBundleMounts.cs`, `CompatPatcher/LiveElementBuilder.cs`, `CompatPatcher/ReflectionBodyMerge.cs`, `CompatPatcher/SimulationEventEffectFlattener.cs`, `CompatPatcher/UnityYaml.cs`, `CompatPatcher/ModReader.cs`, `CompatPatcher/ConflictAnalyzer.cs`, `CompatPatcher/PatchBuilder.cs`, `CompatPatcher/FieldApplier.cs`, `CompatPatcher/MassChange.cs`, `CompatPatcher/MassFieldChangeWindow.cs`, `CompatPatcher/Sidecar.cs`, `CompatPatcher/LoadOrderValidator.cs`, `CompatPatcher/DiffGui.cs`
 3. **UnitVisualWorkflow package (`com.hk.modtools.unitvisuals`):** `UnitVisualWorkflow/UnitVisualWorkflow.cs`, `UnitVisualWorkflow/FbxPrepPipeline.cs`, `UnitVisualWorkflow/BoneStructureMatcher.cs`, `UnitVisualWorkflow/PawnFragmentAuthor.cs`, `UnitVisualWorkflow/Tier1MeshBaker.cs`, `UnitVisualWorkflow/ModelRequirementsChecker.cs`, `UnitVisualWorkflow/AnimationManagerContent.cs`, `UnitVisualWorkflow/VanillaAssetResolver.cs`
 4. **Standalone utils (`com.hk.modtools.core`, not in the export package):** `Debug/BundleContentProbe.cs`, `Debug/GuidLookup.cs`, `Debug/NarrativeEventDiagnostic.cs`, `ModTools/ModBuildWindow.cs`, `ModTools/AssetExplorer.cs`

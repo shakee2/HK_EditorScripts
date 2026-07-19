@@ -71,6 +71,8 @@ namespace HK.CompatPatcher
         }
 
         Action<CompareItem> _onResolveAsWinner;
+        /// <summary>Fired after a successful Compare Import (primary element → Patch/). Parent should ScanPatch + refresh lists.</summary>
+        Action<CompareItem, string> _onImported;
         List<CompareItem> _items = new List<CompareItem>();
         readonly List<int> _filtered = new List<int>();   // indices into _items matching search+type
         readonly List<DisplayRow> _display = new List<DisplayRow>();
@@ -90,8 +92,13 @@ namespace HK.CompatPatcher
         List<Diff> _displayDiffs;
         string _displayDiffWinner;
         bool _displayDiffOdin;
+        // Winner's classifiable ref names, cached per selection. DrawDiffSection runs every
+        // repaint; recomputing this re-flattens the element (and, when winner==Patch, re-reads
+        // Patch/*.asset from disk) on every frame — so compute it once in RecomputeDisplayDiffs.
+        HashSet<string> _displayWinnerRefs;
         bool _showWinnerOnly; // ExtraInWinner — noise when Patch imported the load-order winner
         bool _showResolvedDiffs; // carried per-diff Resolve rows
+        bool _diffsExpanded = true; // DiffGui above inspectors; collapse to free column space
         UnlockCarrierIndex _unlockIndex;
         readonly List<Column> _cols = new List<Column>();
         // Session repository: source + Patch objects/Editors kept until the window closes.
@@ -103,6 +110,8 @@ namespace HK.CompatPatcher
         readonly Dictionary<string, List<Column>> _columnsByItem = new Dictionary<string, List<Column>>();
         float _listWidth = 320f;
         bool _draggingSplit;
+        /// <summary>When &gt; 0, <see cref="DrawColumns"/> uses this width (embedded host) instead of window−list.</summary>
+        float _embedContentWidth;
         GUIStyle _headerStyle;
         GUIStyle _panelTypeStyle;
         GUIStyle _panelNameStyle;
@@ -120,29 +129,109 @@ namespace HK.CompatPatcher
         const string PrefGroupByType = "CompatCompare.GroupByType";
         const string PrefShowWinnerOnly = "CompatCompare.ShowWinnerOnly";
         const string PrefShowResolvedDiffs = "CompatCompare.ShowResolvedDiffs";
+        const string PrefDiffsExpanded = "CompatCompare.DiffsExpanded";
         static readonly Color LIST_SEL = new Color(0.3f, 0.5f, 0.9f, 0.28f);
         static readonly Color LIST_ALT = new Color(1f, 1f, 1f, 0.03f);
         static readonly Color HEADER_BG = new Color(0f, 0f, 0f, 0.18f);
         static readonly Color ROW_LINE = new Color(0f, 0f, 0f, 0.12f);
 
-        public static void Show(List<CompareItem> items, int index, Action<CompareItem> onResolveAsWinner = null,
-            UnlockCarrierIndex unlockIndex = null)
+        public static void Show(
+            List<CompareItem> items,
+            int index,
+            Action<CompareItem> onResolveAsWinner = null,
+            UnlockCarrierIndex unlockIndex = null,
+            Action<CompareItem, string> onImported = null)
         {
             var w = GetWindow<CompatCompareWindow>(typeof(CompatPatcherWindow));
             w.titleContent = new GUIContent("Compare elements");
             // Keep the session repository across Show() — clearing would DeleteAsset and invalidate
             // Amplitude's DatatableElementCache for the rest of the session.
-            w._items = items ?? new List<CompareItem>();
-            w._onResolveAsWinner = onResolveAsWinner;
-            w._unlockIndex = unlockIndex ?? BuildUnlockIndexFromItems(w._items);
-            w._typeFilter = EditorPrefs.GetString(PrefTypeFilter, "");
-            w._groupByType = EditorPrefs.GetBool(PrefGroupByType, false);
-            w._showWinnerOnly = EditorPrefs.GetBool(PrefShowWinnerOnly, false);
-            w._showResolvedDiffs = EditorPrefs.GetBool(PrefShowResolvedDiffs, false);
-            w._viewDirty = true;
-            w.RebuildView();
-            w.SelectItem(Mathf.Clamp(index, 0, w._items.Count - 1));
+            w.Configure(items, index, onResolveAsWinner, unlockIndex, onImported);
             w.Show();
+        }
+
+        /// <summary>
+        /// Host Compare inside another window's Rect (no separate EditorWindow). Caller owns lifetime
+        /// via <see cref="DisposeHosted"/>.
+        /// </summary>
+        public static CompatCompareWindow CreateHosted(
+            List<CompareItem> items,
+            int index,
+            Action<CompareItem> onResolveAsWinner,
+            UnlockCarrierIndex unlockIndex,
+            Action<CompareItem, string> onImported = null)
+        {
+            var w = CreateInstance<CompatCompareWindow>();
+            w.hideFlags = HideFlags.HideAndDontSave;
+            w.Configure(items, index, onResolveAsWinner, unlockIndex, onImported);
+            return w;
+        }
+
+        void Configure(
+            List<CompareItem> items,
+            int index,
+            Action<CompareItem> onResolveAsWinner,
+            UnlockCarrierIndex unlockIndex,
+            Action<CompareItem, string> onImported = null)
+        {
+            _items = items ?? new List<CompareItem>();
+            _onResolveAsWinner = onResolveAsWinner;
+            _onImported = onImported;
+            _unlockIndex = unlockIndex ?? BuildUnlockIndexFromItems(_items);
+            _typeFilter = EditorPrefs.GetString(PrefTypeFilter, "");
+            _groupByType = EditorPrefs.GetBool(PrefGroupByType, false);
+            _showWinnerOnly = EditorPrefs.GetBool(PrefShowWinnerOnly, false);
+            _showResolvedDiffs = EditorPrefs.GetBool(PrefShowResolvedDiffs, false);
+            _diffsExpanded = EditorPrefs.GetBool(PrefDiffsExpanded, true);
+            _viewDirty = true;
+            RebuildView();
+            SelectItem(Mathf.Clamp(index, 0, Math.Max(0, _items.Count - 1)));
+        }
+
+        /// <summary>Reload items into an existing hosted instance (keeps session repo when possible).</summary>
+        public void ReloadHosted(
+            List<CompareItem> items,
+            int index,
+            Action<CompareItem> onResolveAsWinner,
+            UnlockCarrierIndex unlockIndex,
+            Action<CompareItem, string> onImported = null)
+        {
+            _onResolveAsWinner = onResolveAsWinner;
+            if (onImported != null) _onImported = onImported;
+            if (unlockIndex != null) _unlockIndex = unlockIndex;
+            _items = items ?? new List<CompareItem>();
+            _viewDirty = true;
+            RebuildView();
+            SelectItem(Mathf.Clamp(index, 0, Math.Max(0, _items.Count - 1)));
+        }
+
+        public void SelectHostedIndex(int index) => SelectItem(index);
+
+        public int FindHostedIndexByName(string name)
+        {
+            if (string.IsNullOrEmpty(name) || _items == null) return -1;
+            for (int i = 0; i < _items.Count; i++)
+                if (string.Equals(_items[i]?.name, name, StringComparison.Ordinal)) return i;
+            return -1;
+        }
+
+        /// <summary>
+        /// Draw DiffGui + inspector columns into <paramref name="area"/> (no left nav list — host supplies nav).
+        /// </summary>
+        public void DrawEmbedded(Rect area)
+        {
+            _embedContentWidth = Mathf.Max(80f, area.width);
+            GUILayout.BeginArea(area);
+            HandleHoverScroll();
+            DrawColumns();
+            GUILayout.EndArea();
+            _embedContentWidth = 0f;
+        }
+
+        public void DisposeHosted()
+        {
+            // DestroyImmediate invokes OnDisable → DisposeSession.
+            DestroyImmediate(this);
         }
 
         static UnlockCarrierIndex BuildUnlockIndexFromItems(List<CompareItem> items)
@@ -591,50 +680,58 @@ namespace HK.CompatPatcher
             if (_index < 0 || _index >= _items.Count) { EditorGUILayout.HelpBox("Select an element from the list.", MessageType.None); EditorGUILayout.EndVertical(); return; }
             var item = _items[_index];
             EnsurePanelStyles();
-            EditorGUILayout.LabelField($"{FormatElementTitle(item.name)}   ·   {ItemType(item)}", EditorStyles.boldLabel);
-            EditorGUILayout.LabelField(
-                "Source columns are read-only; Patch is editable and saved on close. "
-                + "Import brings only the primary element — not attached mappers.",
-                EditorStyles.miniLabel);
-
             EditorGUILayout.BeginHorizontal();
-            using (new EditorGUI.DisabledScope(item.inPatch || item.resolved || _onResolveAsWinner == null))
-            {
-                if (GUILayout.Button($"Resolve as winner ({item.winner})", GUILayout.Width(280)))
-                {
-                    _onResolveAsWinner(item);
-                    item.resolved = true;
-                    Repaint();
-                }
-            }
+            EditorGUILayout.LabelField($"{FormatElementTitle(item.name)}   ·   {ItemType(item)}", EditorStyles.boldLabel);
             if (item.inPatch)
-                EditorGUILayout.LabelField("● In patch", EditorStyles.miniLabel);
+                EditorGUILayout.LabelField("● In patch", EditorStyles.miniLabel, GUILayout.Width(72));
             else if (item.resolved)
-                EditorGUILayout.LabelField("○ Resolved — winner accepted (sidecar)", EditorStyles.miniLabel);
+                EditorGUILayout.LabelField("○ Resolved", EditorStyles.miniLabel, GUILayout.Width(72));
             EditorGUILayout.EndHorizontal();
 
+            // DiffGui above inspectors (collapsible) so columns can take remaining height.
             DrawDiffSection(item);
 
             if (_cols.Count == 0) { EditorGUILayout.HelpBox("Nothing to compare (staging failed).", MessageType.Warning); EditorGUILayout.EndVertical(); return; }
 
-            float w = (position.width - _listWidth - 24) / _cols.Count;
+            // Floating window: leave room for the left list. Embedded: fill the host Rect.
+            float avail = _embedContentWidth > 1f
+                ? _embedContentWidth - 16f
+                : position.width - _listWidth - 24f;
+            float w = Mathf.Max(120f, avail / _cols.Count);
             float prevLabel = EditorGUIUtility.labelWidth;
-            EditorGUIUtility.labelWidth = Mathf.Clamp(w * 0.38f, 110f, 200f);
+            EditorGUIUtility.labelWidth = Mathf.Clamp(w * 0.38f, 80f, 200f);
             EditorGUILayout.BeginHorizontal();
-            // Import refreshes _cols — must not mutate during this loop.
+            // Import / Resolve refresh _cols — must not mutate during this loop.
             Column pendingImport = null;
+            bool pendingResolve = false;
             for (int ci = 0; ci < _cols.Count; ci++)
             {
                 var c = _cols[ci];
-                EditorGUILayout.BeginVertical(GUILayout.Width(w));
+                EditorGUILayout.BeginVertical(GUILayout.Width(w), GUILayout.ExpandWidth(false));
                 EditorGUILayout.LabelField(c.header, EditorStyles.boldLabel);
                 if (c.mod != null && c.el != null)
                 {
+                    bool isWinner = !string.IsNullOrEmpty(item.winner)
+                        && string.Equals(c.mod.Name, item.winner, StringComparison.Ordinal);
+                    float btnW = Mathf.Max(80f, w - 28f);
+                    EditorGUILayout.BeginHorizontal();
                     using (new EditorGUI.DisabledScope(item.inPatch))
                     {
-                        if (GUILayout.Button("Import this version into Patch/", EditorStyles.miniButton, GUILayout.Width(w - 28)))
+                        if (GUILayout.Button("Import this version into Patch/", EditorStyles.miniButton,
+                                GUILayout.Width(isWinner ? Mathf.Max(60f, btnW * 0.55f) : btnW)))
                             pendingImport = c;
                     }
+                    // Resolve only on the load-order winner column (never Patch).
+                    if (isWinner && _onResolveAsWinner != null)
+                    {
+                        using (new EditorGUI.DisabledScope(item.inPatch || item.resolved))
+                        {
+                            if (GUILayout.Button("Resolve as winner", EditorStyles.miniButton,
+                                    GUILayout.Width(Mathf.Max(60f, btnW * 0.45f))))
+                                pendingResolve = true;
+                        }
+                    }
+                    EditorGUILayout.EndHorizontal();
                 }
                 c.scroll = EditorGUILayout.BeginScrollView(c.scroll);
                 for (int pi = 0; pi < c.panels.Count; pi++)
@@ -647,7 +744,7 @@ namespace HK.CompatPatcher
                     // embedded inspector's tabs, but we need to be able to switch tabs even for
                     // read-only source columns. Staged source assets are scratch-only and never
                     // saved, so the read-only status is enforced by lifecycle, not by GUI locking.
-                    EditorGUILayout.BeginVertical(GUILayout.Width(w - 28));
+                    EditorGUILayout.BeginVertical(GUILayout.Width(Mathf.Max(60f, w - 28)));
                     try { if (p.editor != null) p.editor.OnInspectorGUI(); }
                     catch (Exception ex) { EditorGUILayout.HelpBox("Embedded inspector failed: " + ex.Message, MessageType.Warning); }
                     EditorGUILayout.EndVertical();
@@ -664,6 +761,12 @@ namespace HK.CompatPatcher
 
             if (pendingImport != null)
                 ImportThisVersion(pendingImport);
+            if (pendingResolve)
+            {
+                _onResolveAsWinner?.Invoke(item);
+                item.resolved = true;
+                Repaint();
+            }
         }
 
         void EnsurePanelStyles()
@@ -676,9 +779,7 @@ namespace HK.CompatPatcher
         void DrawPanelHeader(Panel p)
         {
             EditorGUILayout.LabelField(p.typeName ?? "?", _panelTypeStyle);
-            string name = FormatElementTitle(p.elementName);
-            if (!p.editable) name += "  (read-only)";
-            EditorGUILayout.LabelField(name, _panelNameStyle);
+            EditorGUILayout.LabelField(FormatElementTitle(p.elementName), _panelNameStyle);
         }
 
         string FormatElementTitle(string elementName)
@@ -690,27 +791,46 @@ namespace HK.CompatPatcher
         void DrawDiffSection(CompareItem item)
         {
             EditorGUILayout.Space(2);
+            int diffN = _displayDiffs?.Count ?? 0;
+            string foldTitle = $"Differences for {item?.name ?? "?"} ({diffN})";
             EditorGUILayout.BeginHorizontal();
-            bool showWo = GUILayout.Toggle(_showWinnerOnly, "Show winner-only", EditorStyles.miniButton, GUILayout.Width(120));
-            if (showWo != _showWinnerOnly)
+            bool expanded = EditorGUILayout.Foldout(_diffsExpanded, foldTitle, true);
+            if (expanded != _diffsExpanded)
             {
-                _showWinnerOnly = showWo;
-                EditorPrefs.SetBool(PrefShowWinnerOnly, _showWinnerOnly);
+                _diffsExpanded = expanded;
+                EditorPrefs.SetBool(PrefDiffsExpanded, _diffsExpanded);
             }
-            int resolvedN = _displayDiffs?.Count(d => d.Status == "carried") ?? 0;
-            if (resolvedN > 0)
+            if (_diffsExpanded)
             {
-                bool showRes = GUILayout.Toggle(_showResolvedDiffs,
-                    $"Show resolved ({resolvedN})", EditorStyles.miniButton, GUILayout.Width(130));
-                if (showRes != _showResolvedDiffs)
+                bool showWo = GUILayout.Toggle(_showWinnerOnly, "Show winner-only", EditorStyles.miniButton, GUILayout.Width(120));
+                if (showWo != _showWinnerOnly)
                 {
-                    _showResolvedDiffs = showRes;
-                    EditorPrefs.SetBool(PrefShowResolvedDiffs, _showResolvedDiffs);
+                    _showWinnerOnly = showWo;
+                    EditorPrefs.SetBool(PrefShowWinnerOnly, _showWinnerOnly);
+                }
+                int resolvedN = _displayDiffs?.Count(d => d.Status == "carried") ?? 0;
+                if (resolvedN > 0)
+                {
+                    bool showRes = GUILayout.Toggle(_showResolvedDiffs,
+                        $"Show resolved ({resolvedN})", EditorStyles.miniButton, GUILayout.Width(130));
+                    if (showRes != _showResolvedDiffs)
+                    {
+                        _showResolvedDiffs = showRes;
+                        EditorPrefs.SetBool(PrefShowResolvedDiffs, _showResolvedDiffs);
+                    }
                 }
             }
+            EditorGUILayout.EndHorizontal();
+
+            if (!_diffsExpanded)
+            {
+                _diffScrollRect = default;
+                return;
+            }
+
             if (string.Equals(_displayDiffWinner, "Patch", StringComparison.Ordinal))
                 EditorGUILayout.LabelField("Patch as winner — winner-only usually means already imported.", EditorStyles.miniLabel);
-            EditorGUILayout.EndHorizontal();
+
             float h = Mathf.Clamp(position.height * 0.28f, 70f, 260f);
             _diffScroll = EditorGUILayout.BeginScrollView(_diffScroll, GUILayout.Height(h));
             DiffGui.DrawTable(_displayDiffs, _displayDiffWinner, _displayDiffOdin,
@@ -719,8 +839,7 @@ namespace HK.CompatPatcher
                 hideResolved: !_showResolvedDiffs,
                 unlockIndex: _unlockIndex,
                 currentElementName: item?.name,
-                winnerRefsOnElement: UnlockCarrierIndex.CollectClassifiableRefNamesFromElement(
-                    WinnerElementForCompare(item)));
+                winnerRefsOnElement: _displayWinnerRefs);
             EditorGUILayout.EndScrollView();
             if (Event.current.type == EventType.Repaint)
                 _diffScrollRect = GUILayoutUtility.GetLastRect();
@@ -802,6 +921,15 @@ namespace HK.CompatPatcher
         }
 
         void RecomputeDisplayDiffs(CompareItem item)
+        {
+            RecomputeDisplayDiffsCore(item);
+            // Cache once per selection (see field comment) — WinnerElementForCompare depends on
+            // _displayDiffWinner, which Core has just set.
+            _displayWinnerRefs = UnlockCarrierIndex.CollectClassifiableRefNamesFromElement(
+                WinnerElementForCompare(item));
+        }
+
+        void RecomputeDisplayDiffsCore(CompareItem item)
         {
             // Always rebuild from live objects. Analyze-time diffs can be stale/empty (false
             // Identical) while the inspectors already show real field differences.
@@ -896,8 +1024,14 @@ namespace HK.CompatPatcher
             if (PatchBuilder.ImportLive(live, c.el.TypeHint) == null) return;
             Debug.Log($"[CompatPatcher] Compare import: {c.el.Name} ({live.GetType().Name}) from {c.mod.Name} → {PatchBuilder.PatchDir}.");
             RefreshPatchColumn();
+            CompareItem item = null;
             if (_index >= 0 && _index < _items.Count)
-                _items[_index].resolved = true;
+            {
+                item = _items[_index];
+                item.resolved = true;
+                item.inPatch = true;
+            }
+            _onImported?.Invoke(item, c.mod?.Name);
         }
 
         // Rebuild only the Patch column in place so the imported element shows up as an editable panel
@@ -941,6 +1075,7 @@ namespace HK.CompatPatcher
             }
             _patchRepo.Clear();
             _displayDiffs = null;
+            _displayWinnerRefs = null;
         }
 
         void FlushDirtyPatchAssets()
