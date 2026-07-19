@@ -15,6 +15,7 @@ using UnityEngine;
 ///   - com.hk.modtools.core: ModTools/DatabaseBrowser.cs         (generic database browser window)
 ///   - com.hk.modtools.core: ModTools/DescriptorPropertyIndex.cs (descriptor property browser window)
 ///   - com.hk.modtools.core: Upgrades/DescriptorMapperPreview.cs (tooltip breakdown preview — PropertyEffectDrawer dep)
+///   - com.hk.modtools.core: Upgrades/UIPictoTint.shader         (alpha-tint shader for preview pictos)
 ///   - com.hk.modtools.core: Upgrades/PropertyEffectDrawer.cs    (PropertyEffect Odin drawer: formula autocomplete + inline render)
 ///   - com.hk.modtools.core: Upgrades/InspectorAnalysisPanel.cs  (header host: mapper toolbar + preview + diagnostics)
 ///   - com.hk.modtools.core: Upgrades/InspectorDiagnostics.cs    (diagnostics engine + aggregate loc foldout; DatabaseBrowser badges)
@@ -43,6 +44,7 @@ public static class ExportModEditorScriptsPackage
         "ModTools/DatabaseBrowser.cs",
         "ModTools/DescriptorPropertyIndex.cs",
         "Upgrades/DescriptorMapperPreview.cs",
+        "Upgrades/UIPictoTint.shader",
         "Upgrades/PropertyEffectDrawer.cs",
         "Upgrades/InspectorAnalysisPanel.cs",
         "Upgrades/InspectorDiagnostics.cs",

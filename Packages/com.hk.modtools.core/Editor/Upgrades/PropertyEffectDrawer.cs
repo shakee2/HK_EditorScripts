@@ -19,8 +19,9 @@ using Amplitude.Mercury.Production.Extensions;     // InspectorProperty.Serializ
 /// Inspector drawer for <see cref="Amplitude.Framework.Simulation.Description.PropertyEffect"/>.
 /// Draws Amplitude's own PropertyEffect editor untouched (compact formula field, operation/property
 /// dropdowns, and the type-aware Source/Target property browser), then appends the one thing Amplitude
-/// doesn't provide: a "Rendered" HelpBox showing the same tooltip line the header preview computes
-/// (template with ordered params substituted) with any applicable warnings. Property
+/// doesn't provide: a "Rendered" preview showing the same tooltip line the header preview computes
+/// (template with ordered params substituted, with <c>[Tag]</c> icons resolved via UIMapper Picto)
+/// with any applicable warnings. Property
 /// selection/autocomplete is left to Amplitude's formula field, which already knows the valid properties.
 ///
 /// IMPORTANT — why this is an Odin drawer, not a [CustomPropertyDrawer]:
@@ -709,7 +710,7 @@ public class PropertyEffectOdinDrawer : OdinValueDrawer<Amplitude.Framework.Simu
     {
         string text = GetRenderTextCached();
         if (string.IsNullOrEmpty(text)) return;
-        EditorGUILayout.HelpBox(text, text.Contains("⚠") ? MessageType.Warning : MessageType.Info);
+        DescriptorMapperPreview.DrawSymbolRichHelpBox(text, text.Contains("⚠") ? MessageType.Warning : MessageType.Info);
     }
 
     string GetRenderTextCached()
@@ -857,7 +858,7 @@ public class PropertyEffectDrawer : PropertyDrawer
             y += Spacing;
             float rh = Mathf.Max(EditorStyles.helpBox.CalcHeight(new GUIContent(text), RenderWidth()), 3 * Line);
             var rr = new Rect(position.x, y, position.width, rh);
-            EditorGUI.HelpBox(rr, text, text.Contains("⚠") ? MessageType.Warning : MessageType.Info);
+            DescriptorMapperPreview.DrawSymbolRichHelpBox(rr, text, text.Contains("⚠") ? MessageType.Warning : MessageType.Info);
         }
     }
 

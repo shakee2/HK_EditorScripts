@@ -30,6 +30,7 @@ The existing `Tools/shakee's Tools/Export Mod Editor Scripts Package` exports th
 - `ModTools/DatabaseBrowser.cs`
 - `ModTools/DescriptorPropertyIndex.cs`
 - `Upgrades/DescriptorMapperPreview.cs`
+- `Upgrades/UIPictoTint.shader`
 - `Upgrades/PropertyEffectDrawer.cs`
 - `Upgrades/InspectorAnalysisPanel.cs`
 - `Upgrades/InspectorDiagnostics.cs`
@@ -133,7 +134,7 @@ These are `[InitializeOnLoad]` hooks that layer into every inspector, not separa
 
 | Hook Class | Files | Notes |
 |------------|-------|-------|
-| `DescriptorMapperPreview` | `Upgrades/DescriptorMapperPreview.cs`, `shared: ArchiveTranslations.cs`, `shared: VanillaDatabaseMount.cs` | Tooltip breakdown preview in descriptor inspectors |
+| `DescriptorMapperPreview` | `Upgrades/DescriptorMapperPreview.cs`, `Upgrades/UIPictoTint.shader`, `shared: ArchiveTranslations.cs`, `shared: VanillaDatabaseMount.cs` | Tooltip breakdown preview in descriptor inspectors |
 | `DescriptorMapperGenerator` | `Upgrades/DescriptorMapperGenerator.cs`, `Upgrades/DescriptorMapperPreview.cs`, `shared: VanillaDatabaseMount.cs` | Generate/select paired DescriptorMapper from Descriptor inspector header |
 | `LocalizationKeyStringDrawer` | `Upgrades/LocalizationKeyDrawer.cs`, `Upgrades/InlineLocalizationEditor.cs`, `shared: ArchiveTranslations.cs`, `Upgrades/DescriptorMapperPreview.cs` | Inline translation editor below `%key` fields on UIMapper/DescriptorMapper |
 | `PropertyEffectOdinDrawer` | `Upgrades/PropertyEffectDrawer.cs`, `Upgrades/DescriptorMapperPreview.cs` | Odin drawer on `PropertyEffect`: formula autocomplete + inline Rendered HelpBox |
@@ -164,7 +165,7 @@ These are static methods with `[MenuItem]` entries, not `EditorWindow` subclasse
 
 ## Quick Reference Groups for Export
 
-1. **Existing Package Group (`ExportModEditorScriptsPackage`, spans `shared` + `core`):** `shared: VanillaDatabaseMount.cs`, `shared: ArchiveTranslations.cs`, `core: ModTools/TechTreeData.cs`, `core: ModTools/TechTreeWindow.cs`, `core: ModTools/DatabaseBrowser.cs`, `core: ModTools/DescriptorPropertyIndex.cs`, `core: Upgrades/DescriptorMapperPreview.cs`, `core: Upgrades/PropertyEffectDrawer.cs`, `core: Upgrades/InspectorAnalysisPanel.cs`, `core: Upgrades/InspectorDiagnostics.cs`, `core: Upgrades/DescriptorMapperGenerator.cs`, `core: Upgrades/LocalizationKeyDrawer.cs`, `core: Upgrades/InlineLocalizationEditor.cs`
+1. **Existing Package Group (`ExportModEditorScriptsPackage`, spans `shared` + `core`):** `shared: VanillaDatabaseMount.cs`, `shared: ArchiveTranslations.cs`, `core: ModTools/TechTreeData.cs`, `core: ModTools/TechTreeWindow.cs`, `core: ModTools/DatabaseBrowser.cs`, `core: ModTools/DescriptorPropertyIndex.cs`, `core: Upgrades/DescriptorMapperPreview.cs`, `core: Upgrades/UIPictoTint.shader`, `core: Upgrades/PropertyEffectDrawer.cs`, `core: Upgrades/InspectorAnalysisPanel.cs`, `core: Upgrades/InspectorDiagnostics.cs`, `core: Upgrades/DescriptorMapperGenerator.cs`, `core: Upgrades/LocalizationKeyDrawer.cs`, `core: Upgrades/InlineLocalizationEditor.cs`
 2. **CompatPatcher package (`com.hk.modtools.compatpatcher`):** `CompatPatcher/CompatPatcherWindow.cs`, `CompatPatcher/CompatCompareWindow.cs`, `CompatPatcher/CompatBundleMounts.cs`, `CompatPatcher/LiveElementBuilder.cs`, `CompatPatcher/ReflectionBodyMerge.cs`, `CompatPatcher/SimulationEventEffectFlattener.cs`, `CompatPatcher/UnityYaml.cs`, `CompatPatcher/ModReader.cs`, `CompatPatcher/ConflictAnalyzer.cs`, `CompatPatcher/PatchBuilder.cs`, `CompatPatcher/FieldApplier.cs`, `CompatPatcher/MassChange.cs`, `CompatPatcher/MassFieldChangeWindow.cs`, `CompatPatcher/Sidecar.cs`, `CompatPatcher/LoadOrderValidator.cs`, `CompatPatcher/DiffGui.cs`
 3. **UnitVisualWorkflow package (`com.hk.modtools.unitvisuals`):** `UnitVisualWorkflow/UnitVisualWorkflow.cs`, `UnitVisualWorkflow/FbxPrepPipeline.cs`, `UnitVisualWorkflow/BoneStructureMatcher.cs`, `UnitVisualWorkflow/PawnFragmentAuthor.cs`, `UnitVisualWorkflow/Tier1MeshBaker.cs`, `UnitVisualWorkflow/ModelRequirementsChecker.cs`, `UnitVisualWorkflow/AnimationManagerContent.cs`, `UnitVisualWorkflow/VanillaAssetResolver.cs`
 4. **Standalone utils (`com.hk.modtools.core`, not in the export package):** `Debug/BundleContentProbe.cs`, `Debug/GuidLookup.cs`, `Debug/NarrativeEventDiagnostic.cs`, `ModTools/ModBuildWindow.cs`, `ModTools/AssetExplorer.cs`

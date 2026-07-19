@@ -5,6 +5,8 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEngine;
+using AmpAssetDb = Amplitude.Framework.Asset.AssetDatabase;
+using AmpGuid = Amplitude.Framework.Guid;
 
 /// <summary>
 /// Live "how would this row actually render in a tooltip breakdown" preview for Descriptor /
@@ -34,6 +36,9 @@ using UnityEngine;
 ///   - Target/Condition "collection" plurality (SimulationController.IsPathReferenceCollection) isn't
 ///     reproduced; Intermediate is assumed singular (IntermediateCondition, never PluralCondition).
 ///   - SolveRPNFormula policies evaluate live against game state; shown as the static formula.
+///   - Bracket icon tags ([ScienceColored], …) resolve via UIMapper.Symbol → Images[Picto]
+///     (project + mounted vanilla); Amplitude rich-text (<c=RRGGBB>, <b>, <i>, …) is applied in
+///     the preview draw. Unmatched [Tag] stays as text; <u>/<s>/<m> are consumed but not drawn.
 ///
 /// Hooks into Editor.finishedDefaultHeaderGUI (fires for every inspector, right after the
 /// name/icon header) instead of registering a [CustomEditor] for Descriptor/DescriptorMapper,
@@ -50,7 +55,15 @@ public static class DescriptorMapperPreview
         // The header seam is owned by InspectorAnalysisPanel, which draws this panel (via Draw) and the
         // diagnostics panel inside one shared, height-capped scroll container.
         Undo.undoRedoPerformed += () => { s_generation++; s_previewCache.Clear(); };
-        EditorApplication.projectChanged += () => { s_generation++; s_previewCache.Clear(); s_byNameCache.Clear(); s_effectMapperConfig = null; s_effectMapperConfigSearched = false; };
+        EditorApplication.projectChanged += () =>
+        {
+            s_generation++;
+            s_previewCache.Clear();
+            s_byNameCache.Clear();
+            ClearSymbolIndex();
+            s_effectMapperConfig = null;
+            s_effectMapperConfigSearched = false;
+        };
     }
 
     static bool s_expanded = true;
@@ -109,6 +122,7 @@ public static class DescriptorMapperPreview
     static Type t_Descriptor, t_Effect, t_Path, t_Validation, t_PropertyEffect, t_OperationEnum, t_FixedPoint;
     static Type t_DescriptorMapper, t_PropertyEffectPolicy, t_FlagsEnum;
     static Type t_PropertyMapper, t_ValidationMapper, t_NavigationMapper, t_EffectMapperConfiguration;
+    static Type t_UIMapper, t_UIMapperImage, t_UITexture;
 
     static FieldInfo f_startingType, f_effects;
     static FieldInfo f_applyOnSource, f_path, f_propertyEffects;
@@ -129,6 +143,11 @@ public static class DescriptorMapperPreview
     // EffectMapperConfiguration.AdditionalEffectKeys[] (struct AdditionalEffectKey { Flags; Key; })
     static Type t_AdditionalEffectKey;
     static FieldInfo f_emc_additionalKeys, f_aek_flags, f_aek_key;
+
+    // UIMapper.Symbol → Images[Picto] for bracket icon tags in resolved tooltip text.
+    static FieldInfo f_um_symbol, f_um_color, f_um_images;
+    static FieldInfo f_umi_value, f_umi_serializableKey;
+    static FieldInfo f_uit_texture, f_uit_guid;
 
     static int OP_Add, OP_Sub, OP_Mult, OP_Div, OP_Percent, OP_Pow, OP_Max, OP_Min;
     static int OP_GetTarget, OP_GetSource, OP_GetConst, OP_GetVariable, OP_GetWorld;
@@ -156,6 +175,9 @@ public static class DescriptorMapperPreview
         t_NavigationMapper = FindType("Amplitude.Mercury.EffectMapper.NavigationMapper");
         t_EffectMapperConfiguration = FindType("Amplitude.Mercury.EffectMapper.EffectMapperConfiguration");
         t_FlagsEnum = FindType("Amplitude.Mercury.EffectMapper.EffectParameters+Flags") ?? FindType("Amplitude.Mercury.EffectMapper.EffectParameters$Flags");
+        t_UIMapper = FindType("Amplitude.UI.UIMapper");
+        t_UIMapperImage = t_UIMapper?.GetNestedType("Image", ALL);
+        t_UITexture = FindType("Amplitude.UI.UITexture");
 
         if (t_Descriptor == null || t_Effect == null || t_Path == null || t_Validation == null || t_PropertyEffect == null
             || t_DescriptorMapper == null || t_FlagsEnum == null)
@@ -234,6 +256,23 @@ public static class DescriptorMapperPreview
                 f_aek_flags = GetField(t_AdditionalEffectKey, "Flags");
                 f_aek_key = GetField(t_AdditionalEffectKey, "Key");
             }
+        }
+
+        if (t_UIMapper != null)
+        {
+            f_um_symbol = GetField(t_UIMapper, "Symbol");
+            f_um_color = GetField(t_UIMapper, "Color");
+            f_um_images = GetField(t_UIMapper, "Images");
+        }
+        if (t_UIMapperImage != null)
+        {
+            f_umi_value = GetField(t_UIMapperImage, "Value");
+            f_umi_serializableKey = GetField(t_UIMapperImage, "serializableKey");
+        }
+        if (t_UITexture != null)
+        {
+            f_uit_texture = GetField(t_UITexture, "Texture");
+            f_uit_guid = GetField(t_UITexture, "guid");
         }
 
         if (t_FlagsEnum.IsEnum)
@@ -366,9 +405,13 @@ public static class DescriptorMapperPreview
         {
             switch (op.kind)
             {
-                case OpKind.LabelTwo: EditorGUILayout.LabelField(op.a, op.b); break;
+                case OpKind.LabelTwo:
+                    if (ContainsRichMarkup(op.b)) DrawSymbolRichLabelField(op.a, op.b);
+                    else EditorGUILayout.LabelField(op.a, op.b);
+                    break;
                 case OpKind.LabelOne:
-                    if (op.style != null) EditorGUILayout.LabelField(op.a, op.style);
+                    if (ContainsRichMarkup(op.a)) DrawSymbolRichLabel(op.a, op.style);
+                    else if (op.style != null) EditorGUILayout.LabelField(op.a, op.style);
                     else EditorGUILayout.LabelField(op.a);
                     break;
                 case OpKind.HelpBox: EditorGUILayout.HelpBox(op.a, op.msg); break;
@@ -954,6 +997,7 @@ public static class DescriptorMapperPreview
     public static void InvalidateNameCache()
     {
         s_byNameCache.Clear();
+        ClearSymbolIndex();
         InvalidateTranslationCaches();
     }
 
@@ -1247,6 +1291,498 @@ public static class DescriptorMapperPreview
         }
         if (stack != 1) return $"malformed RPN — {stack} value(s) left on the stack at the end (expected exactly 1; a missing or extra operation).";
         return null;
+    }
+
+    // ── Bracket icons + Amplitude rich-text markup ───────────────────────────
+    // Runtime text uses [Tag] (SymbolMapper / UIMapper.Symbol) and Amplitude UI rich-text
+    // tags from ProcessedText: <c=RRGGBB[AA]>, </c>, <b>/<i>/<u>/<s>/<m> and closers.
+    // We interpret the same subset in IMGUI for the preview.
+    static readonly Regex s_symbolTag = new(@"\[[^\[\]]+\]", RegexOptions.Compiled);
+    // Opens/closes + symbol tokens. Color open must be exactly 6 or 8 hex digits (matches
+    // ProcessedText formatLength 10 / 12).
+    static readonly Regex s_richToken = new(
+        @"</?[bBiIuUsSmM]>|<c=[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?>|</c>|\[[^\[\]]+\]",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    struct SymbolIcon { public Texture2D texture; public Color color; public bool owned; }
+    static Dictionary<string, SymbolIcon> s_symbolIndex;
+    static int s_symbolIndexGeneration = -1;
+
+    /// <summary>True when <paramref name="text"/> has <c>[Tag]</c> and/or Amplitude <c>&lt;c&gt;/&lt;b&gt;/&lt;i&gt;…</c> markup.</summary>
+    public static bool ContainsRichMarkup(string text)
+        => !string.IsNullOrEmpty(text)
+           && (text.IndexOf('[') >= 0 || text.IndexOf('<') >= 0)
+           && s_richToken.IsMatch(text);
+
+    /// <summary>True when <paramref name="text"/> contains at least one <c>[Tag]</c> token.</summary>
+    public static bool ContainsSymbolTag(string text)
+        => !string.IsNullOrEmpty(text) && text.IndexOf('[') >= 0 && s_symbolTag.IsMatch(text);
+
+    /// <summary>
+    /// Draws a multi-line string inside a help-box style vertical, applying Amplitude rich-text
+    /// (<c>&lt;c=…&gt;</c>, <c>&lt;b&gt;</c>, <c>&lt;i&gt;</c>, …) and replacing resolved <c>[Tag]</c>
+    /// tokens with their UIMapper Picto. Used by PropertyEffectDrawer's inline render.
+    /// </summary>
+    public static void DrawSymbolRichHelpBox(string text, MessageType msg)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        if (!ContainsRichMarkup(text))
+        {
+            EditorGUILayout.HelpBox(text, msg);
+            return;
+        }
+
+        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+        var style = EditorStyles.wordWrappedLabel;
+        foreach (var line in text.Split('\n'))
+        {
+            float h = CalcSymbolRichHeight(line, style, EditorGUIUtility.currentViewWidth - 40f);
+            var rect = EditorGUILayout.GetControlRect(false, h);
+            DrawSymbolRichInRect(rect, line, style);
+        }
+        EditorGUILayout.EndVertical();
+    }
+
+    /// <summary>Same as <see cref="DrawSymbolRichHelpBox"/> but into an absolute rect (non-Odin PropertyDrawer).</summary>
+    public static void DrawSymbolRichHelpBox(Rect rect, string text, MessageType msg)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        if (!ContainsRichMarkup(text))
+        {
+            EditorGUI.HelpBox(rect, text, msg);
+            return;
+        }
+
+        GUI.Box(rect, GUIContent.none, EditorStyles.helpBox);
+        var inner = new Rect(rect.x + 4f, rect.y + 4f, rect.width - 8f, rect.height - 8f);
+        var style = EditorStyles.wordWrappedLabel;
+        float y = inner.y;
+        foreach (var line in text.Split('\n'))
+        {
+            float h = CalcSymbolRichHeight(line, style, inner.width);
+            DrawSymbolRichInRect(new Rect(inner.x, y, inner.width, h), line, style);
+            y += h;
+        }
+    }
+
+    static void DrawSymbolRichLabelField(string label, string value)
+    {
+        float h = Mathf.Max(EditorGUIUtility.singleLineHeight, CalcSymbolRichHeight(value, EditorStyles.label, 200f));
+        var rect = EditorGUILayout.GetControlRect(false, h);
+        var content = EditorGUI.PrefixLabel(rect, new GUIContent(label));
+        DrawSymbolRichInRect(content, value, EditorStyles.label);
+    }
+
+    static void DrawSymbolRichLabel(string text, GUIStyle style)
+    {
+        style ??= EditorStyles.label;
+        float h = Mathf.Max(EditorGUIUtility.singleLineHeight, CalcSymbolRichHeight(text, style, EditorGUIUtility.currentViewWidth - 40f));
+        var rect = EditorGUILayout.GetControlRect(false, h);
+        DrawSymbolRichInRect(rect, text, style);
+    }
+
+    static float CalcSymbolRichHeight(string text, GUIStyle style, float width)
+    {
+        if (string.IsNullOrEmpty(text)) return EditorGUIUtility.singleLineHeight;
+        // Strip markup for a tighter estimate; keep a short stand-in for each icon.
+        string plain = s_richToken.Replace(text, m => m.Value.Length > 0 && m.Value[0] == '[' ? "MM" : "");
+        return Mathf.Max(style.CalcHeight(new GUIContent(plain), Mathf.Max(width, 40f)), EditorGUIUtility.singleLineHeight);
+    }
+
+    static void DrawSymbolRichInRect(Rect rect, string text, GUIStyle style)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        EnsureSymbolIndex();
+        style ??= EditorStyles.label;
+
+        float x = rect.x;
+        float y = rect.y;
+        float lineH = EditorGUIUtility.singleLineHeight;
+        float iconSize = lineH - 2f;
+
+        // Color stack mirrors ProcessedText.ColorContext (push on <c=…>, pop on </c>).
+        // Bold/italic counts allow nested <b><b>…</b></b>.
+        var colorStack = new Stack<Color>();
+        colorStack.Push(style.normal.textColor);
+        int bold = 0, italic = 0;
+
+        int last = 0;
+        var matches = s_richToken.Matches(text);
+        if (matches.Count == 0)
+        {
+            GUI.Label(rect, text, style);
+            return;
+        }
+
+        foreach (Match m in matches)
+        {
+            if (m.Index > last)
+                x = DrawRichTextChunk(new Rect(x, y, rect.xMax - x, lineH), text.Substring(last, m.Index - last),
+                    style, colorStack.Peek(), bold > 0, italic > 0);
+
+            string tok = m.Value;
+            if (tok[0] == '[')
+            {
+                if (TryGetSymbolIcon(tok, out var icon) && icon.texture != null)
+                {
+                    // Inside <c=…> use that color; otherwise UIMapper Color (white fallback).
+                    Color tint = colorStack.Count > 1 ? colorStack.Peek() : ResolveDrawColor(icon.color);
+                    var iconRect = new Rect(x, y + 1f, iconSize, iconSize);
+                    DrawPicto(iconRect, icon.texture, tint);
+                    x += iconSize + 2f;
+                }
+                else
+                {
+                    x = DrawRichTextChunk(new Rect(x, y, rect.xMax - x, lineH), tok,
+                        style, colorStack.Peek(), bold > 0, italic > 0);
+                }
+            }
+            else
+            {
+                ApplyRichToken(tok, colorStack, ref bold, ref italic);
+            }
+            last = m.Index + m.Length;
+        }
+
+        if (last < text.Length)
+            DrawRichTextChunk(new Rect(x, y, rect.xMax - x, lineH), text.Substring(last),
+                style, colorStack.Peek(), bold > 0, italic > 0);
+    }
+
+    static float DrawRichTextChunk(Rect rect, string chunk, GUIStyle baseStyle, Color color, bool bold, bool italic)
+    {
+        if (string.IsNullOrEmpty(chunk)) return rect.x;
+        var drawStyle = new GUIStyle(RichTextStyle(baseStyle, bold, italic));
+        drawStyle.normal.textColor = color;
+        drawStyle.hover.textColor = color;
+        drawStyle.active.textColor = color;
+        drawStyle.focused.textColor = color;
+        float w = drawStyle.CalcSize(new GUIContent(chunk)).x;
+        GUI.Label(new Rect(rect.x, rect.y, w, rect.height), chunk, drawStyle);
+        return rect.x + w;
+    }
+
+    static GUIStyle RichTextStyle(GUIStyle baseStyle, bool bold, bool italic)
+    {
+        if (!bold && !italic) return baseStyle;
+        var s = new GUIStyle(baseStyle);
+        if (bold && italic) s.fontStyle = FontStyle.BoldAndItalic;
+        else if (bold) s.fontStyle = FontStyle.Bold;
+        else s.fontStyle = FontStyle.Italic;
+        return s;
+    }
+
+    static void ApplyRichToken(string tok, Stack<Color> colors, ref int bold, ref int italic)
+    {
+        if (tok.Length >= 3 && (tok[1] == 'c' || tok[1] == 'C') && tok[2] == '=')
+        {
+            // <c=RRGGBB> or <c=RRGGBBAA>
+            if (TryParseColorTag(tok, out var c)) colors.Push(c);
+            return;
+        }
+        if (tok.Equals("</c>", StringComparison.OrdinalIgnoreCase))
+        {
+            if (colors.Count > 1) colors.Pop();
+            return;
+        }
+
+        bool closing = tok.Length >= 2 && tok[1] == '/';
+        char code = closing
+            ? (tok.Length >= 3 ? tok[2] : '\0')
+            : (tok.Length >= 2 ? tok[1] : '\0');
+        int delta = closing ? -1 : 1;
+        switch (char.ToLowerInvariant(code))
+        {
+            case 'b': bold = Mathf.Max(0, bold + delta); break;
+            case 'i': italic = Mathf.Max(0, italic + delta); break;
+            // <u>/<s>/<m> (and closers) are matched so they don't leak as literal text;
+            // IMGUI preview doesn't draw underline/strike/highlight.
+        }
+    }
+
+    static bool TryParseColorTag(string tok, out Color color)
+    {
+        // "<c=RRGGBB>" (10) or "<c=RRGGBBAA>" (12)
+        color = Color.white;
+        if (tok.Length != 10 && tok.Length != 12) return false;
+        if (tok[0] != '<' || tok[tok.Length - 1] != '>') return false;
+        string hex = tok.Substring(3, tok.Length - 4); // strip <c= and >
+        if (hex.Length != 6 && hex.Length != 8) return false;
+        if (!byte.TryParse(hex.Substring(0, 2), System.Globalization.NumberStyles.HexNumber, null, out byte r)) return false;
+        if (!byte.TryParse(hex.Substring(2, 2), System.Globalization.NumberStyles.HexNumber, null, out byte g)) return false;
+        if (!byte.TryParse(hex.Substring(4, 2), System.Globalization.NumberStyles.HexNumber, null, out byte b)) return false;
+        byte a = 255;
+        if (hex.Length == 8
+            && !byte.TryParse(hex.Substring(6, 2), System.Globalization.NumberStyles.HexNumber, null, out a))
+            return false;
+        color = new Color32(r, g, b, a);
+        return true;
+    }
+
+    // Pictos are alpha-masked silhouettes. EditorGUI.DrawPreviewTexture / Graphics.DrawTexture
+    // ignore IMGUI clip (scroll views), so icons float over the rest of the inspector.
+    // Bake a white+alpha mask once (via UIPictoTint), then GUI.DrawTexture + GUI.color — clipped
+    // and tintable. UIMapper Color when set; black/unset → white.
+    static Color ResolveDrawColor(Color c)
+    {
+        if (c.a < 0.01f || (c.r + c.g + c.b) < 0.05f) return Color.white;
+        return c;
+    }
+
+    static Material s_pictoTintMat;
+
+    static Material PictoTintMat
+    {
+        get
+        {
+            if (s_pictoTintMat == null)
+            {
+                var shader = Shader.Find("Hidden/HK/UIPictoTint");
+                if (shader != null)
+                    s_pictoTintMat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
+            }
+            return s_pictoTintMat;
+        }
+    }
+
+    static void DrawPicto(Rect rect, Texture tex, Color tint)
+    {
+        if (Event.current.type != EventType.Repaint || tex == null) return;
+        // GUI.DrawTexture respects BeginScrollView / clip; DrawPreviewTexture does not.
+        var prev = GUI.color;
+        GUI.color = tint;
+        GUI.DrawTexture(rect, tex, ScaleMode.ScaleToFit, true);
+        GUI.color = prev;
+    }
+
+    static void ClearSymbolIndex()
+    {
+        if (s_symbolIndex != null)
+        {
+            foreach (var kv in s_symbolIndex)
+            {
+                if (kv.Value.owned && kv.Value.texture != null)
+                    UnityEngine.Object.DestroyImmediate(kv.Value.texture);
+            }
+        }
+        s_symbolIndex = null;
+        s_symbolIndexGeneration = -1;
+    }
+
+    static bool TryGetSymbolIcon(string tag, out SymbolIcon icon)
+    {
+        icon = default;
+        EnsureSymbolIndex();
+        if (s_symbolIndex == null) return false;
+        string key = NormalizeSymbolKey(tag);
+        if (s_symbolIndex.TryGetValue(key, out icon)) return true;
+        // Runtime aliases: some loc tags share another UIMapper's picto.
+        if (s_symbolAliases.TryGetValue(key, out var alias)
+            && s_symbolIndex.TryGetValue(alias, out icon))
+            return true;
+        return false;
+    }
+
+    // Loc tags that should reuse another Symbol's UIMapper picto (uppercased [Tag] keys).
+    static readonly Dictionary<string, string> s_symbolAliases = new(StringComparer.Ordinal)
+    {
+        ["[WORKPLACE]"] = "[POPULATION]",
+    };
+
+    static string NormalizeSymbolKey(string symbol)
+    {
+        if (string.IsNullOrEmpty(symbol)) return "";
+        string s = symbol.Trim();
+        if (s.Length == 0) return "";
+        if (s[0] != '[') s = "[" + s;
+        if (s[s.Length - 1] != ']') s += "]";
+        return s.ToUpperInvariant();
+    }
+
+    static void EnsureSymbolIndex()
+    {
+        if (s_symbolIndex != null && s_symbolIndexGeneration == s_generation) return;
+
+        bool inGui = Event.current != null;
+        bool canRebuild = !inGui || Event.current.type == EventType.Layout;
+        if (!canRebuild)
+        {
+            if (s_symbolIndex == null) s_symbolIndex = new Dictionary<string, SymbolIcon>(StringComparer.Ordinal);
+            return;
+        }
+
+        RebuildSymbolIndex();
+    }
+
+    static void RebuildSymbolIndex()
+    {
+        ClearSymbolIndex();
+        var map = new Dictionary<string, SymbolIcon>(256, StringComparer.Ordinal);
+        if (t_UIMapper == null || f_um_symbol == null || f_um_images == null)
+        {
+            // Types may not have been resolved yet (preview inactive); try once.
+            TryResolve();
+        }
+        if (t_UIMapper == null || f_um_symbol == null || f_um_images == null)
+        {
+            s_symbolIndex = map;
+            s_symbolIndexGeneration = s_generation;
+            return;
+        }
+
+        // Vanilla first, then project overrides (same Symbol key wins for mod UIMappers).
+        try
+        {
+            foreach (var obj in VanillaDatabaseMount.LoadAllOfType(t_UIMapper))
+                TryAddSymbolMapper(map, obj);
+        }
+        catch { /* mount unavailable — project-only index is still useful */ }
+
+        try
+        {
+            foreach (var guid in AssetDatabase.FindAssets($"t:{t_UIMapper.Name}"))
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                foreach (var obj in AssetDatabase.LoadAllAssetsAtPath(path))
+                {
+                    if (obj != null && t_UIMapper.IsInstanceOfType(obj))
+                        TryAddSymbolMapper(map, obj);
+                }
+            }
+        }
+        catch { }
+
+        s_symbolIndex = map;
+        s_symbolIndexGeneration = s_generation;
+    }
+
+    static void TryAddSymbolMapper(Dictionary<string, SymbolIcon> map, UnityEngine.Object mapper)
+    {
+        if (mapper == null) return;
+        string symbol = f_um_symbol.GetValue(mapper) as string;
+        if (string.IsNullOrEmpty(symbol)) return;
+        string key = NormalizeSymbolKey(symbol);
+        if (key.Length == 0) return;
+
+        var src = FindPictoTexture(mapper);
+        if (src == null) return;
+        var mask = BakeTintableMask(src);
+        if (mask == null) return;
+
+        Color color = Color.white;
+        if (f_um_color != null)
+        {
+            try { color = (Color)f_um_color.GetValue(mapper); }
+            catch { color = Color.white; }
+        }
+
+        if (map.TryGetValue(key, out var prev) && prev.owned && prev.texture != null && prev.texture != mask)
+            UnityEngine.Object.DestroyImmediate(prev.texture);
+
+        map[key] = new SymbolIcon { texture = mask, color = color, owned = true };
+    }
+
+    static Texture FindPictoTexture(UnityEngine.Object mapper)
+    {
+        if (f_um_images.GetValue(mapper) is not Array images || images.Length == 0) return null;
+
+        object fallback = null;
+        for (int i = 0; i < images.Length; i++)
+        {
+            var img = images.GetValue(i);
+            if (img == null) continue;
+            string sk = f_umi_serializableKey?.GetValue(img) as string;
+            if (string.Equals(sk, "Picto", StringComparison.OrdinalIgnoreCase))
+                return LoadTextureFromUITexture(f_umi_value?.GetValue(img));
+            if (fallback == null) fallback = img;
+        }
+        return fallback != null ? LoadTextureFromUITexture(f_umi_value?.GetValue(fallback)) : null;
+    }
+
+    static Texture LoadTextureFromUITexture(object uiTextureBoxed)
+    {
+        if (uiTextureBoxed == null || t_UITexture == null) return null;
+        try
+        {
+            if (f_uit_texture != null && f_uit_texture.GetValue(uiTextureBoxed) is Texture already && already != null)
+                return already;
+
+            if (f_uit_guid == null) return null;
+            object guidObj = f_uit_guid.GetValue(uiTextureBoxed);
+            if (guidObj == null) return null;
+            var guid = (AmpGuid)guidObj;
+            if (guid == AmpGuid.Null || guid == AmpGuid.Zero) return null;
+
+            var tex = AmpAssetDb.TryLoadAsset<Texture2D>(guid, null);
+            if (tex != null) return tex;
+
+            var any = AmpAssetDb.TryLoadAsset<UnityEngine.Object>(guid, null);
+            if (any is Texture2D t) return t;
+            if (any is Sprite sp && sp.texture != null) return sp.texture;
+            if (any is Texture texAny) return texAny;
+        }
+        catch { }
+        return null;
+    }
+
+    // Bake white RGB + source alpha so GUI.color can tint without multiplying black silhouettes
+    // to black. Uses UIPictoTint when available (GPU samples alpha correctly); otherwise forces
+    // RGB white on a CPU blit while keeping alpha.
+    static Texture2D BakeTintableMask(Texture src)
+    {
+        if (src == null) return null;
+        int w = src.width, h = src.height;
+        if (w <= 0 || h <= 0) return null;
+
+        RenderTexture rt = null;
+        Texture2D copy = null;
+        var prev = RenderTexture.active;
+        try
+        {
+            rt = RenderTexture.GetTemporary(w, h, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            RenderTexture.active = rt;
+            GL.Clear(true, true, Color.clear);
+
+            var mat = PictoTintMat;
+            if (mat != null)
+            {
+                mat.SetColor("_Color", Color.white);
+                Graphics.Blit(src, rt, mat);
+            }
+            else
+            {
+                Graphics.Blit(src, rt);
+            }
+
+            copy = new Texture2D(w, h, TextureFormat.RGBA32, false)
+            {
+                hideFlags = HideFlags.HideAndDontSave,
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp,
+                name = src.name + "_tintMask",
+            };
+            copy.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+
+            // Without the tint shader, Blit may keep black RGB — force white, keep alpha.
+            if (mat == null)
+            {
+                var px = copy.GetPixels32();
+                for (int i = 0; i < px.Length; i++)
+                    px[i] = new Color32(255, 255, 255, px[i].a);
+                copy.SetPixels32(px);
+            }
+            copy.Apply(false, false);
+            return copy;
+        }
+        catch
+        {
+            if (copy != null) UnityEngine.Object.DestroyImmediate(copy);
+            return null;
+        }
+        finally
+        {
+            RenderTexture.active = prev;
+            if (rt != null) RenderTexture.ReleaseTemporary(rt);
+        }
     }
 
     // ── Public API for PropertyEffectDrawer (inline Rendered preview) ─────

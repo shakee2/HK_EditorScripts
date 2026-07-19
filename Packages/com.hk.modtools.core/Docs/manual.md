@@ -195,7 +195,7 @@ Shown on **Descriptor** inspectors only.
 
 **Menu (cache):** `Tools → shakee's Tools → Debug → Descriptor Mapper Preview → Clear Name Cache`
 
-Shows how each PropertyEffect row would render in a tooltip (flags, template, substituted text). Pairs Descriptor + DescriptorMapper by name.
+Shows how each PropertyEffect row would render in a tooltip (flags, template, substituted text). Pairs Descriptor + DescriptorMapper by name. Bracket icon tags (`[ScienceColored]`, `[Pollution1]`, …) resolve to the matching UIMapper `Symbol` → Picto when present in the project or mounted vanilla databases. Amplitude rich-text (`<c=RRGGBB>`, `<b>`, `<i>`, …) is applied in the preview.
 
 **Inputs:** Read-only. Scroll inside the analysis panel when the preview is taller than the height cap. Enable via the **Tooltip Preview** toggle on the inspector header.
 

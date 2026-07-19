@@ -21,6 +21,15 @@ Versions match namespaced git tags: `core/<semver>`.
   collection sub-assets remove the element only; main assets delete the file).
 - Pawn Probe field dump: expand `SettlementStabilityPrerequisite` (enum `Operator` + nested
   `PublicOrderEffects` list entries).
+- Tooltip preview: resolve bracket icon tags (`[ScienceColored]`, `[Pollution1]`, …) to the
+  matching UIMapper `Symbol` → `Images[Picto]` texture (project + mounted vanilla). Bakes a
+  white+alpha mask (via `Hidden/HK/UIPictoTint`) and draws with `GUI.DrawTexture` so icons
+  tint correctly and stay clipped inside scroll/containers (`DrawPreviewTexture` ignores IMGUI
+  clip and floated over the inspector). Uses the UIMapper `Color` when set; black/unset falls
+  back to white. Alias: `[Workplace]` reuses the `[Population]` picto. Also interprets Amplitude
+  rich-text markup (`<c=RRGGBB[AA]>`, `<b>`, `<i>`, and other ProcessedText face tags —
+  `<u>`/`<s>`/`<m>` are consumed so they don't leak as text). Unmatched tags stay as text.
+  Applies to the header Tooltip Breakdown Preview and the PropertyEffect inline Rendered box.
 
 ## [1.0.2] - 2026-07-18
 

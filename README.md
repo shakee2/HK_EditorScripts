@@ -111,7 +111,7 @@ Within each package's `Editor/` folder, files stay grouped by role in subfolders
 
 #### Export package (`ModEditorScripts.unitypackage`)
 
-`ExportModEditorScriptsPackage.cs` ships **fourteen** `.cs` files (3 from `com.hk.modtools.shared`, 11 from `com.hk.modtools.core`), **`Docs/manual.md`** (user manual), and their `.meta` GUIDs. Everything else stays package-local and is **not** in the `.unitypackage`:
+`ExportModEditorScriptsPackage.cs` ships **fourteen** `.cs` files (3 from `com.hk.modtools.shared`, 11 from `com.hk.modtools.core`), **`Upgrades/UIPictoTint.shader`**, **`Docs/manual.md`** (user manual), and their `.meta` GUIDs. Everything else stays package-local and is **not** in the `.unitypackage`:
 
 | `.cs` file | Package | Tool / role |
 |------------|---------|-------------|
@@ -123,6 +123,7 @@ Within each package's `Editor/` folder, files stay grouped by role in subfolders
 | `ModTools/DatabaseBrowser.cs` | `core` | Database Browser window |
 | `ModTools/DescriptorPropertyIndex.cs` | `core` | Descriptor Property Browser window |
 | `Upgrades/DescriptorMapperPreview.cs` | `core` | Tooltip breakdown preview + `PropertyEffectDrawer` / diagnostics backend |
+| `Upgrades/UIPictoTint.shader` | `core` | Alpha-tint shader for preview pictos (dep of DescriptorMapperPreview) |
 | `Upgrades/PropertyEffectDrawer.cs` | `core` | PropertyEffect Odin drawer (formula autocomplete + inline render) |
 | `Upgrades/InspectorAnalysisPanel.cs` | `core` | Inspector header host (mapper toolbar + preview + diagnostics) |
 | `Upgrades/InspectorDiagnostics.cs` | `core` | Diagnostics engine, aggregate loc foldout, Database Browser badges |
@@ -195,7 +196,7 @@ Each releasable package ships `Packages/<full-package-name>/CHANGELOG.md` (Keep 
 - **With Odin Inspector** (`PropertyEffectOdinDrawer : OdinValueDrawer<PropertyEffect>`): calls `CallNextDrawer` first so Amplitude's own formula field, operation/property dropdowns, and Source/Target browser draw exactly as normal, then layers on top:
   - **Autocomplete directly on Amplitude's own formula field** — detects when Amplitude's `FormulaTextArea` control is focused (via its recycled `TextEditor`, reflection-located since it's internal), computes `Source.`/`Target.`/`World.` and property-name completions, and shows a styled floating dropdown anchored under the field. Arrow keys / Ctrl+E / Ctrl+D / → confirm an insert, which is written straight into the active `TextEditor` and re-parsed through Amplitude's own `RpnTextCompiler` so its Compile step picks it up.
   - **A secondary "Formula (autocomplete)" foldout** — an independent `GUILayout.TextField` backed by its own `RpnTextCompiler` instance (seeded by decompiling the current RPN), with the same completion popup, an "Apply to RPN" button (only enabled once Parse+Validate succeed) and "Reload from RPN". Because it only ever writes to the serialized arrays after `Parse()==Ok && Validate()==Ok`, it's impossible to write invalid RPN through it.
-  - **"Rendered" HelpBox** — resolves the row through `DescriptorMapperPreview.ResolvePropertyEffect` into the same substituted tooltip line the header preview shows, plus any warnings (hidden row, `SolveRPNFormula` live-evaluated, malformed RPN, missing mapper). Cached per-element and rebuilt only when `DescriptorMapperPreview.Generation` bumps or 1s elapses. Suppressed entirely when `DescriptorMapperPreview.IsActive` is off.
+  - **"Rendered" preview** — resolves the row through `DescriptorMapperPreview.ResolvePropertyEffect` into the same substituted tooltip line the header preview shows, plus any warnings (hidden row, `SolveRPNFormula` live-evaluated, malformed RPN, missing mapper). Bracket icon tags (`[ScienceColored]`, …) draw the matching UIMapper Picto when available. Cached per-element and rebuilt only when `DescriptorMapperPreview.Generation` bumps or 1s elapses. Suppressed entirely when `DescriptorMapperPreview.IsActive` is off.
   - A `SuperPriority` `FormulaSuggestionOverlayBlockerDrawer` eats pointer events under the open suggestion popup so clicks land on the popup, not the fields beneath it.
 - **Without Odin** (`[CustomPropertyDrawer(typeof(PropertyEffect))]` fallback): a plain `PropertyDrawer` with the same "Rendered" HelpBox, a Target Property field with a ▼ button opening a searchable `PropertyNameDropdown` of all known `PropertyMapper` names (via `DescriptorMapperPreview.GetAvailablePropertyNames`), and an editable "Property Local Name" array foldout with +/- row controls.
 - **FormulaSuggestionDropdownGui** / **FormulaSuggestionOverlaySession** — shared, Odin-inspector-safe infrastructure for painting/scrolling/picking the suggestion popup and blocking underlying controls from stealing its clicks; used by both the Amplitude-field overlay and the secondary autocomplete field.
