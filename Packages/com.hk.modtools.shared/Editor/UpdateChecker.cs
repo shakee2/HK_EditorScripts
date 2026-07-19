@@ -106,6 +106,12 @@ namespace HK.ModTools.Shared
             public bool IsLocal => Installed != null && Installed.source == PackageSource.Local;
             public bool HasRelease => !string.IsNullOrEmpty(LatestTag) && LatestVersion != null;
 
+            /// <summary>
+            /// True when the latest tagged version is still under 1.0 — treated as pre-release
+            /// (no <c>-preview</c>/<c>-rc</c> suffix needed).
+            /// </summary>
+            public bool LatestIsPreRelease => IsPreRelease(LatestVersion);
+
             public bool UpdateAvailable
             {
                 get
@@ -1072,6 +1078,27 @@ namespace HK.ModTools.Shared
             if (string.IsNullOrEmpty(version)) return null;
             string trimmed = version.TrimStart('v', 'V');
             return Version.TryParse(trimmed, out Version v) ? v : null;
+        }
+
+        /// <summary>Major &lt; 1 → pre-release (0.x tags). Stable releases start at 1.0.0.</summary>
+        internal static bool IsPreRelease(Version v) => v != null && v.Major < 1;
+
+        /// <summary>
+        /// Display form for Options buttons/headlines, e.g. <c>v0.1.0 (pre-release)</c> or <c>v1.1.0</c>.
+        /// </summary>
+        internal static string FormatVersionLabel(Version v)
+        {
+            if (v == null) return "?";
+            string s = "v" + v;
+            if (IsPreRelease(v)) s += " (pre-release)";
+            return s;
+        }
+
+        internal static string FormatVersionLabel(string versionString)
+        {
+            if (string.IsNullOrEmpty(versionString)) return "?";
+            Version v = ParseSemVer(versionString);
+            return v != null ? FormatVersionLabel(v) : ("v" + versionString);
         }
 
         // ── Changelog (per-package CHANGELOG.md, Keep a Changelog) ───────────────────────────────

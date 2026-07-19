@@ -63,11 +63,11 @@ package's `Editor/` (see the README table for feature-area descriptions):
   - `Editor/` root — `ExportModEditorScriptsPackage.cs` (general package infra, not scoped to one
     domain).
   - `Docs/manual.md` — user manual shipped alongside the exported `.unitypackage`.
-- **`Packages/com.hk.modtools.compatpatcher/Editor/CompatPatcher/`** (experimental, no tag yet) —
+- **`Packages/com.hk.modtools.compatpatcher/Editor/CompatPatcher/`** (pre-release while `0.x`) —
   depends on `shared` only: `CompatPatcherWindow.cs` (main window), `CompatCompareWindow.cs`,
   `CompatBundleMounts.cs`, `LiveElementBuilder.cs`, `ReflectionBodyMerge.cs`, `ModReader.cs`, `ConflictAnalyzer.cs`,
   `UnityYaml.cs`, `PatchBuilder.cs`, `FieldApplier.cs`, `MassChange.cs`, `MassFieldChangeWindow.cs`, `Sidecar.cs`,
-  `LoadOrderValidator.cs`, `DiffGui.cs`.
+  `LoadOrderValidator.cs`, `DiffGui.cs`, `CompatPatcherWorkspaceGui.cs`, `CompatPatcherManualWindow.cs`.
 - **`Packages/com.hk.modtools.unitvisuals/Editor/UnitVisualWorkflow/`** (experimental, no tag yet) —
   depends on `shared` only: `UnitVisualWorkflow.cs` (wizard), `PawnFragmentAuthor.cs`,
   `Tier1MeshBaker.cs`, `BoneStructureMatcher.cs`, `FbxPrepPipeline.cs`, `ModelRequirementsChecker.cs`,
@@ -83,15 +83,17 @@ package's `Editor/` (see the README table for feature-area descriptions):
 - Each package versions **independently** via namespaced tags on this one repo:
   `<shortname>/<semver>` (e.g. `shared/1.0.0`, `core/1.1.0`) — `<shortname>` is the package name with
   the `com.hk.modtools.` prefix stripped.
+- **Pre-release convention:** major version below 1 (`0.x`) is pre-release. Options labels it
+  `v0.1.0 (pre-release)`. Prefer that over `-preview`/`-rc` suffixes (UpdateChecker uses
+  `System.Version`, which does not parse those). Stable starts at `1.0.0`.
 - Install URL form: `https://github.com/shakee2/HK_EditorScripts.git?path=Packages/<full-package-name>#<shortname>/<version>`.
 - **Changelog:** each tagged package keeps `Packages/<full-package-name>/CHANGELOG.md` (Keep a
   Changelog + semver headings `## [x.y.z]` matching the tag). Ship it in the tagged commit — Options
   "What's new" fetches the file at the latest tag and shows every version between the installed
   release and that latest (newest first, one foldout card each). Untagged / experimental packages
   don't need one until first release.
-- `compatpatcher`/`unitvisuals` have no tags yet — don't cut one until the tool is actually ready to
-  release; there's no release-branch stripping step to remember anymore, so an untagged package is
-  simply invisible to anyone pinning a tag.
+- `compatpatcher`/`unitvisuals` may ship `0.x` pre-release tags when useful to pin; don't cut `1.0.0`
+  until the tool is actually ready. An untagged package stays invisible to anyone pinning a tag.
 - The retired single-package layout's last tag is plain `1.1.0` (no `?path=`, no shortname prefix) — its
   `UpdateChecker.cs` was patched to show a one-time "this package has moved" notice; don't reuse
   unprefixed tags for anything going forward.
@@ -171,8 +173,7 @@ package's `Editor/` (see the README table for feature-area descriptions):
   `EditorWindow-Dependencies.md` when adding inspector hooks or cross-file dependencies.
 - **The `release` branch predates this restructure and is now legacy** — it existed to strip
   `UnitVisualWorkflow/`/`CompatPatcher/` out of the old single-package layout for release tags. That job
-  is now done by `compatpatcher`/`unitvisuals` simply staying untagged; don't add new work to the
-  `release` branch.
+  is now done by `0.x` / untagged experimental packages; don't add new work to the `release` branch.
 
 ## Commit conventions
 - Commit/PR only when asked; branch off `main` first. Co-author trailer per repo norm.

@@ -9,8 +9,11 @@ Versions match namespaced git tags: `shared/<semver>`.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-19
+
 ### Added
 - `WindowMinimize` — fake minimize for floating tool windows (lower-right strip stack; paired siblings share one slot). Stack state persists across domain reload via SessionState; orphaned strip-locked windows are rescued if session is missing.
+- Options version labels: **major below 1** is shown as pre-release (`v0.1.0 (pre-release)`). No `-preview`/`-rc` suffix required — cut `0.x` tags for early packages.
 
 ### Fixed
 - Suppress console spam from known-benign Amplitude editor NREs: scenario `NarrativeEventDefinition`s

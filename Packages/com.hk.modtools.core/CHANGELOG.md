@@ -9,6 +9,8 @@ Versions match namespaced git tags: `core/<semver>`.
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-07-19
+
 ### Added
 - Database Browser: **Group** popup — **None** / **Type** / **Folder** (folder = directory of
   the project asset or vanilla collection path). Replaces the old Type-only toggle.
@@ -30,6 +32,9 @@ Versions match namespaced git tags: `core/<semver>`.
   rich-text markup (`<c=RRGGBB[AA]>`, `<b>`, `<i>`, and other ProcessedText face tags —
   `<u>`/`<s>`/`<m>` are consumed so they don't leak as text). Unmatched tags stay as text.
   Applies to the header Tooltip Breakdown Preview and the PropertyEffect inline Rendered box.
+
+### Changed
+- Depends on `com.hk.modtools.shared` **1.1.1** (WindowMinimize on browser/tech tree/descriptor index).
 
 ## [1.0.2] - 2026-07-18
 

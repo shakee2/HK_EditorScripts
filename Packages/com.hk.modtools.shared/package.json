@@ -1,6 +1,6 @@
 {
   "name": "com.hk.modtools.shared",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "displayName": "HK Mod Tools - Shared",
   "description": "Shared foundation for the HK Mod Tools packages: vanilla database bundle mount + Mod Editor translations mount. Also hosts the cross-package Update Checker and Tools Options window (install / update / remove catalog). Required by every other com.hk.modtools.* package.",
   "unity": "2021.3",

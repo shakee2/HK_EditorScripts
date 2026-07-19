@@ -385,6 +385,9 @@ namespace HK.CompatPatcher
             if (WindowMinimize.DrawMinimizedChrome(this, typeof(CompatCompareWindow))) return;
 
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+            if (GUILayout.Button(new GUIContent("Manual", "Open the Compatibility Patcher user manual"),
+                    EditorStyles.toolbarButton, GUILayout.Width(56)))
+                CompatPatcherManualWindow.Open();
             GUILayout.FlexibleSpace();
             WindowMinimize.DrawToolbarButton(this, typeof(CompatCompareWindow));
             EditorGUILayout.EndHorizontal();

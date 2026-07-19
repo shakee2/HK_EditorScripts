@@ -172,7 +172,7 @@ namespace HK.ModTools.Shared
                     {
                         string label;
                         if (canInstall)
-                            label = $"Install v{row.LatestVersion}";
+                            label = $"Install {UpdateChecker.FormatVersionLabel(row.LatestVersion)}";
                         else if (!row.TagsKnown)
                             label = "Checking…";
                         else
@@ -208,8 +208,8 @@ namespace HK.ModTools.Shared
 
                         if (row.UpdateAvailable)
                         {
-                            string updateLabel = $"Update to v{row.LatestVersion}";
-                            if (GUILayout.Button(updateLabel, GUILayout.Width(150)))
+                            string updateLabel = $"Update to {UpdateChecker.FormatVersionLabel(row.LatestVersion)}";
+                            if (GUILayout.Button(updateLabel, GUILayout.Width(180)))
                                 UpdateChecker.UpdateToLatest(row.Catalog.Name);
                         }
                         else if (row.CanUpdate)
@@ -238,11 +238,11 @@ namespace HK.ModTools.Shared
             if (!row.IsInstalled)
                 return name + " - Not installed";
 
-            string current = "v" + row.Installed.version;
+            string current = UpdateChecker.FormatVersionLabel(row.Installed.version);
             if (row.IsLocal) current += " (local)";
 
             if (row.UpdateAvailable)
-                return $"{name} - {current} --> v{row.LatestVersion} available";
+                return $"{name} - {current} --> {UpdateChecker.FormatVersionLabel(row.LatestVersion)} available";
 
             return $"{name} - {current}";
         }

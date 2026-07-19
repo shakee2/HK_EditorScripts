@@ -16,13 +16,13 @@ As of v1.1.0 this repo is a **multi-package monorepo**: instead of one big packa
 |---|---|---|---|
 | [`com.hk.modtools.shared`](Packages/com.hk.modtools.shared) | Vanilla database bundle mount, Mod Editor translations mount, floating-window minimize helper, the cross-package Update Checker, the Tools Options window | — | Released |
 | [`com.hk.modtools.core`](Packages/com.hk.modtools.core) | Database Browser, Descriptor Property Browser, Tech Tree viewer/editor, Asset Explorer, Build/Deploy window, inspector upgrades (inline localization, tooltip preview, formula autocomplete, diagnostics), debug probes | `shared` | Released |
-| [`com.hk.modtools.compatpatcher`](Packages/com.hk.modtools.compatpatcher) | Compatibility Patcher | `shared` | Experimental — not yet tagged |
+| [`com.hk.modtools.compatpatcher`](Packages/com.hk.modtools.compatpatcher) | Compatibility Patcher | `shared` | Pre-release (`0.x`) when tagged |
 | [`com.hk.modtools.unitvisuals`](Packages/com.hk.modtools.unitvisuals) | Custom unit visual pipeline wizard | `shared` | Experimental — not yet tagged |
 | [`com.hk.modtools.orphanfinder`](Packages/com.hk.modtools.orphanfinder) | Orphan Resource Finder — find unreferenced images / 3D resources in a Resources folder and delete them to shrink the mod | `shared`¹ | Released |
 
 ¹ `orphanfinder` is fully self-contained (uses none of `shared`'s types); it declares `shared` only so it joins the shared Update Checker / Options ecosystem. Drop the dependency if you want it truly standalone.
 
-**`shared` is a real, required dependency of every other package here** — install it first. Unlike Debug/UnitVisualWorkflow being release-branch-stripped in the old single-package layout, `compatpatcher`/`unitvisuals` simply ship no tag until they're stable enough to release; installing them today means pointing at `main` (unpinned, changes underneath you) — not recommended outside active development on those tools.
+**`shared` is a real, required dependency of every other package here** — install it first. `0.x` tags are pre-release (Options shows `v0.1.0 (pre-release)`); stable starts at `1.0.0`. Untagged packages stay invisible to pinned installs — use a `file:` path or `main` only while actively developing them.
 
 ## Installing a Package
 
@@ -34,11 +34,11 @@ As of v1.1.0 this repo is a **multi-package monorepo**: instead of one big packa
 2. Click the **+** button (top-left) → **Add package from git URL...**
 3. Install `com.hk.modtools.shared`:
    ```
-   https://github.com/shakee2/HK_EditorScripts.git?path=Packages/com.hk.modtools.shared#shared/1.1.0
+   https://github.com/shakee2/HK_EditorScripts.git?path=Packages/com.hk.modtools.shared#shared/1.1.1
    ```
 4. After the domain reload, open **Tools → shakee's Tools → Options** and Install the tool package(s) you want from the list (or keep using Package Manager git URLs if you prefer):
    ```
-   https://github.com/shakee2/HK_EditorScripts.git?path=Packages/com.hk.modtools.core#core/1.0.1
+   https://github.com/shakee2/HK_EditorScripts.git?path=Packages/com.hk.modtools.core#core/1.0.3
    ```
    Always pin to a [tag](https://github.com/shakee2/HK_EditorScripts/tags), never a branch name. Each package versions independently (`<shortname>/<semver>`).
 

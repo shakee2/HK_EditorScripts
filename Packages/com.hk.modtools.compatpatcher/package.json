@@ -2,12 +2,12 @@
   "name": "com.hk.modtools.compatpatcher",
   "version": "0.1.0",
   "displayName": "HK Mod Tools - Compatibility Patcher",
-  "description": "Compatibility Patcher: diff conflicting elements across mods, pick per-element winners, and mass-import into a patch mod. Experimental — not yet tagged for release.",
+  "description": "Compatibility Patcher: diff conflicting elements across mods, pick per-element winners, and mass-import into a patch mod. Pre-release while version is 0.x.",
   "unity": "2021.3",
   "type": "library",
   "license": "MIT",
   "dependencies": {
-    "com.hk.modtools.shared": "1.0.1"
+    "com.hk.modtools.shared": "1.1.1"
   },
   "keywords": [
     "humankind",
