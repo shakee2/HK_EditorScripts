@@ -6,7 +6,7 @@ This document maps each user-facing editor window (`EditorWindow` subclass or `[
 
 As of v1.1.0, files are split across four independent UPM packages under `Packages/`, each with its own `Editor/` folder:
 
-- **`Packages/com.hk.modtools.shared/Editor/`** — foundation mounts nearly everything else depends on (`VanillaDatabaseMount.cs`, `ArchiveTranslations.cs`), plus cross-package infra (`UpdateChecker.cs`, `ToolsOptionsWindow.cs`, `ChangelogPopupWindow.cs`). No dependencies of its own.
+- **`Packages/com.hk.modtools.shared/Editor/`** — foundation mounts nearly everything else depends on (`VanillaDatabaseMount.cs`, `ArchiveTranslations.cs`), floating-window minimize (`WindowMinimize.cs`), plus cross-package infra (`UpdateChecker.cs`, `ToolsOptionsWindow.cs`, `ChangelogPopupWindow.cs`). No dependencies of its own.
 - **`Packages/com.hk.modtools.core/Editor/`** — depends on `shared`. Subfolders by role:
   - `ModTools/` — standalone browsing/editing windows (database browser, tech tree, asset explorer, build window).
   - `Upgrades/` — hooks that augment vanilla ModTools inspectors with new capabilities (inline localization, tooltip preview, diagnostics, etc.) rather than opening their own window.
@@ -21,9 +21,10 @@ Paths below are given relative to each file's own package's `Editor/` folder (e.
 
 ## Existing Export Package (per `ExportModEditorScriptsPackage.cs`, in `com.hk.modtools.core`)
 
-The existing `Tools/shakee's Tools/Export Mod Editor Scripts Package` exports these **13 scripts** plus **`Docs/manual.md`** (from `com.hk.modtools.core`):
+The existing `Tools/shakee's Tools/Export Mod Editor Scripts Package` exports these **14 scripts** plus **`Docs/manual.md`** (from `com.hk.modtools.core`):
 - `com.hk.modtools.shared: VanillaDatabaseMount.cs`
 - `com.hk.modtools.shared: ArchiveTranslations.cs`
+- `com.hk.modtools.shared: WindowMinimize.cs`
 - `ModTools/TechTreeData.cs`
 - `ModTools/TechTreeWindow.cs`
 - `ModTools/DatabaseBrowser.cs`
@@ -46,7 +47,7 @@ These windows have no dependencies on other `.cs` files beyond `com.hk.modtools.
 
 | Window | Menu Path | Primary File | Notes |
 |--------|-----------|------------|-------|
-| **DatabaseBrowser** | `Tools/shakee's Tools/Database Browser` | `ModTools/DatabaseBrowser.cs` (`core`) | Uses `Upgrades/InspectorDiagnostics.cs` (`core`) for badge (which needs `shared: ArchiveTranslations.cs`, `Upgrades/DescriptorMapperPreview.cs`) |
+| **DatabaseBrowser** | `Tools/shakee's Tools/Database Browser` | `ModTools/DatabaseBrowser.cs` (`core`) | Uses `Upgrades/InspectorDiagnostics.cs` (`core`) for badge (which needs `shared: ArchiveTranslations.cs`, `Upgrades/DescriptorMapperPreview.cs`); `shared: WindowMinimize.cs` in Window mode |
 | **ModBuildWindow** | `Tools/shakee's Tools/Build And Deploy Mod` | `ModTools/ModBuildWindow.cs` (`core`) | Uses `shared: VanillaDatabaseMount.cs` for remount |
 | **AssetExplorer** | `Tools/shakee's Tools/Asset Explorer` | `ModTools/AssetExplorer.cs` (`core`) | Uses `shared: VanillaDatabaseMount.cs` for shared MercuryDatabases mount |
 | **BundleContentProbe** | `Tools/shakee's Tools/Debug/Inspect Built Mod Bundle` | `Debug/BundleContentProbe.cs` (`core`) | Standalone diagnostic tool |
@@ -98,6 +99,7 @@ These windows have no dependencies on other `.cs` files beyond `com.hk.modtools.
 - `LoadOrderValidator.cs` (load-time validation)
 - `DiffGui.cs` (shared IMGUI diff list)
 - `com.hk.modtools.shared: VanillaDatabaseMount.cs` (shared vanilla mount)
+- `com.hk.modtools.shared: WindowMinimize.cs` (floating minimize; Patcher + Compare paired)
 
 **Group:** `CompatPatcherWindow.cs`, `CompatCompareWindow.cs`, `CompatBundleMounts.cs`, `LiveElementBuilder.cs`, `ReflectionBodyMerge.cs`, `SimulationEventEffectFlattener.cs`, `AdvancedDropdownHeight.cs`, `UnityYaml.cs`, `ModReader.cs`, `ConflictAnalyzer.cs`, `PatchBuilder.cs`, `FieldApplier.cs`, `MassChange.cs`, `MassFieldChangeWindow.cs`, `Sidecar.cs`, `LoadOrderValidator.cs`, `DiffGui.cs` (all under `com.hk.modtools.compatpatcher`'s `Editor/CompatPatcher/`)
 
@@ -113,8 +115,15 @@ These windows have no dependencies on other `.cs` files beyond `com.hk.modtools.
 - `ModTools/TechTreeData.cs` (menu items and data layer)
 - `com.hk.modtools.shared: ArchiveTranslations.cs` (localization mount + override)
 - `com.hk.modtools.shared: VanillaDatabaseMount.cs` (vanilla bundle mount)
+- `com.hk.modtools.shared: WindowMinimize.cs` (floating minimize strip)
 
 **Note:** Already grouped in the existing `ExportModEditorScriptsPackage.cs`.
+
+---
+
+## DatabaseBrowser / DescriptorPropertyIndex (`com.hk.modtools.core`)
+
+Both use `com.hk.modtools.shared: WindowMinimize.cs` for floating-window minimize (Database Browser: **Window** mode only). Descriptor Property Index also uses `shared: VanillaDatabaseMount.cs` (see Inspector Hooks table below).
 
 ---
 
@@ -129,7 +138,7 @@ These are `[InitializeOnLoad]` hooks that layer into every inspector, not separa
 | `LocalizationKeyStringDrawer` | `Upgrades/LocalizationKeyDrawer.cs`, `Upgrades/InlineLocalizationEditor.cs`, `shared: ArchiveTranslations.cs`, `Upgrades/DescriptorMapperPreview.cs` | Inline translation editor below `%key` fields on UIMapper/DescriptorMapper |
 | `PropertyEffectOdinDrawer` | `Upgrades/PropertyEffectDrawer.cs`, `Upgrades/DescriptorMapperPreview.cs` | Odin drawer on `PropertyEffect`: formula autocomplete + inline Rendered HelpBox |
 | `InspectorDiagnostics` | `Upgrades/InspectorDiagnostics.cs`, `Upgrades/DescriptorMapperPreview.cs`, `Upgrades/InlineLocalizationEditor.cs`, `shared: ArchiveTranslations.cs`, `shared: VanillaDatabaseMount.cs` | Diagnostics panel in datatable element inspectors |
-| `DescriptorPropertyIndex` | `ModTools/DescriptorPropertyIndex.cs`, `shared: VanillaDatabaseMount.cs` | Has its own window at `Tools/shakee's Tools/Descriptor Property Browser` (lives in `ModTools/`, not `Upgrades/`, since it's a standalone window). Does **not** depend on `CompatPatcher/UnityYaml.cs` — that's in a different package entirely now, and never was a real dependency |
+| `DescriptorPropertyIndex` | `ModTools/DescriptorPropertyIndex.cs`, `shared: VanillaDatabaseMount.cs`, `shared: WindowMinimize.cs` | Has its own window at `Tools/shakee's Tools/Descriptor Property Browser` (lives in `ModTools/`, not `Upgrades/`, since it's a standalone window). Does **not** depend on `CompatPatcher/UnityYaml.cs` — that's in a different package entirely now, and never was a real dependency |
 
 ---
 

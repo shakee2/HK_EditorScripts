@@ -10,6 +10,15 @@ Versions match namespaced git tags: `core/<semver>`.
 ## [Unreleased]
 
 ### Added
+- Database Browser: **Group** popup — **None** / **Type** / **Folder** (folder = directory of
+  the project asset or vanilla collection path). Replaces the old Type-only toggle.
+- Database Browser: **`!`** prefix + **Dupes !** scope filter for My Mod content rows that
+  share the same `(type, name)` with another project object (load-order collision).
+- Database Browser: multi-select list rows (**Ctrl/Cmd+click** toggle, **Shift+click** range).
+  Right-click a vanilla multi-selection to **Import N Selected (Override from Archives)**;
+  My Mod multi-selection gets **Delete N Selected**. Single-row Import/Delete unchanged.
+- Database Browser: right-click **Delete** on My Mod rows (project assets under `Assets/`;
+  collection sub-assets remove the element only; main assets delete the file).
 - Pawn Probe field dump: expand `SettlementStabilityPrerequisite` (enum `Operator` + nested
   `PublicOrderEffects` list entries).
 

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Linq;
+using HK.ModTools.Shared;
 using UnityEditor;
 using UnityEditor.IMGUI.Controls;
 using UnityEngine;
@@ -122,7 +123,14 @@ public class DescriptorPropertyIndex : EditorWindow
     // ── GUI ───────────────────────────────────────────────────────────────────
     void OnGUI()
     {
+        if (WindowMinimize.DrawMinimizedChrome(this)) return;
         if (Event.current.type == EventType.MouseMove) Repaint();
+
+        EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+        GUILayout.FlexibleSpace();
+        WindowMinimize.DrawToolbarButton(this);
+        EditorGUILayout.EndHorizontal();
+
         EditorGUILayout.Space(6);
 
         // Vanilla bundle mount status (mounted automatically from the Mod Editor's Humankind folder)

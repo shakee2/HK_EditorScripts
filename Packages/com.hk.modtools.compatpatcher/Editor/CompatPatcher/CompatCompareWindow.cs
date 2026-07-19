@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using HK.ModTools.Shared;
 using UnityEditor;
 using UnityEditor.IMGUI.Controls;
 using UnityEngine;
@@ -331,6 +332,13 @@ namespace HK.CompatPatcher
 
         void OnGUI()
         {
+            if (WindowMinimize.DrawMinimizedChrome(this, typeof(CompatPatcherWindow))) return;
+
+            EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+            GUILayout.FlexibleSpace();
+            WindowMinimize.DrawToolbarButton(this, typeof(CompatPatcherWindow));
+            EditorGUILayout.EndHorizontal();
+
             EditorGUILayout.BeginHorizontal();
             DrawList();
             DrawSplitter();

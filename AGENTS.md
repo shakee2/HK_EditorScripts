@@ -42,7 +42,8 @@ All menu items live under **`Tools/…`**. Grouped by package, then by role-base
 package's `Editor/` (see the README table for feature-area descriptions):
 
 - **`Packages/com.hk.modtools.shared/Editor/`** — `VanillaDatabaseMount.cs`, `ArchiveTranslations.cs`
-  (foundation mounts nearly everything else depends on), `UpdateChecker.cs` (multi-package git-tag
+  (foundation mounts nearly everything else depends on), `WindowMinimize.cs` (floating-window minimize
+  strip stack), `UpdateChecker.cs` (multi-package git-tag
   update checker + Install/Remove APIs; Options catalog auto-discovered from namespaced tags;
   fetches per-package `CHANGELOG.md` for What's new), `ToolsOptionsWindow.cs` (aggregate settings —
   package Install/Update/Remove catalog, auto-update toggles/intervals per installed git package + a

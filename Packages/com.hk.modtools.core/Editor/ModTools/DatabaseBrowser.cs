@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using HK.ModTools.Shared;
 using UnityEditor;
 using UnityEditor.IMGUI.Controls;
 using UnityEngine;
@@ -13,7 +15,9 @@ public class DatabaseBrowser : EditorWindow
         public string name;
         public string typeName;
         public string scope;   // "Vanilla" | "Mod"
+        public string folderPath; // directory of the asset / vanilla collection (grouping key)
         public bool isContent; // implements IDatatableElement — a real moddable data row, not build/plugin/config plumbing
+        public bool isDup;     // My Mod content: same (type, name) on 2+ distinct project objects
     }
 
     // Flattened display item: a type header (group mode) or an entry row
@@ -38,17 +42,20 @@ public class DatabaseBrowser : EditorWindow
     List<string> _types = new();
     string _typeFilter = "";          // "" = any
     AdvancedDropdownState _typeDdState = new();
-    bool _groupByType;
+    enum GroupMode { None, Type, Folder }
+    static readonly string[] GROUP_LABELS = { "None", "Type", "Folder" };
+    GroupMode _groupMode = GroupMode.None;
     HashSet<string> _collapsed = new();
-    enum ScopeFilter { All, MyMod, Vanilla }
-    static readonly string[] SCOPE_LABELS = { "All", "My Mod", "Vanilla" };
+    enum ScopeFilter { All, MyMod, Vanilla, Dupes }
+    static readonly string[] SCOPE_LABELS = { "All", "My Mod", "Vanilla", "Dupes !" };
     ScopeFilter _scope = ScopeFilter.All;
     bool _contentOnly = true;   // hide build/plugin/config ScriptableObjects; show only actual data rows
 
     // prefs keys
     const string SearchKey     = "DatabaseBrowser.Search";
     const string TypeFilterKey = "DatabaseBrowser.TypeFilter";
-    const string GroupKey      = "DatabaseBrowser.GroupByType";
+    const string GroupKey      = "DatabaseBrowser.GroupByType"; // legacy bool
+    const string GroupModeKey  = "DatabaseBrowser.GroupMode";
     const string ScopeKey      = "DatabaseBrowser.Scope";
     const string IssueKey      = "DatabaseBrowser.Issue";
     const string ContentOnlyKey = "DatabaseBrowser.ContentOnly";
@@ -64,8 +71,10 @@ public class DatabaseBrowser : EditorWindow
     ViewMode _mode = ViewMode.Window;
     const string ModeKey = "DatabaseBrowser.Mode";
 
-    // selection + embedded inspector
+    // selection + embedded inspector (_selected = primary / inspector target; set = multi)
     UnityEngine.Object _selected;
+    readonly HashSet<UnityEngine.Object> _selectedSet = new();
+    int _anchorDisplayIndex = -1; // shift-range anchor in _display
     Editor _editor;
 
     // layout
@@ -103,7 +112,10 @@ public class DatabaseBrowser : EditorWindow
     {
         _search     = EditorPrefs.GetString(SearchKey, "");
         _typeFilter = EditorPrefs.GetString(TypeFilterKey, "");
-        _groupByType = EditorPrefs.GetBool(GroupKey, false);
+        if (EditorPrefs.HasKey(GroupModeKey))
+            _groupMode = (GroupMode)EditorPrefs.GetInt(GroupModeKey, 0);
+        else if (EditorPrefs.GetBool(GroupKey, false))
+            _groupMode = GroupMode.Type;
         _scope      = (ScopeFilter)EditorPrefs.GetInt(ScopeKey, 0);
         _issue      = (IssueFilter)EditorPrefs.GetInt(IssueKey, 0);
     }
@@ -118,7 +130,7 @@ public class DatabaseBrowser : EditorWindow
     {
         EditorPrefs.SetString(SearchKey, _search);
         EditorPrefs.SetString(TypeFilterKey, _typeFilter);
-        EditorPrefs.SetBool(GroupKey, _groupByType);
+        EditorPrefs.SetInt(GroupModeKey, (int)_groupMode);
         EditorPrefs.SetInt(ScopeKey, (int)_scope);
         EditorPrefs.SetInt(IssueKey, (int)_issue);
         // Persist selected element by asset GUID (only mod/asset selections survive; vanilla refs can't)
@@ -133,7 +145,10 @@ public class DatabaseBrowser : EditorWindow
         string guid = EditorPrefs.GetString(SelectedGuidKey, "");
         if (guid.Length == 0) return;
         var obj = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(AssetDatabase.GUIDToAssetPath(guid));
-        if (obj != null) _selected = obj;
+        if (obj == null) return;
+        _selected = obj;
+        _selectedSet.Clear();
+        _selectedSet.Add(obj);
     }
 
     void InitStyles()
@@ -145,7 +160,14 @@ public class DatabaseBrowser : EditorWindow
                 ? new Color(0.75f, 0.75f, 0.75f) : new Color(0.3f, 0.3f, 0.3f) } };
         }
         if (_headerStyle == null)
-            _headerStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 11 };
+        {
+            _headerStyle = new GUIStyle(EditorStyles.boldLabel)
+            {
+                fontSize = 11,
+                clipping = TextClipping.Clip,
+                alignment = TextAnchor.MiddleLeft,
+            };
+        }
     }
 
     // ── Scan ──────────────────────────────────────────────────────────────────
@@ -153,7 +175,33 @@ public class DatabaseBrowser : EditorWindow
     {
         if (force || s_cachedAll == null) s_cachedAll = ScanAll();
         _all = s_cachedAll.OrderBy(e => e.typeName).ThenBy(e => e.name).ToList();
+        MarkModDupes(_all);
+        // Drop destroyed / gone refs (e.g. after delete) so multi-select stays valid.
+        _selectedSet.RemoveWhere(o => o == null);
+        if (_selected == null || !_selectedSet.Contains(_selected))
+            _selected = _selectedSet.Count > 0 ? _selectedSet.First() : null;
         ApplyFilters();
+    }
+
+    // Element identity at load is (type, name). Flag My Mod content rows that collide with
+    // another distinct project object of the same type+name (vanilla never marked).
+    static void MarkModDupes(List<Entry> all)
+    {
+        var identities = new Dictionary<(string type, string name), HashSet<int>>();
+        foreach (var e in all)
+        {
+            e.isDup = false;
+            if (e.scope != "Mod" || !e.isContent || e.obj == null) continue;
+            var key = (e.typeName, e.name);
+            if (!identities.TryGetValue(key, out var set)) identities[key] = set = new();
+            set.Add(e.obj.GetInstanceID());
+        }
+        foreach (var e in all)
+        {
+            if (e.scope != "Mod" || !e.isContent || e.obj == null) continue;
+            if (identities.TryGetValue((e.typeName, e.name), out var set) && set.Count >= 2)
+                e.isDup = true;
+        }
     }
 
     static List<Entry> ScanAll()
@@ -171,18 +219,43 @@ public class DatabaseBrowser : EditorWindow
                 foreach (var obj in AssetDatabase.LoadAllAssetsAtPath(path))
                 {
                     if (obj == null || obj is not ScriptableObject) continue;
-                    list.Add(new Entry { obj = obj, name = obj.name, typeName = obj.GetType().Name, scope = "Mod",
-                        isContent = obj is Amplitude.Framework.IDatatableElement });
+                    list.Add(new Entry
+                    {
+                        obj = obj, name = obj.name, typeName = obj.GetType().Name, scope = "Mod",
+                        folderPath = FolderOfModAsset(path),
+                        isContent = obj is Amplitude.Framework.IDatatableElement
+                    });
                 }
             }
 
             EditorUtility.DisplayProgressBar("Database Browser", "Loading vanilla databases…", 1f);
             foreach (var obj in VanillaDatabaseMount.LoadAllOfType(typeof(ScriptableObject)))
-                list.Add(new Entry { obj = obj, name = obj.name, typeName = obj.GetType().Name, scope = "Vanilla",
-                    isContent = obj is Amplitude.Framework.IDatatableElement });
+                list.Add(new Entry
+                {
+                    obj = obj, name = obj.name, typeName = obj.GetType().Name, scope = "Vanilla",
+                    folderPath = FolderOfVanillaAsset(obj),
+                    isContent = obj is Amplitude.Framework.IDatatableElement
+                });
         }
         finally { EditorUtility.ClearProgressBar(); }
         return list;
+    }
+
+    static string FolderOfModAsset(string assetPath)
+    {
+        if (string.IsNullOrEmpty(assetPath)) return "(unknown)";
+        string dir = Path.GetDirectoryName(assetPath)?.Replace('\\', '/');
+        return string.IsNullOrEmpty(dir) ? assetPath : dir;
+    }
+
+    static string FolderOfVanillaAsset(UnityEngine.Object obj)
+    {
+        if (VanillaDatabaseMount.TryGetOwnerDescriptor(obj, out var d) && !string.IsNullOrEmpty(d.FilePath))
+        {
+            string dir = Path.GetDirectoryName(d.FilePath)?.Replace('\\', '/');
+            return string.IsNullOrEmpty(dir) ? d.FilePath.Replace('\\', '/') : dir;
+        }
+        return "(vanilla)";
     }
 
     void ApplyFilters()
@@ -197,7 +270,8 @@ public class DatabaseBrowser : EditorWindow
             (_typeFilter.Length == 0 || e.typeName == _typeFilter) &&
             (_scope == ScopeFilter.All ||
              (_scope == ScopeFilter.MyMod && e.scope == "Mod") ||
-             (_scope == ScopeFilter.Vanilla && e.scope == "Vanilla")) &&
+             (_scope == ScopeFilter.Vanilla && e.scope == "Vanilla") ||
+             (_scope == ScopeFilter.Dupes && e.isDup)) &&
             (s.Length == 0 || e.name.ToLowerInvariant().Contains(s)) &&
             MatchesIssue(e)
         ).ToList();
@@ -220,26 +294,54 @@ public class DatabaseBrowser : EditorWindow
     void BuildDisplay()
     {
         _display = new List<DI>(_view.Count + 32);
-        if (!_groupByType)
+        if (_groupMode == GroupMode.None)
         {
             foreach (var e in _view) _display.Add(new DI { entry = e });
+            return;
         }
-        else
+
+        Func<Entry, string> keyOf = _groupMode == GroupMode.Type
+            ? e => e.typeName
+            : e => string.IsNullOrEmpty(e.folderPath) ? "(unknown)" : e.folderPath;
+
+        foreach (var g in _view.GroupBy(keyOf).OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
         {
-            foreach (var g in _view.GroupBy(e => e.typeName).OrderBy(g => g.Key))
+            bool collapsed = _collapsed.Contains(g.Key);
+            _display.Add(new DI { isHeader = true, headerType = g.Key, count = g.Count(), collapsed = collapsed });
+            if (!collapsed)
             {
-                bool collapsed = _collapsed.Contains(g.Key);
-                _display.Add(new DI { isHeader = true, headerType = g.Key, count = g.Count(), collapsed = collapsed });
-                if (!collapsed)
-                    foreach (var e in g.OrderBy(x => x.name))
-                        _display.Add(new DI { entry = e });
+                IEnumerable<Entry> rows = _groupMode == GroupMode.Folder
+                    ? g.OrderBy(x => x.typeName).ThenBy(x => x.name)
+                    : g.OrderBy(x => x.name);
+                foreach (var e in rows)
+                    _display.Add(new DI { entry = e });
             }
         }
+    }
+
+    // Truncate from the left so long folder headers keep the leaf path + count visible.
+    static string FitTextKeepEnd(GUIStyle style, string text, float maxWidth)
+    {
+        if (maxWidth <= 0f || string.IsNullOrEmpty(text)) return text ?? "";
+        if (style.CalcSize(new GUIContent(text)).x <= maxWidth) return text;
+        const string ell = "…";
+        float ellW = style.CalcSize(new GUIContent(ell)).x;
+        if (ellW >= maxWidth) return ell;
+        int lo = 1, hi = text.Length, best = 1;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) / 2;
+            string candidate = ell + text.Substring(text.Length - mid);
+            if (style.CalcSize(new GUIContent(candidate)).x <= maxWidth) { best = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        return ell + text.Substring(text.Length - best);
     }
 
     // ── GUI ───────────────────────────────────────────────────────────────────
     void OnGUI()
     {
+        if (WindowMinimize.DrawMinimizedChrome(this)) return;
         InitStyles();
 
         EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
@@ -248,14 +350,23 @@ public class DatabaseBrowser : EditorWindow
         if (EditorGUI.EndChangeCheck())
         {
             EditorPrefs.SetInt(ModeKey, (int)_mode);
-            if (_mode == ViewMode.ListOnly && _editor != null) { DestroyImmediate(_editor); _editor = null; }
+            if (_mode == ViewMode.ListOnly)
+            {
+                WindowMinimize.ForceRestore(this);
+                if (_editor != null) { DestroyImmediate(_editor); _editor = null; }
+            }
             ApplyWindowPlacement();
         }
         GUILayout.Space(8);
         if (GUILayout.Button("Refresh", EditorStyles.toolbarButton, GUILayout.Width(70))) Refresh(true);
         if (GUILayout.Button("Save Assets", EditorStyles.toolbarButton, GUILayout.Width(90))) AssetDatabase.SaveAssets();
         GUILayout.FlexibleSpace();
-        GUILayout.Label($"{_view.Count} / {_all.Count}", EditorStyles.miniLabel);
+        string counts = _selectedSet.Count > 1
+            ? $"{_selectedSet.Count} selected · {_view.Count} / {_all.Count}"
+            : $"{_view.Count} / {_all.Count}";
+        GUILayout.Label(counts, EditorStyles.miniLabel);
+        if (_mode == ViewMode.Window)
+            WindowMinimize.DrawToolbarButton(this);
         EditorGUILayout.EndHorizontal();
 
         float toolbarH = EditorStyles.toolbar.fixedHeight > 0f ? EditorStyles.toolbar.fixedHeight : 21f;
@@ -288,7 +399,7 @@ public class DatabaseBrowser : EditorWindow
         { _search = ""; GUI.FocusControl(null); ApplyFilters(); }
         EditorGUILayout.EndHorizontal();
 
-        // Searchable type dropdown
+        // Searchable type dropdown + group mode
         EditorGUILayout.BeginHorizontal();
         EditorGUILayout.LabelField("Type", GUILayout.Width(40));
         if (GUILayout.Button(_typeFilter.Length == 0 ? "(any)" : _typeFilter, EditorStyles.popup))
@@ -296,8 +407,16 @@ public class DatabaseBrowser : EditorWindow
             var dd = new TypeDropdown(_typeDdState, _types, picked => { _typeFilter = picked; ApplyFilters(); });
             dd.Show(GUILayoutUtility.GetLastRect());
         }
-        bool g = GUILayout.Toggle(_groupByType, "Group", EditorStyles.miniButton, GUILayout.Width(54));
-        if (g != _groupByType) { _groupByType = g; BuildDisplay(); }
+        EditorGUILayout.LabelField("Group", GUILayout.Width(40));
+        EditorGUI.BeginChangeCheck();
+        var gm = (GroupMode)EditorGUILayout.Popup((int)_groupMode, GROUP_LABELS, GUILayout.Width(70));
+        if (EditorGUI.EndChangeCheck() && gm != _groupMode)
+        {
+            _groupMode = gm;
+            _collapsed.Clear();
+            EditorPrefs.SetInt(GroupModeKey, (int)_groupMode);
+            BuildDisplay();
+        }
         EditorGUILayout.EndHorizontal();
 
         EditorGUI.BeginChangeCheck();
@@ -339,8 +458,20 @@ public class DatabaseBrowser : EditorWindow
             if (di.isHeader)
             {
                 EditorGUI.DrawRect(row, HEADER_BG);
-                bool expanded = EditorGUI.Foldout(new Rect(row.x + 2, row.y, row.width - 4, row.height),
-                    !di.collapsed, $"{di.headerType}  ({di.count})", true, _headerStyle);
+                // Foldout arrow + clipped label (paths are long; keep the right side so the
+                // leaf folder + count stay visible; full text is in the tooltip).
+                Rect foldRect = new Rect(row.x + 2, row.y, 14f, row.height);
+                bool expanded = EditorGUI.Foldout(foldRect, !di.collapsed, GUIContent.none, true);
+                Rect labelRect = new Rect(foldRect.xMax, row.y, row.xMax - foldRect.xMax - 4f, row.height);
+                string full = $"{di.headerType}  ({di.count})";
+                string shown = FitTextKeepEnd(_headerStyle, full, labelRect.width);
+                if (Event.current.type == EventType.MouseDown && Event.current.button == 0
+                    && labelRect.Contains(mouse))
+                {
+                    expanded = !expanded;
+                    Event.current.Use();
+                }
+                GUI.Label(labelRect, new GUIContent(shown, full), _headerStyle);
                 if (expanded == di.collapsed) toggleType = di.headerType; // state flipped
                 EditorGUI.DrawRect(new Rect(0, row.yMax - 1, contentW, 1), ROW_LINE);
                 continue;
@@ -348,28 +479,34 @@ public class DatabaseBrowser : EditorWindow
 
             var e = di.entry;
 
-            // Handled before the GUI.Button below so a right-click anywhere on the row
-            // (name or type column) reaches us — GUI.Button swallows MouseDown over its
-            // rect regardless of button, which would otherwise eat right-clicks on the name.
-            if (e.scope == "Vanilla" && Event.current.type == EventType.MouseDown
-                && Event.current.button == 1 && row.Contains(mouse))
+            // MouseDown on the whole row (before Label) so Ctrl/Shift multi-select and
+            // right-click context work on name + type columns alike.
+            if (Event.current.type == EventType.MouseDown && row.Contains(mouse))
             {
-                Event.current.Use();
-                var entry = e;
-                var menu = new GenericMenu();
-                menu.AddItem(new GUIContent("Import (Override from Archives)"), false, () => ImportVanilla(entry));
-                menu.ShowAsContext();
+                if (Event.current.button == 0)
+                {
+                    SelectClick(e, i);
+                    Event.current.Use();
+                }
+                else if (Event.current.button == 1)
+                {
+                    Event.current.Use();
+                    // Standard list behavior: right-click outside selection replaces it.
+                    if (!_selectedSet.Contains(e.obj))
+                        SelectOnly(e, i);
+                    ShowRowContextMenu();
+                }
             }
 
-            bool selected = e.obj == _selected;
+            bool selected = e.obj != null && _selectedSet.Contains(e.obj);
             bool hover = row.Contains(mouse);
             if (hover) hoveredThisPass = i;
             if (selected)          EditorGUI.DrawRect(row, ROW_SEL);
             else if (hover)        EditorGUI.DrawRect(row, ROW_HOVER);
             else if ((i & 1) == 1) EditorGUI.DrawRect(row, ROW_ALT);
 
-            float indent = _groupByType ? 14f : 0f;
-            float typeW = _groupByType ? 0f : TYPE_COL_W;   // type column only in flat mode
+            float indent = _groupMode != GroupMode.None ? 14f : 0f;
+            float typeW = _groupMode == GroupMode.Type ? 0f : TYPE_COL_W;   // type column when not grouping by type
 
             // Diagnostics badge — a colored dot for content rows with load-time issues, so the
             // problem files are findable at a glance (worst severity, cached by InspectorDiagnostics).
@@ -382,13 +519,15 @@ public class DatabaseBrowser : EditorWindow
             }
 
             Rect nameRect = new Rect(row.x + 4 + indent + badgeW, row.y, row.width - 8 - indent - badgeW - typeW, row.height);
-            string label = (e.scope == "Mod" ? "● " : "  ") + e.name;
-            string tip = $"{e.typeName} ({e.scope})" + (sev == DiagSeverity.Crash ? "\n⛔ Will crash load — see the inspector Diagnostics panel"
-                                                        : sev == DiagSeverity.Warn ? "\n⚠ Has warnings — see the inspector Diagnostics panel" : "");
-            if (GUI.Button(nameRect, new GUIContent(label, tip), EditorStyles.label))
-                Select(e.obj);
+            string label = (e.scope == "Mod" ? "● " : "  ") + (e.isDup ? "!" : "") + e.name;
+            string tip = $"{e.typeName} ({e.scope})"
+                + (string.IsNullOrEmpty(e.folderPath) ? "" : "\n" + e.folderPath)
+                + (e.isDup ? "\n! Duplicate (type, name) in My Mod — load-order collision" : "")
+                + (sev == DiagSeverity.Crash ? "\n⛔ Will crash load — see the inspector Diagnostics panel"
+                   : sev == DiagSeverity.Warn ? "\n⚠ Has warnings — see the inspector Diagnostics panel" : "");
+            GUI.Label(nameRect, new GUIContent(label, tip), EditorStyles.label);
 
-            if (!_groupByType)
+            if (_groupMode != GroupMode.Type)
             {
                 Rect typeRect = new Rect(row.xMax - TYPE_COL_W - 4, row.y, TYPE_COL_W, row.height);
                 GUI.Label(typeRect, new GUIContent(e.typeName, e.typeName), _typeColStyle);
@@ -415,30 +554,251 @@ public class DatabaseBrowser : EditorWindow
         GUILayout.EndArea();
     }
 
-    void ImportVanilla(Entry e)
+    void ShowRowContextMenu()
     {
-        var imported = VanillaDatabaseMount.OverrideVanillaElement(e.obj);
-        if (imported == null) return;
-        Refresh();
-        Select(imported);
+        var selected = GetSelectedEntries();
+        var vanilla = selected.Where(x => x.scope == "Vanilla").ToList();
+        var mod = selected.Where(x => x.scope == "Mod").ToList();
+        var menu = new GenericMenu();
+
+        if (vanilla.Count > 0)
+        {
+            string label = vanilla.Count == 1
+                ? "Import (Override from Archives)"
+                : $"Import {vanilla.Count} Selected (Override from Archives)";
+            menu.AddItem(new GUIContent(label), false, () => ImportVanillaMany(vanilla));
+        }
+
+        if (mod.Count > 0)
+        {
+            bool anyDeletable = mod.Any(CanDeleteModEntry);
+            string label = mod.Count == 1 ? "Delete" : $"Delete {mod.Count} Selected";
+            if (anyDeletable)
+                menu.AddItem(new GUIContent(label), false, () => DeleteModEntries(mod));
+            else
+                menu.AddDisabledItem(new GUIContent(label));
+        }
+
+        if (menu.GetItemCount() > 0) menu.ShowAsContext();
     }
 
-    void Select(UnityEngine.Object obj)
+    List<Entry> GetSelectedEntries()
+    {
+        if (_selectedSet.Count == 0) return new List<Entry>();
+        // Preserve display order so mass ops feel predictable.
+        var list = new List<Entry>(_selectedSet.Count);
+        foreach (var di in _display)
+        {
+            if (di.isHeader || di.entry?.obj == null) continue;
+            if (_selectedSet.Contains(di.entry.obj)) list.Add(di.entry);
+        }
+        // Anything selected but filtered out of _display still counts.
+        if (list.Count < _selectedSet.Count)
+        {
+            foreach (var e in _all)
+            {
+                if (e.obj != null && _selectedSet.Contains(e.obj) && list.All(x => x.obj != e.obj))
+                    list.Add(e);
+            }
+        }
+        return list;
+    }
+
+    void ImportVanillaMany(List<Entry> entries)
+    {
+        if (entries == null || entries.Count == 0) return;
+        UnityEngine.Object last = null;
+        int ok = 0, fail = 0;
+        try
+        {
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var e = entries[i];
+                if (e?.obj == null) { fail++; continue; }
+                if (entries.Count > 1 && EditorUtility.DisplayCancelableProgressBar(
+                        "Import from Archives",
+                        $"Importing {e.name} ({i + 1}/{entries.Count})…",
+                        (i + 1) / (float)entries.Count))
+                    break;
+                var imported = VanillaDatabaseMount.OverrideVanillaElement(e.obj);
+                if (imported != null) { ok++; last = imported; }
+                else fail++;
+            }
+        }
+        finally { EditorUtility.ClearProgressBar(); }
+
+        Refresh(true);
+        if (last != null)
+        {
+            var entry = FindEntry(last);
+            if (entry != null) SelectOnly(entry, -1);
+            else SelectOnly(new Entry { obj = last, name = last.name, scope = "Mod" }, -1);
+        }
+        if (fail > 0)
+            Debug.LogWarning($"[DatabaseBrowser] Import finished: {ok} ok, {fail} failed.");
+        else if (ok > 1)
+            Debug.Log($"[DatabaseBrowser] Imported {ok} element(s) from archives.");
+    }
+
+    static bool CanDeleteModEntry(Entry e)
+    {
+        if (e?.obj == null || e.scope != "Mod") return false;
+        string path = AssetDatabase.GetAssetPath(e.obj);
+        return !string.IsNullOrEmpty(path) && path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Deletes My Mod project asset(s). Collection rows are usually sub-assets inside a
+    // DatatableElementCollection .asset — remove that object only. If the row is the main
+    // asset, delete the whole file (and warn when siblings would go with it).
+    void DeleteModEntries(List<Entry> entries)
+    {
+        var deletable = entries?.Where(CanDeleteModEntry).ToList();
+        if (deletable == null || deletable.Count == 0)
+        {
+            EditorUtility.DisplayDialog("Database Browser",
+                "None of the selected items are under Assets/ and can be deleted from here.", "OK");
+            return;
+        }
+
+        string msg = deletable.Count == 1
+            ? BuildDeleteConfirmMessage(deletable[0])
+            : $"Delete {deletable.Count} selected project assets?\n\n"
+              + string.Join("\n", deletable.Take(12).Select(e => "• " + e.name))
+              + (deletable.Count > 12 ? $"\n… and {deletable.Count - 12} more" : "");
+        if (!EditorUtility.DisplayDialog("Delete", msg, "Delete", "Cancel")) return;
+
+        bool clearedPrimary = false;
+        try
+        {
+            for (int i = 0; i < deletable.Count; i++)
+            {
+                var e = deletable[i];
+                if (deletable.Count > 1 && EditorUtility.DisplayCancelableProgressBar(
+                        "Delete", $"Deleting {e.name} ({i + 1}/{deletable.Count})…",
+                        (i + 1) / (float)deletable.Count))
+                    break;
+
+                string path = AssetDatabase.GetAssetPath(e.obj);
+                var main = AssetDatabase.LoadMainAssetAtPath(path);
+                bool isMain = main == e.obj;
+                if (_selectedSet.Contains(e.obj)) _selectedSet.Remove(e.obj);
+                if (_selected == e.obj) clearedPrimary = true;
+
+                if (isMain)
+                {
+                    if (!AssetDatabase.DeleteAsset(path))
+                        Debug.LogError($"[DatabaseBrowser] Failed to delete: {path}");
+                }
+                else
+                {
+                    AssetDatabase.RemoveObjectFromAsset(e.obj);
+                    DestroyImmediate(e.obj, true);
+                }
+            }
+            AssetDatabase.SaveAssets();
+        }
+        finally { EditorUtility.ClearProgressBar(); }
+
+        if (clearedPrimary || _selected == null || !_selectedSet.Contains(_selected))
+        {
+            _selected = _selectedSet.Count > 0 ? _selectedSet.First() : null;
+            if (_editor != null) { DestroyImmediate(_editor); _editor = null; }
+            if (_mode == ViewMode.ListOnly)
+                Selection.objects = _selectedSet.Count > 0 ? _selectedSet.ToArray() : Array.Empty<UnityEngine.Object>();
+        }
+        Refresh(true);
+    }
+
+    static string BuildDeleteConfirmMessage(Entry e)
+    {
+        string path = AssetDatabase.GetAssetPath(e.obj);
+        var main = AssetDatabase.LoadMainAssetAtPath(path);
+        bool isMain = main == e.obj;
+        var siblings = AssetDatabase.LoadAllAssetsAtPath(path);
+        int otherCount = siblings == null ? 0 : siblings.Count(o => o != null && o != e.obj);
+        return isMain && otherCount > 0
+            ? $"Delete '{e.name}' and {otherCount} other object(s) in:\n{path}?"
+            : $"Delete '{e.name}'?\n{path}";
+    }
+
+    Entry FindEntry(UnityEngine.Object obj)
+    {
+        if (obj == null) return null;
+        return _all.FirstOrDefault(e => e.obj == obj);
+    }
+
+    void SelectClick(Entry e, int displayIndex)
+    {
+        if (e?.obj == null) return;
+        bool ctrl = Event.current.control || Event.current.command;
+        bool shift = Event.current.shift;
+
+        if (shift && _anchorDisplayIndex >= 0 && _anchorDisplayIndex < _display.Count)
+        {
+            _selectedSet.Clear();
+            int a = Mathf.Min(_anchorDisplayIndex, displayIndex);
+            int b = Mathf.Max(_anchorDisplayIndex, displayIndex);
+            for (int i = a; i <= b; i++)
+            {
+                if (_display[i].isHeader || _display[i].entry?.obj == null) continue;
+                _selectedSet.Add(_display[i].entry.obj);
+            }
+            SetPrimary(e.obj);
+        }
+        else if (ctrl)
+        {
+            if (_selectedSet.Contains(e.obj))
+            {
+                _selectedSet.Remove(e.obj);
+                SetPrimary(_selectedSet.Count > 0 ? (_selectedSet.Contains(_selected) ? _selected : _selectedSet.First()) : null);
+            }
+            else
+            {
+                _selectedSet.Add(e.obj);
+                SetPrimary(e.obj);
+            }
+            _anchorDisplayIndex = displayIndex;
+        }
+        else
+        {
+            SelectOnly(e, displayIndex);
+            return;
+        }
+        SyncUnitySelection();
+        Repaint();
+    }
+
+    void SelectOnly(Entry e, int displayIndex)
+    {
+        _selectedSet.Clear();
+        if (e?.obj != null) _selectedSet.Add(e.obj);
+        SetPrimary(e?.obj);
+        if (displayIndex >= 0) _anchorDisplayIndex = displayIndex;
+        SyncUnitySelection();
+        Repaint();
+    }
+
+    void SetPrimary(UnityEngine.Object obj)
     {
         bool changed = _selected != obj;
         _selected = obj;
-        if (_mode == ViewMode.ListOnly)
-        {
-            // Drive the user's docked Inspector; re-ping even on repeat click
-            Selection.activeObject = obj;
-            EditorGUIUtility.PingObject(obj);
-        }
-        else if (changed)
+        if (_mode == ViewMode.Window && changed)
         {
             if (_editor != null) { DestroyImmediate(_editor); _editor = null; }
             _inspScroll = Vector2.zero;
         }
-        Repaint();
+    }
+
+    void SyncUnitySelection()
+    {
+        if (_mode != ViewMode.ListOnly) return;
+        if (_selectedSet.Count == 0)
+        {
+            Selection.activeObject = null;
+            return;
+        }
+        Selection.objects = _selectedSet.ToArray();
+        if (_selected != null) EditorGUIUtility.PingObject(_selected);
     }
 
     // ── Splitter ──────────────────────────────────────────────────────────────
@@ -469,7 +829,8 @@ public class DatabaseBrowser : EditorWindow
         }
 
         EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-        GUILayout.Label(_selected.name, EditorStyles.boldLabel);
+        string title = _selectedSet.Count > 1 ? $"{_selected.name}  (+{_selectedSet.Count - 1} more)" : _selected.name;
+        GUILayout.Label(title, EditorStyles.boldLabel);
         GUILayout.FlexibleSpace();
         if (GUILayout.Button("Ping", EditorStyles.toolbarButton, GUILayout.Width(50)))
         { EditorGUIUtility.PingObject(_selected); Selection.activeObject = _selected; }

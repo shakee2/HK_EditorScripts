@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using HK.ModTools.Shared;
 using UnityEditor;
 using UnityEditor.IMGUI.Controls;
 using UnityEngine;
@@ -400,6 +401,13 @@ namespace HK.CompatPatcher
         // ---- GUI ----------------------------------------------------------
         void OnGUI()
         {
+            if (WindowMinimize.DrawMinimizedChrome(this, typeof(CompatCompareWindow))) return;
+
+            EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+            GUILayout.FlexibleSpace();
+            WindowMinimize.DrawToolbarButton(this, typeof(CompatCompareWindow));
+            EditorGUILayout.EndHorizontal();
+
             DrawSources();
             EditorGUILayout.Space(4);
             DrawSidecarAndActions();

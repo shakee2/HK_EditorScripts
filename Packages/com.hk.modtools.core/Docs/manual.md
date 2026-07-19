@@ -44,6 +44,12 @@ Mounts the Mod Editor **archive translations** bundle and builds a `%key → tex
 
 **Limits:** If the translations provider is stale after a domain reload, labels may fall back to raw keys until the Mod Editor Localization window remounts the bundle. Project override lookup is skipped when the archive bundle is not mounted (avoids poisoning Amplitude's global cache).
 
+### WindowMinimize
+
+**No menu** — toolbar **Min** on Tech Tree, Database Browser (**Window** mode), and Descriptor Property Browser (Compat Patcher uses the same helper outside this export).
+
+Floating windows shrink to a restore strip parked in the main editor's lower-right; additional minimized tools stack horizontally leftward. Docked windows hide the control. Domain reload clears minimize state.
+
 ---
 
 ## Windows
@@ -52,26 +58,32 @@ Mounts the Mod Editor **archive translations** bundle and builds a `%key → tex
 
 **Menu:** `Tools → shakee's Tools → Database Browser`
 
-Searchable list of database elements (project + mounted vanilla). Click a row to inspect it in Unity's inspector. Filter by type, scope (My Mod / Vanilla), and optional **issue** filter (warnings / hard stops on **your mod's** project assets only).
+Searchable list of database elements (project + mounted vanilla). Click a row to inspect it in Unity's inspector. Filter by type, scope (My Mod / Vanilla / **Dupes !**), and optional **issue** filter (warnings / hard stops on **your mod's** project assets only).
 
-**Handling:** **Content only** hides build/plugin ScriptableObjects, leaving just database content. A ⚠ / 🛑 dot on a row means it has issues — select it and check the inspector header's Diagnostics panel for details.
+**Handling:** **Content only** hides build/plugin ScriptableObjects, leaving just database content. A ⚠ / 🛑 dot on a row means it has issues — select it and check the inspector header's Diagnostics panel for details. My Mod content rows that share the same `(type, name)` with another project object are prefixed with **`!`** (load-order collision); the **Dupes !** scope filter shows only those.
 
-**Import:** Right-click a **Vanilla** row → **Import (Override from Archives)**. Copies that element into your project under the matching `Assets/Databases/…` collection (get-or-create), then selects the new asset. At mod load, your copy wins by element **name** — same override pattern as Tech Tree copy-on-write and the Mod Editor's archives override.
+**Import:** Right-click a **Vanilla** row → **Import (Override from Archives)**. Copies that element into your project under the matching `Assets/Databases/…` collection (get-or-create), then selects the new asset. At mod load, your copy wins by element **name** — same override pattern as Tech Tree copy-on-write and the Mod Editor's archives override. With a multi-selection of vanilla rows, the menu becomes **Import N Selected** and imports each (cancelable progress bar).
+
+**Delete:** Right-click a **My Mod** row → **Delete**. Confirms, then removes that project asset (sub-asset only when it lives inside a collection file; whole `.asset` when it is the main object). Assets outside `Assets/` are refused. Multi-selection uses **Delete N Selected** the same way.
 
 **Inputs:**
 
 | Input | Action |
 |-------|--------|
-| **Left-click** row | Select element. **List Only** mode pings and drives the docked Inspector; **Window** mode shows an embedded inspector on the right. |
-| **Right-click** Vanilla row | **Import (Override from Archives)**. |
-| **Click** type group header | Expand/collapse when **Group** is on. |
+| **Left-click** row | Select that element (clears multi-select). **List Only** mode drives the docked Inspector; **Window** mode shows an embedded inspector on the right. |
+| **Ctrl/Cmd+click** row | Toggle that row in the multi-selection. |
+| **Shift+click** row | Select the range from the anchor row to this one. |
+| **Right-click** Vanilla row(s) | **Import** (or **Import N Selected**) from archives. |
+| **Right-click** My Mod row(s) | **Delete** (or **Delete N Selected**) under `Assets/`. |
+| **Click** type group header | Expand/collapse when **Group** is Type or Folder. |
+| **Group** popup | **None** (flat list), **Type**, or **Folder** (directory of the project asset / vanilla collection path). |
 | **Drag** vertical splitter | Resize list vs inspector (**Window** mode only). |
 | **Scroll wheel** | Scroll the list. |
 | **Search** field | Live name filter; **x** clears. |
 
 No window-specific keyboard shortcuts.
 
-**Limits:** Vanilla rows are not analyzed for issues. Import is only on vanilla rows (mod/project assets are already editable). Very large projects may take a moment on first scan.
+**Limits:** Vanilla rows are not analyzed for issues. Import is only on vanilla rows; Delete is only on My Mod rows under `Assets/`. Right-clicking a row outside the current selection replaces the selection with that row first. Very large projects may take a moment on first scan.
 
 ### Descriptor Property Browser
 

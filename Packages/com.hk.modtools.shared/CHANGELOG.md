@@ -9,6 +9,9 @@ Versions match namespaced git tags: `shared/<semver>`.
 
 ## [Unreleased]
 
+### Added
+- `WindowMinimize` — fake minimize for floating tool windows (lower-right strip stack; paired siblings share one slot). Stack state persists across domain reload via SessionState; orphaned strip-locked windows are rescued if session is missing.
+
 ## [1.1.0] - 2026-07-18
 
 ### Added

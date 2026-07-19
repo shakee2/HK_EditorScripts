@@ -9,6 +9,7 @@ using UnityEngine;
 /// (cs + meta), not the unrelated tools (Debug/, ModTools/ModBuildWindow.cs, ModTools/AssetExplorer.cs):
 ///   - com.hk.modtools.shared: VanillaDatabaseMount.cs (shared vanilla-bundle mount — foundation for the other four)
 ///   - com.hk.modtools.shared: ArchiveTranslations.cs  (translations-bundle mount + project-override read/write)
+///   - com.hk.modtools.shared: WindowMinimize.cs       (floating-window minimize strip + lower-right stack)
 ///   - com.hk.modtools.core: ModTools/TechTreeData.cs            (tech-tree data layer)
 ///   - com.hk.modtools.core: ModTools/TechTreeWindow.cs          (tech-tree viewer/editor window)
 ///   - com.hk.modtools.core: ModTools/DatabaseBrowser.cs         (generic database browser window)
@@ -32,6 +33,7 @@ public static class ExportModEditorScriptsPackage
     {
         "VanillaDatabaseMount.cs",
         "ArchiveTranslations.cs",
+        "WindowMinimize.cs",
     };
 
     static readonly string[] CORE_SCRIPT_NAMES =

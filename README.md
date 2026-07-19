@@ -14,7 +14,7 @@ As of v1.1.0 this repo is a **multi-package monorepo**: instead of one big packa
 
 | Package | Contents | Depends on | Status |
 |---|---|---|---|
-| [`com.hk.modtools.shared`](Packages/com.hk.modtools.shared) | Vanilla database bundle mount, Mod Editor translations mount, the cross-package Update Checker, the Tools Options window | — | Released |
+| [`com.hk.modtools.shared`](Packages/com.hk.modtools.shared) | Vanilla database bundle mount, Mod Editor translations mount, floating-window minimize helper, the cross-package Update Checker, the Tools Options window | — | Released |
 | [`com.hk.modtools.core`](Packages/com.hk.modtools.core) | Database Browser, Descriptor Property Browser, Tech Tree viewer/editor, Asset Explorer, Build/Deploy window, inspector upgrades (inline localization, tooltip preview, formula autocomplete, diagnostics), debug probes | `shared` | Released |
 | [`com.hk.modtools.compatpatcher`](Packages/com.hk.modtools.compatpatcher) | Compatibility Patcher | `shared` | Experimental — not yet tagged |
 | [`com.hk.modtools.unitvisuals`](Packages/com.hk.modtools.unitvisuals) | Custom unit visual pipeline wizard | `shared` | Experimental — not yet tagged |
@@ -59,7 +59,7 @@ If your project still points at `https://github.com/shakee2/HK_EditorScripts.git
 
 ```
 Packages/
-  com.hk.modtools.shared/         VanillaDatabaseMount.cs, ArchiveTranslations.cs, UpdateChecker.cs, ToolsOptionsWindow.cs
+  com.hk.modtools.shared/         VanillaDatabaseMount.cs, ArchiveTranslations.cs, WindowMinimize.cs, UpdateChecker.cs, ToolsOptionsWindow.cs
   com.hk.modtools.core/           ModTools/, Upgrades/, Debug/, ExportModEditorScriptsPackage.cs, Docs/manual.md
   com.hk.modtools.compatpatcher/  CompatPatcher/, Docs/CompatPatcher*.md
   com.hk.modtools.unitvisuals/    UnitVisualWorkflow/
@@ -111,12 +111,13 @@ Within each package's `Editor/` folder, files stay grouped by role in subfolders
 
 #### Export package (`ModEditorScripts.unitypackage`)
 
-`ExportModEditorScriptsPackage.cs` ships **thirteen** `.cs` files (2 from `com.hk.modtools.shared`, 11 from `com.hk.modtools.core`), **`Docs/manual.md`** (user manual), and their `.meta` GUIDs. Everything else stays package-local and is **not** in the `.unitypackage`:
+`ExportModEditorScriptsPackage.cs` ships **fourteen** `.cs` files (3 from `com.hk.modtools.shared`, 11 from `com.hk.modtools.core`), **`Docs/manual.md`** (user manual), and their `.meta` GUIDs. Everything else stays package-local and is **not** in the `.unitypackage`:
 
 | `.cs` file | Package | Tool / role |
 |------------|---------|-------------|
 | `VanillaDatabaseMount.cs` | `shared` | Shared vanilla-database bundle mount (foundation for the browsers below) |
 | `ArchiveTranslations.cs` | `shared` | Mod Editor translations bundle mount + project override read/write |
+| `WindowMinimize.cs` | `shared` | Floating-window minimize (lower-right strip stack) |
 | `ModTools/TechTreeData.cs` | `core` | Tech tree data layer |
 | `ModTools/TechTreeWindow.cs` | `core` | Tech tree viewer/editor window |
 | `ModTools/DatabaseBrowser.cs` | `core` | Database Browser window |
@@ -162,8 +163,9 @@ The translations bundle (`Assets/Editor/Resources/Translations/…`) ships with 
 
 ## Update Checker + Options Window
 
-`com.hk.modtools.shared` ships two pieces of cross-package infrastructure:
+`com.hk.modtools.shared` ships cross-package infrastructure:
 
+- **`WindowMinimize.cs`** — fake minimize for floating tool windows (Tech Tree, Database Browser in Window mode, Descriptor Property Browser, Compat Patcher + Compare as one paired slot). Parks a restore strip in the main editor's lower-right and stacks additional strips horizontally leftward.
 - **`UpdateChecker.cs`** — discovers the Options catalog from namespaced git tags (`<shortname>/<semver>` — tagged packages only; experimentals stay invisible until tagged), fetches release tags, and drives `Client.Add` / `Client.Remove`. Available updates appear on the package cards — no "update available" dialog.
   - **Check All** (Options) / **Check For Updates** (menu) / opening Options / background auto-check: fetch the repo tag list once and refresh the cards in place.
   - **Update** / **Update All**: `Client.Add("<repo>.git?path=Packages/<full-package-name>#<shortname>/<version>")`. Display name / description / author / dependencies are read from each package's own `package.json` — `PackageInfo` when installed, or the manifest fetched at the target's latest tag when not. Deps that are missing (except Shared bootstrap — add Shared via Package Manager first) or below the declared minimum are bumped first; resumes across domain reload.

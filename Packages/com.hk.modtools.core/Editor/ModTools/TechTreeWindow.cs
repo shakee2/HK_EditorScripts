@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using HK.ModTools.Shared;
 using UnityEditor;
 using UnityEditor.IMGUI.Controls;
 using UnityEngine;
@@ -177,6 +178,7 @@ public class TechTreeWindow : EditorWindow
 
     void OnGUI()
     {
+        if (WindowMinimize.DrawMinimizedChrome(this)) return;
         if (Event.current.type == EventType.MouseMove) Repaint();
 
         // ── Toolbar ──
@@ -213,6 +215,7 @@ public class TechTreeWindow : EditorWindow
         string newPath = EditorGUILayout.TextField(_modPath, GUILayout.Width(200));
         if (newPath != _modPath) { _modPath = newPath; EditorPrefs.SetString(ModPathKey, _modPath); }
         if (GUILayout.Button("Apply", EditorStyles.toolbarButton, GUILayout.Width(50))) Reload(keepView: true);
+        WindowMinimize.DrawToolbarButton(this);
         EditorGUILayout.EndHorizontal();
 
         if (!vanillaMounted)
