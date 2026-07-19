@@ -54,6 +54,8 @@ namespace HK.CompatPatcher
             public string header;
             public readonly List<Panel> panels = new List<Panel>();
             public Vector2 scroll;
+            /// <summary>Viewport from last Repaint — used to route ScrollWheel by hover.</summary>
+            public Rect scrollRect;
             public HkMod mod;       // non-null for source columns; null for the Patch column
             public HkElement el;    // the primary element this column represents (used by the Import button)
         }
@@ -82,11 +84,15 @@ namespace HK.CompatPatcher
         string _search = "";
         Vector2 _listScroll;
         Vector2 _diffScroll;
+        // Last-Repaint viewports for hover scroll routing (Unity mis-routes sibling ScrollViews).
+        Rect _listScrollRect;
+        Rect _diffScrollRect;
         List<Diff> _displayDiffs;
         string _displayDiffWinner;
         bool _displayDiffOdin;
         bool _showWinnerOnly; // ExtraInWinner — noise when Patch imported the load-order winner
         bool _showResolvedDiffs; // carried per-diff Resolve rows
+        UnlockCarrierIndex _unlockIndex;
         readonly List<Column> _cols = new List<Column>();
         // Session repository: source + Patch objects/Editors kept until the window closes.
         // Mid-session ImportAsset/DeleteAsset/SaveAssets bumps Amplitude DatatableElementCache.CacheRevisionIndex
@@ -119,7 +125,8 @@ namespace HK.CompatPatcher
         static readonly Color HEADER_BG = new Color(0f, 0f, 0f, 0.18f);
         static readonly Color ROW_LINE = new Color(0f, 0f, 0f, 0.12f);
 
-        public static void Show(List<CompareItem> items, int index, Action<CompareItem> onResolveAsWinner = null)
+        public static void Show(List<CompareItem> items, int index, Action<CompareItem> onResolveAsWinner = null,
+            UnlockCarrierIndex unlockIndex = null)
         {
             var w = GetWindow<CompatCompareWindow>(typeof(CompatPatcherWindow));
             w.titleContent = new GUIContent("Compare elements");
@@ -127,6 +134,7 @@ namespace HK.CompatPatcher
             // Amplitude's DatatableElementCache for the rest of the session.
             w._items = items ?? new List<CompareItem>();
             w._onResolveAsWinner = onResolveAsWinner;
+            w._unlockIndex = unlockIndex ?? BuildUnlockIndexFromItems(w._items);
             w._typeFilter = EditorPrefs.GetString(PrefTypeFilter, "");
             w._groupByType = EditorPrefs.GetBool(PrefGroupByType, false);
             w._showWinnerOnly = EditorPrefs.GetBool(PrefShowWinnerOnly, false);
@@ -135,6 +143,22 @@ namespace HK.CompatPatcher
             w.RebuildView();
             w.SelectItem(Mathf.Clamp(index, 0, w._items.Count - 1));
             w.Show();
+        }
+
+        static UnlockCarrierIndex BuildUnlockIndexFromItems(List<CompareItem> items)
+        {
+            var mods = new List<HkMod>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var item in items ?? Enumerable.Empty<CompareItem>())
+            {
+                if (item?.versions == null) continue;
+                foreach (var (mod, modObj, _) in item.versions)
+                {
+                    if (modObj == null || string.IsNullOrEmpty(modObj.Name) || !seen.Add(modObj.Name)) continue;
+                    mods.Add(modObj);
+                }
+            }
+            return UnlockCarrierIndex.Build(mods);
         }
 
         void SelectItem(int i)
@@ -334,6 +358,10 @@ namespace HK.CompatPatcher
         {
             if (WindowMinimize.DrawMinimizedChrome(this, typeof(CompatPatcherWindow))) return;
 
+            // Must run before any BeginScrollView: Unity otherwise sends the wheel to the
+            // rightmost / last-focused sibling (diff list + left/middle columns look dead).
+            HandleHoverScroll();
+
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
             GUILayout.FlexibleSpace();
             WindowMinimize.DrawToolbarButton(this, typeof(CompatPatcherWindow));
@@ -344,6 +372,44 @@ namespace HK.CompatPatcher
             DrawSplitter();
             DrawColumns();
             EditorGUILayout.EndHorizontal();
+        }
+
+        /// <summary>
+        /// Route ScrollWheel to the pane under the mouse. Consumes the event so nested /
+        /// sibling <c>BeginScrollView</c> auto-handlers cannot steal it (esp. after Resolve
+        /// focuses a control in the right column).
+        /// </summary>
+        void HandleHoverScroll()
+        {
+            var e = Event.current;
+            if (e.type != EventType.ScrollWheel) return;
+            Vector2 m = e.mousePosition;
+            float dy = e.delta.y * 20f;
+
+            if (_diffScrollRect.width > 0f && _diffScrollRect.Contains(m))
+            {
+                _diffScroll.y += dy;
+                e.Use();
+                Repaint();
+                return;
+            }
+            for (int i = 0; i < _cols.Count; i++)
+            {
+                Rect r = _cols[i].scrollRect;
+                if (r.width <= 0f || !r.Contains(m)) continue;
+                var s = _cols[i].scroll;
+                s.y += dy;
+                _cols[i].scroll = s;
+                e.Use();
+                Repaint();
+                return;
+            }
+            if (_listScrollRect.width > 0f && _listScrollRect.Contains(m))
+            {
+                _listScroll.y += dy;
+                e.Use();
+                Repaint();
+            }
         }
 
         void DrawSplitter()
@@ -458,6 +524,8 @@ namespace HK.CompatPatcher
 
             Rect area = GUILayoutUtility.GetRect(10, _listWidth, 10, 100000,
                 GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
+            if (Event.current.type == EventType.Repaint)
+                _listScrollRect = area;
             Rect content = new Rect(0, 0, area.width - 16, _display.Count * LIST_ROW_H);
             _listScroll = GUI.BeginScrollView(area, _listScroll, content);
 
@@ -523,7 +591,7 @@ namespace HK.CompatPatcher
             if (_index < 0 || _index >= _items.Count) { EditorGUILayout.HelpBox("Select an element from the list.", MessageType.None); EditorGUILayout.EndVertical(); return; }
             var item = _items[_index];
             EnsurePanelStyles();
-            EditorGUILayout.LabelField($"{item.name}   ·   {ItemType(item)}", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField($"{FormatElementTitle(item.name)}   ·   {ItemType(item)}", EditorStyles.boldLabel);
             EditorGUILayout.LabelField(
                 "Source columns are read-only; Patch is editable and saved on close. "
                 + "Import brings only the primary element — not attached mappers.",
@@ -586,6 +654,8 @@ namespace HK.CompatPatcher
                     EditorGUILayout.EndVertical();
                 }
                 EditorGUILayout.EndScrollView();
+                if (Event.current.type == EventType.Repaint)
+                    c.scrollRect = GUILayoutUtility.GetLastRect();
                 EditorGUILayout.EndVertical();
             }
             EditorGUILayout.EndHorizontal();
@@ -606,9 +676,15 @@ namespace HK.CompatPatcher
         void DrawPanelHeader(Panel p)
         {
             EditorGUILayout.LabelField(p.typeName ?? "?", _panelTypeStyle);
-            string name = p.elementName ?? "?";
+            string name = FormatElementTitle(p.elementName);
             if (!p.editable) name += "  (read-only)";
             EditorGUILayout.LabelField(name, _panelNameStyle);
+        }
+
+        string FormatElementTitle(string elementName)
+        {
+            if (string.IsNullOrEmpty(elementName)) return elementName ?? "?";
+            return _unlockIndex != null ? _unlockIndex.FormatElementLabel(elementName) : elementName;
         }
 
         void DrawDiffSection(CompareItem item)
@@ -640,9 +716,36 @@ namespace HK.CompatPatcher
             DiffGui.DrawTable(_displayDiffs, _displayDiffWinner, _displayDiffOdin,
                 hideExtraInWinner: !_showWinnerOnly,
                 onResolveDiff: d => ResolveDiff(item, d),
-                hideResolved: !_showResolvedDiffs);
+                hideResolved: !_showResolvedDiffs,
+                unlockIndex: _unlockIndex,
+                currentElementName: item?.name,
+                winnerRefsOnElement: UnlockCarrierIndex.CollectClassifiableRefNamesFromElement(
+                    WinnerElementForCompare(item)));
             EditorGUILayout.EndScrollView();
+            if (Event.current.type == EventType.Repaint)
+                _diffScrollRect = GUILayoutUtility.GetLastRect();
             EditorGUILayout.Space(2);
+        }
+
+        HkElement WinnerElementForCompare(CompareItem item)
+        {
+            if (item == null) return null;
+            if (string.Equals(_displayDiffWinner, "Patch", StringComparison.Ordinal))
+            {
+                var patchEls = FindPatchHkElements(item.name);
+                if (patchEls.Count == 0) return null;
+                return patchEls.FirstOrDefault(e => e.TypeHint == item.typeHint
+                        || string.Equals(e.TypeHint, item.typeName, StringComparison.OrdinalIgnoreCase))
+                    ?? patchEls[0];
+            }
+            string w = _displayDiffWinner ?? item.winner;
+            if (item.versions == null) return null;
+            foreach (var (mod, modObj, el) in item.versions)
+            {
+                if (!string.Equals(mod, w, StringComparison.Ordinal)) continue;
+                return LiveHkElement(modObj, el) ?? el;
+            }
+            return null;
         }
 
         void ResolveDiff(CompareItem item, Diff d)
@@ -664,6 +767,7 @@ namespace HK.CompatPatcher
             });
             d.Status = "carried";
             d.Choice = _displayDiffWinner ?? item.winner;
+            GUI.FocusControl(null); // avoid Resolve focus sticking scroll to a column
             string assetPath = Sidecar.DefaultPath.Replace('\\', '/');
             if (assetPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
                 AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);

@@ -94,13 +94,13 @@ namespace HK.CompatPatcher
                     Elements = present.ToDictionary(p => p.mod.Name, p => p.el),
                 };
 
-                if (present.Count < 2)
-                {
-                    row.Status = ElemStatus.New; res.Stats.New++; res.Rows.Add(row); continue;
-                }
                 if (winner.el.IsRoot)
                 {
                     row.Status = ElemStatus.Root; res.Stats.Roots++; res.Rows.Add(row); continue;
+                }
+                if (present.Count < 2)
+                {
+                    row.Status = ElemStatus.New; res.Stats.New++; res.Rows.Add(row); continue;
                 }
 
                 var losers = new Dictionary<string, HkElement>();
@@ -166,7 +166,8 @@ namespace HK.CompatPatcher
                 {
                     string v = kv.Value.TryGetValue(p, out var x) ? x : UnityYaml.Missing;
                     vals[kv.Key] = v;
-                    if (v != wv) anyDiff = true;
+                    // "0" (YAML) and "0 = Tier1" (live) are the same leaf.
+                    if (!LeafValuesEqual(v, wv)) anyDiff = true;
                     if (v != UnityYaml.Missing) anyPresentNonWinner = true;
                 }
                 if (!anyDiff) continue;
@@ -184,6 +185,9 @@ namespace HK.CompatPatcher
             }
             return outp;
         }
+
+        static bool LeafValuesEqual(string a, string b) =>
+            a == b || (a != UnityYaml.Missing && b != UnityYaml.Missing && EnumFlatValue.Equal(a, b));
 
         static List<Diff> RefDiff(HkElement winner, Dictionary<string, HkElement> losers)
         {

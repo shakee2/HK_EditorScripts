@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Reflection;
 
 namespace HK.CompatPatcher
@@ -23,7 +24,7 @@ namespace HK.CompatPatcher
         static readonly HashSet<string> SkipFields = new HashSet<string>(StringComparer.Ordinal)
         {
             "SimulationEffectDescriptionOverride", "UIMapperOverride", "DlcPrerequisite",
-            "GainValues", "name",
+            "name",
         };
 
         /// <summary>
@@ -193,10 +194,21 @@ namespace HK.CompatPatcher
             var dict = new Dictionary<string, object> { ["Type"] = typeName };
             string targetId = null;
             var primaryRefs = new List<string>();
+            var gainTypeKeys = new List<string>();
 
-            foreach (var f in t.GetFields(All))
+            // Unlock identity is the constructible/resource list — harvest those first so EffectId
+            // is UnlockConstructible|Empire|LandUnit_… even when other fields are noisy.
+            foreach (var unlockField in new[] { "ConstructibleReferences", "ResourceReferences" })
+            {
+                if (!TryGetFieldValue(effect, unlockField, out var unlockVal) || unlockVal == null) continue;
+                TryWriteRefArray(dict, unlockField, unlockVal, refs, primaryRefs);
+            }
+
+            foreach (var f in EnumerateInstanceFields(t))
             {
                 if (f.IsStatic || SkipFields.Contains(f.Name)) continue;
+                if (f.Name == "ConstructibleReferences" || f.Name == "ResourceReferences")
+                    continue; // already harvested
                 object val;
                 try { val = f.GetValue(effect); } catch { continue; }
                 if (val == null) continue;
@@ -208,15 +220,90 @@ namespace HK.CompatPatcher
                     continue;
                 }
 
+                if (f.Name == "GainValues")
+                {
+                    var gains = BuildGainValuesList(val, gainTypeKeys);
+                    if (gains != null) dict["GainValues"] = gains;
+                    continue;
+                }
+
                 if (TryWriteRef(dict, f.Name, val, refs, primaryRefs)) continue;
                 if (TryWriteRefArray(dict, f.Name, val, refs, primaryRefs)) continue;
                 if (TryWriteScalar(dict, f.Name, val)) continue;
-                // Skip other nested objects (prerequisites, gains, …).
+                // Skip other nested objects (prerequisites, …).
             }
 
-            primaryRefs.Sort(StringComparer.Ordinal);
-            dict["EffectId"] = typeName + "|" + (targetId ?? "") + "|" + string.Join("+", primaryRefs);
+            // Stable unique names for EffectId (order-independent across mods).
+            var idRefs = primaryRefs.Distinct(StringComparer.Ordinal).ToList();
+            idRefs.Sort(StringComparer.Ordinal);
+            gainTypeKeys.Sort(StringComparer.Ordinal);
+            // EffectId = type|target|unlockList — the unlock list is what distinguishes multiple
+            // UnlockConstructible rows on one tech (Vital/Military alone is not unique).
+            string id = typeName + "|" + (targetId ?? "") + "|" + string.Join("+", idRefs);
+            // Named gains only when there are no unlock refs (e.g. GainResource with no constructible).
+            if (idRefs.Count == 0)
+            {
+                var namedGains = gainTypeKeys
+                    .Where(k => !int.TryParse(k, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+                    .ToList();
+                if (namedGains.Count > 0)
+                    id += "|" + string.Join("+", namedGains);
+            }
+            dict["EffectId"] = id;
             return dict;
+        }
+
+        static IEnumerable<FieldInfo> EnumerateInstanceFields(Type type)
+        {
+            for (var t = type; t != null && t != typeof(object); t = t.BaseType)
+            {
+                foreach (var f in t.GetFields(All | BindingFlags.DeclaredOnly))
+                {
+                    if (!f.IsStatic) yield return f;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Flatten each gain entry (Type / Importance / …). Collects Type names for EffectId
+        /// (bare enum ints become <c>4 = Food</c> via <see cref="EnumFlatValue"/>).
+        /// </summary>
+        static List<object> BuildGainValuesList(object raw, List<string> gainTypeKeys)
+        {
+            if (raw is not System.Collections.IEnumerable en || raw is string) return null;
+            var list = new List<object>();
+            foreach (var g in en)
+            {
+                if (g == null) continue;
+                var gd = new Dictionary<string, object>();
+                foreach (var gf in g.GetType().GetFields(All))
+                {
+                    if (gf.IsStatic || gf.Name == "name") continue;
+                    object gv;
+                    try { gv = gf.GetValue(g); } catch { continue; }
+                    if (gv == null) continue;
+                    if (gf.FieldType.IsEnum)
+                        gd[gf.Name] = EnumFlatValue.Format(gf.FieldType, gv);
+                    else if (!TryWriteScalar(gd, gf.Name, gv))
+                        continue;
+                    if (gf.Name == "Type" && gd.TryGetValue("Type", out var tv))
+                    {
+                        string key = GainTypeKey(tv?.ToString());
+                        if (!string.IsNullOrEmpty(key) && !gainTypeKeys.Contains(key))
+                            gainTypeKeys.Add(key);
+                    }
+                }
+                if (gd.Count > 0) list.Add(gd);
+            }
+            return list.Count > 0 ? list : null;
+        }
+
+        /// <summary>Prefer the name side of <c>4 = Food</c>; else the raw token.</summary>
+        static string GainTypeKey(string flat)
+        {
+            if (string.IsNullOrEmpty(flat)) return null;
+            if (EnumFlatValue.TryNamePart(flat, out string name)) return name;
+            return flat;
         }
 
         static bool TryWriteRef(Dictionary<string, object> dict, string field, object val,
@@ -256,6 +343,84 @@ namespace HK.CompatPatcher
             return true;
         }
 
+        /// <summary>Public entry for unlock indexing — non-empty datatable element name, or null.</summary>
+        public static string ResolveRefName(object val)
+        {
+            string n = GetRefName(val);
+            return string.IsNullOrEmpty(n) ? null : n;
+        }
+
+        /// <summary>
+        /// Returns the element name if <paramref name="val"/> is a DatatableElementReference-like
+        /// object; empty string if it is that type but unnamed; null if not a ref type.
+        /// </summary>
+        static string GetRefName(object val)
+        {
+            if (val == null) return null;
+            if (!LooksLikeDatatableElementReference(val)) return null;
+            var t = val.GetType();
+
+            // Prefer a non-empty serializableElementName. Odin/live hybrids often leave that field
+            // empty while XmlSerializableElementName / ElementName still carry the real id —
+            // returning "" early used to drop ConstructibleReferences from EffectId, so every
+            // UnlockConstructible collapsed to "UnlockConstructible · Empire".
+            for (var c = t; c != null; c = c.BaseType)
+            {
+                try
+                {
+                    var f = c.GetField("serializableElementName", All | BindingFlags.DeclaredOnly)
+                            ?? c.GetField("SerializableElementName", All | BindingFlags.DeclaredOnly);
+                    if (f != null && f.GetValue(val) is string s && s.Length > 0) return s;
+                }
+                catch { /* try next */ }
+            }
+
+            for (var c = t; c != null; c = c.BaseType)
+            {
+                foreach (var propName in new[]
+                         { "XmlSerializableElementName", "SerializableElementName", "ElementName" })
+                {
+                    try
+                    {
+                        var p = c.GetProperty(propName, All | BindingFlags.DeclaredOnly);
+                        if (p == null || !p.CanRead) continue;
+                        var pv = p.GetValue(val);
+                        if (pv is string ps && ps.Length > 0) return ps;
+                        if (pv != null)
+                        {
+                            string ts = pv.ToString();
+                            if (!string.IsNullOrEmpty(ts) && ts != pv.GetType().FullName
+                                && !ts.StartsWith("Amplitude.", StringComparison.Ordinal)
+                                && ts.IndexOf(' ') < 0) // reject "Amplitude.Mercury…" / verbose ToString
+                                return ts;
+                        }
+                    }
+                    catch { /* next */ }
+                }
+            }
+            return "";
+        }
+
+        static bool LooksLikeDatatableElementReference(object val)
+        {
+            if (val == null) return false;
+            var t = val.GetType();
+            if (t.Name == "DatatableElementReference"
+                || t.Name.StartsWith("DatatableElementReference", StringComparison.Ordinal))
+                return true;
+            // Walk bases — private serializableElementName may live on the open-generic definition.
+            for (var c = t; c != null; c = c.BaseType)
+            {
+                if (c.GetField("serializableElementName", All) != null
+                    || c.GetField("SerializableElementName", All) != null)
+                    return true;
+                if (c.GetProperty("XmlSerializableElementName", All) != null
+                    || c.GetProperty("ElementName", All) != null)
+                    return true;
+            }
+            return false;
+        }
+
         static bool TryWriteScalar(Dictionary<string, object> dict, string field, object val)
         {
             switch (val)
@@ -279,8 +444,7 @@ namespace HK.CompatPatcher
                 default:
                     if (val.GetType().IsEnum)
                     {
-                        // Underlying int so Flags enums match LiveElementBuilder (not ToString names).
-                        dict[field] = Convert.ToInt64(val).ToString(CultureInfo.InvariantCulture);
+                        dict[field] = EnumFlatValue.Format(val.GetType(), val);
                         return true;
                     }
                     return false;
@@ -304,53 +468,24 @@ namespace HK.CompatPatcher
             return n;
         }
 
-        /// <summary>
-        /// Returns the element name if <paramref name="val"/> is a DatatableElementReference-like
-        /// object; empty string if it is that type but unnamed; null if not a ref type.
-        /// </summary>
-        static string GetRefName(object val)
-        {
-            if (val == null) return null;
-            if (!LooksLikeDatatableElementReference(val)) return null;
-            var t = val.GetType();
-            var f = t.GetField("serializableElementName", All)
-                    ?? t.GetField("SerializableElementName", All);
-            if (f != null && f.GetValue(val) is string s) return s ?? "";
-            var p = t.GetProperty("XmlSerializableElementName", All)
-                    ?? t.GetProperty("SerializableElementName", All)
-                    ?? t.GetProperty("ElementName", All);
-            if (p != null)
-            {
-                var pv = p.GetValue(val);
-                if (pv is string ps) return ps ?? "";
-                // StaticString — ToString often yields the name
-                if (pv != null)
-                {
-                    string ts = pv.ToString();
-                    if (!string.IsNullOrEmpty(ts) && ts != pv.GetType().FullName) return ts;
-                }
-            }
-            return "";
-        }
-
-        static bool LooksLikeDatatableElementReference(object val)
-        {
-            if (val == null) return false;
-            var t = val.GetType();
-            if (t.Name == "DatatableElementReference" || t.Name.StartsWith("DatatableElementReference", StringComparison.Ordinal))
-                return true;
-            return t.GetField("serializableElementName", All) != null
-                   || t.GetField("SerializableElementName", All) != null;
-        }
-
         static bool TryGetFieldValue(object obj, string name, out object value)
         {
             value = null;
             if (obj == null) return false;
-            var f = obj.GetType().GetField(name, All);
+            var f = FindField(obj.GetType(), name);
             if (f == null) return false;
             try { value = f.GetValue(obj); } catch { return false; }
             return true;
+        }
+
+        static FieldInfo FindField(Type type, string name)
+        {
+            for (var t = type; t != null; t = t.BaseType)
+            {
+                var f = t.GetField(name, All | BindingFlags.DeclaredOnly);
+                if (f != null) return f;
+            }
+            return type?.GetField(name, All);
         }
 
         static void PutStringField(Dictionary<string, object> dict, object obj, string field)

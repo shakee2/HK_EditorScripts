@@ -2,8 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using Amplitude.Framework.Asset;
 using UnityEditor;
 using UnityEngine;
+// Amplitude.Framework.Asset.AssetDatabase vs UnityEditor.AssetDatabase — alias Amplitude (same
+// pattern as AssetExplorer / VanillaDatabaseMount); Unity's stays fully qualified below.
+using AssetDatabase = Amplitude.Framework.Asset.AssetDatabase;
 
 // Severity of a diagnostic finding. Ordered so Max() picks the worst.
 public enum DiagSeverity { None = 0, Warn = 1, Crash = 2 }
@@ -60,6 +64,7 @@ public static class InspectorDiagnostics
         s_generation++;
         s_cache.Clear();
         s_nameIndex.Clear();
+        s_nameIndexProviderStamp = int.MinValue;
         s_locDict = null;
         s_willDrawCache.Clear();
         InlineLocalizationEditor.InvalidateCaches();
@@ -261,7 +266,7 @@ public static class InspectorDiagnostics
                     var constr = FindByName(t_ConstrDef, name);
                     if (constr == null)
                     {
-                        sink.Add(new DiagFinding(DiagSeverity.Crash, $"Unlock event references constructible '{name}', which isn't in the project or mounted vanilla bundle — \"Constructible not found\" at load.", "DataController.cs:4713"));
+                        sink.Add(new DiagFinding(DiagSeverity.Crash, $"Unlock event references constructible '{name}', which isn't in the project or any mounted database bundle — \"Constructible not found\" at load.", "DataController.cs:4713"));
                         continue;
                     }
                     if (t_EmpireWide != null && t_EmpireWide.IsInstanceOfType(constr))
@@ -323,26 +328,98 @@ public static class InspectorDiagnostics
             }
     }
 
-    // ── Name index (project + mounted vanilla), cached per generation ─────────
+    // ── Name index (project + every mounted database bundle), cached per generation ─
+    // Amplitude resolves DatatableElementReferences against the merged table (project +
+    // MercuryDatabases + any other mounted mod bundles). Matching that set avoids false
+    // "Constructible not found" crashes when the field already resolves from a dependency mod.
     static readonly Dictionary<Type, Dictionary<string, UnityEngine.Object>> s_nameIndex = new();
+    static int s_nameIndexProviderStamp = int.MinValue;
+    const string VanillaProviderName = "mercurydatabases.assetbundle";
+    const string TranslationsProviderName = "mercury.modding.translations.assetbundle";
 
     static UnityEngine.Object FindByName(Type type, string name)
     {
         if (type == null || string.IsNullOrEmpty(name)) return null;
+        EnsureNameIndexFresh();
         if (!s_nameIndex.TryGetValue(type, out var map))
         {
             map = new Dictionary<string, UnityEngine.Object>();
-            foreach (var guid in AssetDatabase.FindAssets("t:ScriptableObject"))
+            foreach (var guid in UnityEditor.AssetDatabase.FindAssets("t:ScriptableObject"))
             {
-                var path = AssetDatabase.GUIDToAssetPath(guid);
-                foreach (var obj in AssetDatabase.LoadAllAssetsAtPath(path))
+                var path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+                foreach (var obj in UnityEditor.AssetDatabase.LoadAllAssetsAtPath(path))
                     if (obj != null && type.IsInstanceOfType(obj) && !map.ContainsKey(obj.name)) map[obj.name] = obj;
             }
             try { foreach (var obj in VanillaDatabaseMount.LoadAllOfType(type)) if (obj != null && !map.ContainsKey(obj.name)) map[obj.name] = obj; }
             catch { }
+            IndexOtherMountedProviders(type, map);
             s_nameIndex[type] = map;
         }
         return map.TryGetValue(name, out var found) ? found : null;
+    }
+
+    // Drop the name index when Amplitude's provider set changes (Compat Patcher / Mod Tools
+    // mount or unmount a mod mid-session) — InvalidateAll only covers undo / projectChanged.
+    static void EnsureNameIndexFresh()
+    {
+        int stamp = ProviderSetStamp();
+        if (stamp == s_nameIndexProviderStamp) return;
+        s_nameIndex.Clear();
+        s_nameIndexProviderStamp = stamp;
+    }
+
+    static int ProviderSetStamp()
+    {
+        try
+        {
+            int h = 0;
+            foreach (var p in AssetDatabase.AllProviders)
+            {
+                if (p == null) continue;
+                h = unchecked(h * 397 ^ (p.Name?.GetHashCode() ?? 0));
+            }
+            return h;
+        }
+        catch { return 0; }
+    }
+
+    // Project + VanillaDatabaseMount already cover disk assets and MercuryDatabases. Walk every
+    // other live Amplitude provider (dependency mods mounted by Compat Patcher / Mod Tools) so
+    // unlock-event constructible resolution matches what the inspector field already shows.
+    static void IndexOtherMountedProviders(Type type, Dictionary<string, UnityEngine.Object> map)
+    {
+        try
+        {
+            foreach (var provider in AssetDatabase.AllProviders)
+            {
+                if (provider == null) continue;
+                string pname = provider.Name ?? "";
+                if (pname.Equals(VanillaProviderName, StringComparison.OrdinalIgnoreCase)) continue;
+                if (pname.Equals(TranslationsProviderName, StringComparison.OrdinalIgnoreCase)) continue;
+
+                try
+                {
+                    var descriptors = new List<AssetDescriptor>();
+                    provider.AddAllAssetDescriptors(descriptors, AssetProviderOption.AskForType);
+                    foreach (var descriptor in descriptors)
+                    {
+                        var assetType = descriptor.GetAssetType();
+                        if (assetType != null && type.IsAssignableFrom(assetType))
+                        {
+                            var obj = provider.LoadAsset<UnityEngine.Object>(descriptor);
+                            if (obj != null && !map.ContainsKey(obj.name)) map[obj.name] = obj;
+                        }
+                        foreach (var sub in provider.FetchAllSubAssetsOfType(descriptor.Guid, type))
+                            if (sub != null && !map.ContainsKey(sub.name)) map[sub.name] = sub;
+                    }
+                }
+                catch
+                {
+                    // Stale / broken provider (null content after refresh) — skip, don't poison Analyze.
+                }
+            }
+        }
+        catch { }
     }
 
     // ══════════════════════════════════════════════════════════════════════════

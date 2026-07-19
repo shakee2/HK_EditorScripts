@@ -180,9 +180,8 @@ namespace HK.CompatPatcher
                     return prop.floatValue.ToString("0.###", CultureInfo.InvariantCulture);
                 case SerializedPropertyType.String: return prop.stringValue ?? "";
                 case SerializedPropertyType.Enum:
-                    // Flags enums (e.g. UnitDefinition.UnitTags / "Unit Type" buttons) store a bitmask.
-                    // enumValueIndex is only a single-name index and collapses combinations — use intValue.
-                    return prop.intValue.ToString(CultureInfo.InvariantCulture);
+                    // Ordinary enums: "0 = Tier1". Flags bitmasks stay bare ints (see EnumFlatValue).
+                    return EnumFlatValue.Format(prop);
                 case SerializedPropertyType.ObjectReference:
                     return prop.objectReferenceValue != null ? prop.objectReferenceValue.name : "";
                 case SerializedPropertyType.ArraySize:
@@ -253,20 +252,39 @@ namespace HK.CompatPatcher
             if (val == null) return "";
             var t = val.GetType();
             const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            try
+            for (var c = t; c != null; c = c.BaseType)
             {
-                var field = t.GetField("serializableElementName", flags)
-                            ?? t.GetField("SerializableElementName", flags);
-                if (field != null && field.GetValue(val) is string s && s.Length > 0) return s;
+                try
+                {
+                    var field = c.GetField("serializableElementName", flags | BindingFlags.DeclaredOnly)
+                                ?? c.GetField("SerializableElementName", flags | BindingFlags.DeclaredOnly);
+                    if (field != null && field.GetValue(val) is string s && s.Length > 0) return s;
+                }
+                catch { /* try property */ }
             }
-            catch { /* try property */ }
-            try
+            for (var c = t; c != null; c = c.BaseType)
             {
-                var prop = t.GetProperty("XmlSerializableElementName", flags)
-                           ?? t.GetProperty("SerializableElementName", flags);
-                if (prop != null && prop.GetValue(val) is string ps) return ps ?? "";
+                foreach (var propName in new[]
+                         { "XmlSerializableElementName", "SerializableElementName", "ElementName" })
+                {
+                    try
+                    {
+                        var prop = c.GetProperty(propName, flags | BindingFlags.DeclaredOnly);
+                        if (prop == null || !prop.CanRead) continue;
+                        var pv = prop.GetValue(val);
+                        if (pv is string ps && ps.Length > 0) return ps;
+                        if (pv != null)
+                        {
+                            string ts = pv.ToString();
+                            if (!string.IsNullOrEmpty(ts) && ts != pv.GetType().FullName
+                                && !ts.StartsWith("Amplitude.", StringComparison.Ordinal)
+                                && ts.IndexOf(' ') < 0)
+                                return ts;
+                        }
+                    }
+                    catch { /* next */ }
+                }
             }
-            catch { /* empty */ }
             return "";
         }
 

@@ -21,6 +21,10 @@ namespace HK.CompatPatcher
             "serializationData", "name", "hideFlags",
             "m_ObjectHideFlags", "m_CorrespondingSourceObject", "m_PrefabInstance", "m_PrefabAsset",
             "m_GameObject", "m_Enabled", "m_EditorHideFlags", "m_Script", "m_EditorClassIdentifier", "m_Name",
+            // Owned by SimulationEventEffectFlattener (EffectId keys + GainValues). Overwriting here
+            // dropped EffectId and left every effect keyed as TargetID=Empire — unreadable on techs.
+            "SimulationEventEffects", "Effects", "EffectByLevels", "RepeatingEffect",
+            "Choices", "Loots",
         };
 
         public static void MergeInto(object live, Dictionary<string, object> body, HashSet<string> refs)
@@ -59,7 +63,7 @@ namespace HK.CompatPatcher
                 return Convert.ToString(val, CultureInfo.InvariantCulture) ?? "";
 
             if (t.IsEnum)
-                return Convert.ToInt64(val).ToString(CultureInfo.InvariantCulture);
+                return EnumFlatValue.Format(t, val);
 
             // FixedPoint (and similar): prefer RawValue field, then Raw property.
             var rawF = t.GetField("RawValue", All);

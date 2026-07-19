@@ -277,18 +277,21 @@ namespace HK.CompatPatcher
                         prop.stringValue = value;
                         return true;
                     case SerializedPropertyType.Enum:
-                        // Prefer underlying int (flags masks + non-contiguous values). Fall back to name.
-                        if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int mask))
+                        // Prefer underlying int (flags masks, "0 = Tier1", bare ints). Fall back to name.
+                        if (EnumFlatValue.TryParseInt(value, out int mask))
                         {
                             prop.intValue = mask;
                             return true;
                         }
-                        for (int i = 0; i < prop.enumNames.Length; i++)
+                        if (EnumFlatValue.TryNamePart(value, out string enumName))
                         {
-                            if (prop.enumNames[i] == value)
+                            for (int i = 0; i < prop.enumNames.Length; i++)
                             {
-                                prop.enumValueIndex = i;
-                                return true;
+                                if (prop.enumNames[i] == enumName)
+                                {
+                                    prop.enumValueIndex = i;
+                                    return true;
+                                }
                             }
                         }
                         error = "enum value not found: " + value;
@@ -328,10 +331,12 @@ namespace HK.CompatPatcher
                 case SerializedPropertyType.String:
                     return (prop.stringValue ?? "") == expected;
                 case SerializedPropertyType.Enum:
-                    if (int.TryParse(expected, NumberStyles.Integer, CultureInfo.InvariantCulture, out int mask))
+                    if (EnumFlatValue.TryParseInt(expected, out int mask))
                         return prop.intValue == mask;
-                    return prop.enumValueIndex >= 0 && prop.enumValueIndex < prop.enumNames.Length
-                           && prop.enumNames[prop.enumValueIndex] == expected;
+                    if (EnumFlatValue.TryNamePart(expected, out string wantName))
+                        return prop.enumValueIndex >= 0 && prop.enumValueIndex < prop.enumNames.Length
+                               && prop.enumNames[prop.enumValueIndex] == wantName;
+                    return false;
                 case SerializedPropertyType.Character:
                     return prop.intValue.ToString(CultureInfo.InvariantCulture) == expected;
                 default:

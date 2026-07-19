@@ -48,6 +48,7 @@ namespace HK.CompatPatcher
 
         List<HkMod> _mods;
         AnalyzeResult _result;
+        UnlockCarrierIndex _unlockIndex;
         Dictionary<string, Sidecar.Decision> _prior = new Dictionary<string, Sidecar.Decision>();
         readonly Dictionary<string, string> _choice = new Dictionary<string, string>();     // elemKey -> chosen mod
         readonly Dictionary<string, string> _elemStatus = new Dictionary<string, string>(); // elemKey -> new|changed|resolved
@@ -797,7 +798,7 @@ namespace HK.CompatPatcher
                     "Could not open Compare for this orphan (no mod or Patch version found).", "OK");
                 return;
             }
-            CompatCompareWindow.Show(items, idx, OnCompareResolveAsWinner);
+            CompatCompareWindow.Show(items, idx, OnCompareResolveAsWinner, _unlockIndex);
         }
 
         CompatCompareWindow.CompareItem BuildCompareItemForOrphan(PatchOrphan o)
@@ -906,6 +907,8 @@ namespace HK.CompatPatcher
         {
             string nm = _nameFilter.Trim().ToLowerInvariant();
             _view = _result.Rows.Where(r =>
+                // Collection containers (blank Type column) — never gameplay elements.
+                !IsCollectionContainerRow(r) &&
                 (_status == StatusFilter.All ||
                  (_status == StatusFilter.Conflicts && r.Status == ElemStatus.Conflict) ||
                  (_status == StatusFilter.New && r.Status == ElemStatus.New) ||
@@ -915,6 +918,24 @@ namespace HK.CompatPatcher
                 (!_needsReviewOnly || NeedsReview(r)) &&
                 (!_hideWinnerOnly || !IsWinnerOnlyConflict(r))
             ).ToList();
+        }
+
+        /// <summary>
+        /// Datatable collection roots (file stem == element name) — FriendlyType is empty for these.
+        /// </summary>
+        static bool IsCollectionContainerRow(ElementRow r)
+        {
+            if (r == null) return true;
+            if (r.Status == ElemStatus.Root) return true;
+            if (!string.IsNullOrEmpty(r.TypeHint)
+                && string.Equals(r.Name, r.TypeHint, StringComparison.Ordinal))
+                return true;
+            if (r.Elements != null)
+            {
+                foreach (var el in r.Elements.Values)
+                    if (el != null && el.IsRoot) return true;
+            }
+            return false;
         }
 
         static bool IsWinnerOnlyConflict(ElementRow r)
@@ -1023,7 +1044,7 @@ namespace HK.CompatPatcher
             {
                 var row = _selected;
                 string key = ElemKey(row);
-                EditorGUILayout.LabelField($"{row.Name}   ·   {FriendlyType(row)}   ·   {string.Join("/", row.Contributors)}", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField($"{(_unlockIndex != null ? _unlockIndex.FormatElementLabel(row.Name) : row.Name)}   ·   {FriendlyType(row)}   ·   {string.Join("/", row.Contributors)}", EditorStyles.boldLabel);
 
                 if (row.Conflict == null)
                 {
@@ -1093,12 +1114,31 @@ namespace HK.CompatPatcher
                         onApplyPattern: (diff, srcMod) => ApplyMassChangeFromDiff(diff, srcMod),
                         countInPatchForPath: CountPatchMatchesForDiff,
                         onResolveDiff: ResolveDetailDiff,
-                        hideResolved: !_showResolvedDiffs);
+                        hideResolved: !_showResolvedDiffs,
+                        unlockIndex: _unlockIndex,
+                        currentElementName: row.Name,
+                        winnerRefsOnElement: UnlockCarrierIndex.CollectClassifiableRefNamesFromElement(
+                            WinnerElementForDetail(row)));
                 }
             }
 
             EditorGUILayout.EndScrollView();
             GUILayout.EndArea();
+        }
+
+        HkElement WinnerElementForDetail(ElementRow row)
+        {
+            if (row == null) return null;
+            string w = _detailDiffWinner ?? row.Winner;
+            if (string.Equals(w, "Patch", StringComparison.Ordinal))
+            {
+                var patchEls = FindPatchHkElements(row.Name);
+                if (patchEls.Count == 0) return null;
+                return patchEls.FirstOrDefault(e => e.TypeHint == row.TypeHint) ?? patchEls[0];
+            }
+            if (row.Elements != null && row.Elements.TryGetValue(w, out var el))
+                return el;
+            return null;
         }
 
         // One monotonically-increasing 0..1 bar across the whole Compare, so the user sees steady
@@ -1172,6 +1212,8 @@ namespace HK.CompatPatcher
                 ShowCompareProgress(0.75, 0.8, "Compat Patcher", 0, "Scanning patch directory…");
                 ScanPatch();
                 ComputePatchOrphans();
+                ShowCompareProgress(0.78, 0.82, "Compat Patcher", 0, "Building unlock carrier index…");
+                _unlockIndex = UnlockCarrierIndex.Build(_mods);
                 ShowCompareProgress(0.8, 1.0, "Compat Patcher", 0, "Validating load order (Vanilla → mods)…");
                 Validate((sub, label) => ShowCompareProgress(0.8, 1.0, "Compat Patcher", sub, label));
                 InvalidateDetailDiffs();
@@ -1260,7 +1302,7 @@ namespace HK.CompatPatcher
                 if (r == row) idx = items.Count;
                 items.Add(item);
             }
-            CompatCompareWindow.Show(items, idx, OnCompareResolveAsWinner);
+            CompatCompareWindow.Show(items, idx, OnCompareResolveAsWinner, _unlockIndex);
         }
 
         CompatCompareWindow.CompareItem BuildCompareItem(ElementRow r)
