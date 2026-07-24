@@ -15,7 +15,7 @@ As of v1.1.0 this repo is a **multi-package monorepo**: instead of one big packa
 | Package | Contents | Depends on | Status |
 |---|---|---|---|
 | [`com.hk.modtools.shared`](Packages/com.hk.modtools.shared) | Vanilla database bundle mount, Mod Editor translations mount, floating-window minimize helper, the cross-package Update Checker, the Tools Options window | — | Released |
-| [`com.hk.modtools.core`](Packages/com.hk.modtools.core) | Database Browser, Descriptor Property Browser, Tech Tree viewer/editor, Asset Explorer, Build/Deploy window, inspector upgrades (inline localization, tooltip preview, formula autocomplete, diagnostics), debug probes | `shared` | Released |
+| [`com.hk.modtools.core`](Packages/com.hk.modtools.core) | Database Browser, Descriptor Property Browser, Tech Tree viewer/editor, Unit Family Lines browser, Asset Explorer, Build/Deploy window, inspector upgrades (inline localization, tooltip preview, formula autocomplete, diagnostics), debug probes | `shared` | Released |
 | [`com.hk.modtools.compatpatcher`](Packages/com.hk.modtools.compatpatcher) | Compatibility Patcher | `shared` | Pre-release (`0.x`) when tagged |
 | [`com.hk.modtools.unitvisuals`](Packages/com.hk.modtools.unitvisuals) | Custom unit visual pipeline wizard | `shared` | Experimental — not yet tagged |
 | [`com.hk.modtools.orphanfinder`](Packages/com.hk.modtools.orphanfinder) | Orphan Resource Finder — find unreferenced images / 3D resources in a Resources folder and delete them to shrink the mod | `shared`¹ | Released |
@@ -81,6 +81,8 @@ Within each package's `Editor/` folder, files stay grouped by role in subfolders
 | **DescriptorPropertyIndex** | `Tools/shakee's Tools/Descriptor Property Browser` | Searchable index of Descriptor/DescriptorMapper rows with formula, scope, and duplicate detection |
 | **TechTreeWindow** | `Tools/shakee's Tools/Tech Tree Viewer` | Tech tree viewer/editor with drag-to-reposition, prerequisite editing, and copy-on-write save |
 | **TechTreeData** | `Tools/shakee's Tools/Debug/Tech Tree/Diagnose Mod Split`, `.../Dump Data` | Tech tree data layer backing the viewer; debug dumps for mod-split diagnosis and raw data inspection |
+| **UnitFamilyLinesWindow** | `Tools/shakee's Tools/Unit Family Lines` | Pan/zoom DAG of `UnitFamilyDefinition` upgrade lines; edit Next + unit family/level; Import/Export JSON (assignments + `next`, creates missing families) |
+| **UnitFamilyLinesData** | `Tools/shakee's Tools/Debug/Unit Family Lines/Dump Data` | Data + layout + EnsureWritable / JSON import for Unit Family Lines |
 | **DescriptorMapperPreview** | `Tools/shakee's Tools/Debug/Descriptor Mapper Preview/Clear Name Cache` | Live tooltip-breakdown preview for Descriptor/DescriptorMapper assets, drawn via `InspectorAnalysisPanel`. Also feeds `PropertyEffectDrawer`'s inline "Rendered" preview and `InspectorDiagnostics`' structural checks |
 | **DescriptorMapperGenerator** | — | Toolbar on Descriptor inspectors: generate or select a paired DescriptorMapper (UIMapper generation deferred — many definition-specific subclasses) |
 | **LocalizationKeyStringDrawer** | — | Inline translation editor below `%key` fields on UIMapper and DescriptorMapper assets (Odin drawer) |
@@ -120,6 +122,8 @@ Within each package's `Editor/` folder, files stay grouped by role in subfolders
 | `WindowMinimize.cs` | `shared` | Floating-window minimize (lower-right strip stack) |
 | `ModTools/TechTreeData.cs` | `core` | Tech tree data layer |
 | `ModTools/TechTreeWindow.cs` | `core` | Tech tree viewer/editor window |
+| `ModTools/UnitFamilyLinesData.cs` | `core` | Unit Family Lines data layer (not in export package) |
+| `ModTools/UnitFamilyLinesWindow.cs` | `core` | Unit Family Lines browser (not in export package) |
 | `ModTools/DatabaseBrowser.cs` | `core` | Database Browser window |
 | `ModTools/DescriptorPropertyIndex.cs` | `core` | Descriptor Property Browser window |
 | `Upgrades/DescriptorMapperPreview.cs` | `core` | Tooltip breakdown preview + `PropertyEffectDrawer` / diagnostics backend |
@@ -166,7 +170,7 @@ The translations bundle (`Assets/Editor/Resources/Translations/…`) ships with 
 
 `com.hk.modtools.shared` ships cross-package infrastructure:
 
-- **`WindowMinimize.cs`** — fake minimize for floating tool windows (Tech Tree, Database Browser in Window mode, Descriptor Property Browser, Compat Patcher + Compare as one paired slot). Parks a restore strip in the main editor's lower-right and stacks additional strips horizontally leftward.
+- **`WindowMinimize.cs`** — fake minimize for floating tool windows (Tech Tree, Unit Family Lines, Database Browser in Window mode, Descriptor Property Browser, Compat Patcher + Compare as one paired slot). Parks a restore strip in the main editor's lower-right and stacks additional strips horizontally leftward.
 - **`UpdateChecker.cs`** — discovers the Options catalog from namespaced git tags (`<shortname>/<semver>` — tagged packages only; experimentals stay invisible until tagged), fetches release tags, and drives `Client.Add` / `Client.Remove`. Available updates appear on the package cards — no "update available" dialog.
   - **Check All** (Options) / **Check For Updates** (menu) / opening Options / background auto-check: fetch the repo tag list once and refresh the cards in place.
   - **Update** / **Update All**: `Client.Add("<repo>.git?path=Packages/<full-package-name>#<shortname>/<version>")`. Display name / description / author / dependencies are read from each package's own `package.json` — `PackageInfo` when installed, or the manifest fetched at the target's latest tag when not. Deps that are missing (except Shared bootstrap — add Shared via Package Manager first) or below the declared minimum are bumped first; resumes across domain reload.

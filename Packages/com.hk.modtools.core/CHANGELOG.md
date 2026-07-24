@@ -9,6 +9,16 @@ Versions match namespaced git tags: `core/<semver>`.
 
 ## [Unreleased]
 
+### Added
+- **Unit Family Lines** window (`Tools/shakee's Tools/Unit Family Lines`) — pan/zoom DAG of
+  `UnitFamilyDefinition` upgrade lines (`SerializableNextFamilyName`), laid out top→bottom in
+  Land / Naval / Air domain bands with a wrapped "no upgrade path" singleton strip. Click a family
+  to list its `UnitDefinition`s and reassign each unit's family/level, retarget (or clear) the
+  family's Next link, and follow highlighted pre/after chains. Edits auto-import (lift)
+  vanilla/mounted elements into New Additions before writing. Import/Export JSON round-trips family
+  `next`/obsolete + unit family/level assignments and creates missing families on import. Debug
+  dump at `Tools/shakee's Tools/Debug/Unit Family Lines/Dump Data`.
+
 ## [1.0.3] - 2026-07-19
 
 ### Added

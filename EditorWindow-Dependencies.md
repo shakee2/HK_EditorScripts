@@ -8,7 +8,7 @@ As of v1.1.0, files are split across four independent UPM packages under `Packag
 
 - **`Packages/com.hk.modtools.shared/Editor/`** — foundation mounts nearly everything else depends on (`VanillaDatabaseMount.cs`, `ArchiveTranslations.cs`), floating-window minimize (`WindowMinimize.cs`), plus cross-package infra (`UpdateChecker.cs`, `ToolsOptionsWindow.cs`, `ChangelogPopupWindow.cs`). No dependencies of its own.
 - **`Packages/com.hk.modtools.core/Editor/`** — depends on `shared`. Subfolders by role:
-  - `ModTools/` — standalone browsing/editing windows (database browser, tech tree, asset explorer, build window).
+  - `ModTools/` — standalone browsing/editing windows (database browser, tech tree, unit family lines, asset explorer, build window).
   - `Upgrades/` — hooks that augment vanilla ModTools inspectors with new capabilities (inline localization, tooltip preview, diagnostics, etc.) rather than opening their own window.
   - `Debug/` — standalone diagnostic probes with `[MenuItem]` entries, no window.
   - `Editor/` (root) — general package infrastructure not scoped to one domain (`ExportModEditorScriptsPackage.cs`).
@@ -51,6 +51,7 @@ These windows have no dependencies on other `.cs` files beyond `com.hk.modtools.
 | **DatabaseBrowser** | `Tools/shakee's Tools/Database Browser` | `ModTools/DatabaseBrowser.cs` (`core`) | Uses `Upgrades/InspectorDiagnostics.cs` (`core`) for badge (which needs `shared: ArchiveTranslations.cs`, `Upgrades/DescriptorMapperPreview.cs`); `shared: WindowMinimize.cs` in Window mode |
 | **ModBuildWindow** | `Tools/shakee's Tools/Build And Deploy Mod` | `ModTools/ModBuildWindow.cs` (`core`) | Uses `shared: VanillaDatabaseMount.cs` for remount |
 | **AssetExplorer** | `Tools/shakee's Tools/Asset Explorer` | `ModTools/AssetExplorer.cs` (`core`) | Uses `shared: VanillaDatabaseMount.cs` for shared MercuryDatabases mount |
+| **UnitFamilyLinesWindow** | `Tools/shakee's Tools/Unit Family Lines` | `ModTools/UnitFamilyLinesWindow.cs` (`core`) | Uses `ModTools/UnitFamilyLinesData.cs`; `shared: VanillaDatabaseMount.cs`, `WindowMinimize.cs` — not in export package |
 | **BundleContentProbe** | `Tools/shakee's Tools/Debug/Inspect Built Mod Bundle` | `Debug/BundleContentProbe.cs` (`core`) | Standalone diagnostic tool |
 | **GuidLookup** | `Tools/shakee's Tools/Debug/Find GUID In Vanilla Bundles` | `Debug/GuidLookup.cs` (`core`) | Standalone diagnostic tool |
 
@@ -123,6 +124,19 @@ These windows have no dependencies on other `.cs` files beyond `com.hk.modtools.
 
 ---
 
+## UnitFamilyLinesWindow Dependencies (`com.hk.modtools.core`)
+
+**Primary:** `ModTools/UnitFamilyLinesWindow.cs`
+
+**Local `.cs` dependencies:**
+- `ModTools/UnitFamilyLinesData.cs` (menu dump + data/layout layer)
+- `com.hk.modtools.shared: VanillaDatabaseMount.cs` (vanilla bundle mount)
+- `com.hk.modtools.shared: WindowMinimize.cs` (floating minimize strip)
+
+**Note:** Not part of `ExportModEditorScriptsPackage` (same as Asset Explorer — package-local until asked).
+
+---
+
 ## DatabaseBrowser / DescriptorPropertyIndex (`com.hk.modtools.core`)
 
 Both use `com.hk.modtools.shared: WindowMinimize.cs` for floating-window minimize (Database Browser: **Window** mode only). Descriptor Property Index also uses `shared: VanillaDatabaseMount.cs` (see Inspector Hooks table below).
@@ -154,6 +168,7 @@ These are static methods with `[MenuItem]` entries, not `EditorWindow` subclasse
 | `Tools/shakee's Tools/Debug/Probes/*` | `Debug/FormulaProbe.cs`, `Debug/FormulaAutocompleteProbe.cs` (`core`) | Static classes with menu items |
 | `Tools/shakee's Tools/Debug/Tech Tree/Diagnose Mod Split` | `ModTools/TechTreeData.cs` (`core`) | Static menu item |
 | `Tools/shakee's Tools/Debug/Tech Tree/Dump Data` | `ModTools/TechTreeData.cs` (`core`) | Static menu item |
+| `Tools/shakee's Tools/Debug/Unit Family Lines/Dump Data` | `ModTools/UnitFamilyLinesData.cs` (`core`) | Static menu item |
 | `Tools/shakee's Tools/Debug/Tech Tree/Force Re-mount Vanilla Database` | `VanillaDatabaseMount.cs` (`shared`) | Static menu item |
 | `Tools/shakee's Tools/Debug/Tech Tree/Vanilla Mount` | `VanillaDatabaseMount.cs` (`shared`) | Static menu item |
 | `Tools/shakee's Tools/Debug/Find Bad NarrativeEventDefinition` | `Debug/NarrativeEventDiagnostic.cs` (`core`), `VanillaDatabaseMount.cs` (`shared`) | Static class with menu items |
