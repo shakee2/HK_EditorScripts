@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Versions match namespaced git tags: `core/<semver>`.
 
-## [Unreleased]
+## [1.1.0] - 2026-07-24
 
 ### Added
 - **Unit Family Lines** window (`Tools/shakee's Tools/Unit Family Lines`) — pan/zoom DAG of

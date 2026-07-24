@@ -38,7 +38,7 @@ As of v1.1.0 this repo is a **multi-package monorepo**: instead of one big packa
    ```
 4. After the domain reload, open **Tools → shakee's Tools → Options** and Install the tool package(s) you want from the list (or keep using Package Manager git URLs if you prefer):
    ```
-   https://github.com/shakee2/HK_EditorScripts.git?path=Packages/com.hk.modtools.core#core/1.0.3
+   https://github.com/shakee2/HK_EditorScripts.git?path=Packages/com.hk.modtools.core#core/1.1.0
    ```
    Always pin to a [tag](https://github.com/shakee2/HK_EditorScripts/tags), never a branch name. Each package versions independently (`<shortname>/<semver>`).
 

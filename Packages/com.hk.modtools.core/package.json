@@ -1,6 +1,6 @@
 {
   "name": "com.hk.modtools.core",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "displayName": "HK Mod Tools - Core",
   "description": "Database browsing/editing, tech tree viewer, asset explorer, build/export tooling, inspector upgrades (inline localization, tooltip preview, formula autocomplete, diagnostics), and debug probes for Humankind modding.",
   "unity": "2021.3",
