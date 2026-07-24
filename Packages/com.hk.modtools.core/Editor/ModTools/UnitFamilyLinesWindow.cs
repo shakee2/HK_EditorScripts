@@ -83,10 +83,10 @@ public class UnitFamilyLinesWindow : EditorWindow
 
     void OnProjectChanged() => Reload(keepView: true);
 
-    void Reload(bool keepView = false)
+    void Reload(bool keepView = false, bool forceReferenceRefresh = false)
     {
         string keep = _selected?.Name;
-        _graph = UnitFamilyLinesData.Build();
+        _graph = UnitFamilyLinesData.Build(forceReferenceRefresh);
         _selected = null;
         _highlight.Clear();
         if (!string.IsNullOrEmpty(keep) && _graph.ByName.TryGetValue(keep, out var n))
@@ -198,7 +198,7 @@ public class UnitFamilyLinesWindow : EditorWindow
     {
         EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
         if (GUILayout.Button("Reload", EditorStyles.toolbarButton, GUILayout.Width(60)))
-            Reload(keepView: true);
+            Reload(keepView: true, forceReferenceRefresh: true);
         if (GUILayout.Button("Fit", EditorStyles.toolbarButton, GUILayout.Width(40)))
             _framed = false;
 
@@ -228,7 +228,7 @@ public class UnitFamilyLinesWindow : EditorWindow
             VanillaDatabaseMount.Invalidate();
             if (!VanillaDatabaseMount.TryMount(out var err))
                 Debug.LogWarning($"[UnitFamilyLines] {err}");
-            Reload(keepView: true);
+            Reload(keepView: true, forceReferenceRefresh: true);
         }
 
         if (_graph != null)

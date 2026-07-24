@@ -90,7 +90,7 @@ public static class UnitFamilyLinesData
         public List<(UnitDomain Domain, float X0, float X1, float MinY, float MaxY)> DomainBands = new();
     }
 
-    public static Graph Build()
+    public static Graph Build(bool forceReferenceRefresh = false)
     {
         var graph = new Graph();
         var familyType = FindType("Amplitude.Mercury.Data.Simulation.UnitFamilyDefinition");
@@ -109,18 +109,23 @@ public static class UnitFamilyLinesData
         }
 
         VanillaDatabaseMount.TryMount(out _);
+        if (forceReferenceRefresh) InvalidateReferenceCache();
 
+        // Project assets (mod overrides / New Additions) change on every edit, so always rescan —
+        // but scope it to the databases folder and collect both families and units in one pass
+        // instead of the old whole-project FindAssets done once per type.
         var dbFam = new Dictionary<string, UnityEngine.Object>(StringComparer.OrdinalIgnoreCase);
-        foreach (var o in LoadProjectOfType(familyType))
-            if (o != null && !string.IsNullOrEmpty(o.name)) dbFam[o.name] = o;
+        var dbUnits = new Dictionary<string, UnityEngine.Object>(StringComparer.OrdinalIgnoreCase);
+        LoadProjectFamiliesAndUnits(familyType, unitType, dbFam, dbUnits);
 
-        var refFam = new Dictionary<string, UnityEngine.Object>(StringComparer.OrdinalIgnoreCase);
-        foreach (var o in VanillaDatabaseMount.LoadAllOfType(familyType))
-            if (o != null && !string.IsNullOrEmpty(o.name) && !refFam.ContainsKey(o.name))
-                refFam[o.name] = o;
-
-        var mountedFam = new Dictionary<string, UnityEngine.Object>(StringComparer.OrdinalIgnoreCase);
-        IndexOtherMountedProviders(familyType, mountedFam);
+        // Vanilla bundle + other mounted mod providers don't change while editing project assets,
+        // so this expensive enumeration is cached (keyed by the mounted provider set). This is what
+        // makes reopen and post-edit rebuilds fast; a manual Reload/Remount forces a refresh.
+        var reference = GetReferenceData(familyType, unitType);
+        var refFam = reference.VanillaFamilies;
+        var mountedFam = reference.MountedFamilies;
+        var refUnits = reference.VanillaUnits;
+        var mountedUnits = reference.MountedUnits;
 
         var names = new HashSet<string>(dbFam.Keys, StringComparer.OrdinalIgnoreCase);
         names.UnionWith(refFam.Keys);
@@ -149,20 +154,8 @@ public static class UnitFamilyLinesData
         // Broken Next stubs + reverse previous index (shared with incremental edits).
         RebuildLinks(graph);
 
-        // Units by SerializableFamily
+        // Units by SerializableFamily (project scanned above; vanilla/mounted from the cache).
         var unitsByFamily = new Dictionary<string, List<UnitRow>>(StringComparer.OrdinalIgnoreCase);
-
-        var dbUnits = new Dictionary<string, UnityEngine.Object>(StringComparer.OrdinalIgnoreCase);
-        foreach (var o in LoadProjectOfType(unitType))
-            if (o != null && !string.IsNullOrEmpty(o.name)) dbUnits[o.name] = o;
-
-        var refUnits = new Dictionary<string, UnityEngine.Object>(StringComparer.OrdinalIgnoreCase);
-        foreach (var o in VanillaDatabaseMount.LoadAllOfType(unitType))
-            if (o != null && !string.IsNullOrEmpty(o.name) && !refUnits.ContainsKey(o.name))
-                refUnits[o.name] = o;
-
-        var mountedUnits = new Dictionary<string, UnityEngine.Object>(StringComparer.OrdinalIgnoreCase);
-        IndexOtherMountedProviders(unitType, mountedUnits);
 
         var unitNames = new HashSet<string>(dbUnits.Keys, StringComparer.OrdinalIgnoreCase);
         unitNames.UnionWith(refUnits.Keys);
@@ -674,18 +667,94 @@ public static class UnitFamilyLinesData
         return next.Trim();
     }
 
-    static IEnumerable<UnityEngine.Object> LoadProjectOfType(Type t)
+    static void LoadProjectFamiliesAndUnits(
+        Type familyType, Type unitType,
+        Dictionary<string, UnityEngine.Object> families,
+        Dictionary<string, UnityEngine.Object> units)
     {
-        foreach (var guid in UnityEditor.AssetDatabase.FindAssets("t:ScriptableObject"))
+        // Scope the scan to the databases folder rather than walking every ScriptableObject in the
+        // project (the old whole-project FindAssets, run once per type, was the bulk of open time on
+        // large mods) and bucket both types in a single pass.
+        if (!UnityEditor.AssetDatabase.IsValidFolder(DatabasesRoot)) return;
+        foreach (var guid in UnityEditor.AssetDatabase.FindAssets("t:ScriptableObject", new[] { DatabasesRoot }))
         {
             var path = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
-            if (string.IsNullOrEmpty(path) ||
-                !(path == DatabasesRoot || path.StartsWith(DatabasesRoot + "/", StringComparison.Ordinal)))
-                continue;
+            if (string.IsNullOrEmpty(path)) continue;
             foreach (var o in UnityEditor.AssetDatabase.LoadAllAssetsAtPath(path))
-                if (o != null && t.IsInstanceOfType(o))
-                    yield return o;
+            {
+                if (o == null || string.IsNullOrEmpty(o.name)) continue;
+                if (familyType.IsInstanceOfType(o)) families[o.name] = o;
+                else if (unitType.IsInstanceOfType(o)) units[o.name] = o;
+            }
         }
+    }
+
+    // ── Reference-data cache (vanilla bundle + other mounted mod providers) ────────────────────
+    // Walking the vanilla bundle and every mounted mod provider (once per type) is the expensive
+    // part of Build. That data doesn't change while the user edits project assets, so it's cached
+    // and keyed by the Amplitude provider set — which changes when Compat Patcher / Mod Tools mount
+    // or unmount a mod. Reopen and post-edit rebuilds then only rescan project assets. A manual
+    // Reload / Remount forces a refresh via Build(forceReferenceRefresh: true).
+    sealed class ReferenceData
+    {
+        public Dictionary<string, UnityEngine.Object> VanillaFamilies;
+        public Dictionary<string, UnityEngine.Object> MountedFamilies;
+        public Dictionary<string, UnityEngine.Object> VanillaUnits;
+        public Dictionary<string, UnityEngine.Object> MountedUnits;
+    }
+
+    static ReferenceData s_refCache;
+    static int s_refCacheStamp = int.MinValue;
+
+    /// <summary>Drops the cached vanilla/mounted reference data so the next Build re-reads it.</summary>
+    public static void InvalidateReferenceCache()
+    {
+        s_refCache = null;
+        s_refCacheStamp = int.MinValue;
+    }
+
+    static ReferenceData GetReferenceData(Type familyType, Type unitType)
+    {
+        int stamp = ProviderSetStamp();
+        if (s_refCache != null && stamp == s_refCacheStamp) return s_refCache;
+
+        var data = new ReferenceData
+        {
+            VanillaFamilies = new Dictionary<string, UnityEngine.Object>(StringComparer.OrdinalIgnoreCase),
+            MountedFamilies = new Dictionary<string, UnityEngine.Object>(StringComparer.OrdinalIgnoreCase),
+            VanillaUnits = new Dictionary<string, UnityEngine.Object>(StringComparer.OrdinalIgnoreCase),
+            MountedUnits = new Dictionary<string, UnityEngine.Object>(StringComparer.OrdinalIgnoreCase),
+        };
+
+        foreach (var o in VanillaDatabaseMount.LoadAllOfType(familyType))
+            if (o != null && !string.IsNullOrEmpty(o.name) && !data.VanillaFamilies.ContainsKey(o.name))
+                data.VanillaFamilies[o.name] = o;
+        foreach (var o in VanillaDatabaseMount.LoadAllOfType(unitType))
+            if (o != null && !string.IsNullOrEmpty(o.name) && !data.VanillaUnits.ContainsKey(o.name))
+                data.VanillaUnits[o.name] = o;
+
+        IndexOtherMountedProviders(familyType, data.MountedFamilies);
+        IndexOtherMountedProviders(unitType, data.MountedUnits);
+
+        s_refCache = data;
+        s_refCacheStamp = stamp;
+        return data;
+    }
+
+    // Hash of the live Amplitude provider set; changes when a mod bundle is mounted/unmounted.
+    static int ProviderSetStamp()
+    {
+        try
+        {
+            int h = 0;
+            foreach (var p in AmpAssetDatabase.AllProviders)
+            {
+                if (p == null) continue;
+                h = unchecked(h * 397 ^ (p.Name?.GetHashCode() ?? 0));
+            }
+            return h;
+        }
+        catch { return 0; }
     }
 
     static void IndexOtherMountedProviders(Type type, Dictionary<string, UnityEngine.Object> map)
@@ -701,7 +770,7 @@ public static class UnitFamilyLinesData
                 // ProjectAssets is backed by on-disk/scene project objects; Amplitude's
                 // FetchAllSubAssetsOfType runs a threaded read on it that logs "Do not use
                 // ReadObjectThreaded on scene objects!". Project assets are already covered by
-                // LoadProjectOfType, so skip that provider (redundant here and only warns).
+                // LoadProjectFamiliesAndUnits, so skip that provider (redundant here and only warns).
                 if (provider.GetType().Name == "ProjectAssets") continue;
 
                 try

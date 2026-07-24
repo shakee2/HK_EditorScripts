@@ -9,6 +9,13 @@ Versions match namespaced git tags: `core/<semver>`.
 
 ## [Unreleased]
 
+### Changed
+- Unit Family Lines: faster window open / rebuild. The vanilla-bundle + mounted-mod-provider
+  enumeration (the bulk of the cost) is cached per mounted-provider set, so reopening and
+  post-edit rebuilds only rescan project assets; the project scan is now scoped to
+  `Assets/Databases` in a single pass for both families and units instead of a whole-project
+  `FindAssets` run once per type. **Reload** / **Remount** force a full refresh of the cache.
+
 ### Fixed
 - Unit Family Lines / Inspector diagnostics: skip Amplitude's `ProjectAssets` provider when
   indexing other mounted providers. It is backed by on-disk/scene project objects, so
