@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Versions match namespaced git tags: `core/<semver>`.
 
+## [Unreleased]
+
+### Fixed
+- Unit Family Lines / Inspector diagnostics: skip Amplitude's `ProjectAssets` provider when
+  indexing other mounted providers. It is backed by on-disk/scene project objects, so
+  `FetchAllSubAssetsOfType` logged `Do not use ReadObjectThreaded on scene objects!`; project
+  assets are already indexed directly, so walking that provider was redundant besides.
+
 ## [1.1.0] - 2026-07-24
 
 ### Added

@@ -698,6 +698,11 @@ public static class UnitFamilyLinesData
                 string pname = provider.Name ?? "";
                 if (pname.Equals(VanillaProviderName, StringComparison.OrdinalIgnoreCase)) continue;
                 if (pname.Equals(TranslationsProviderName, StringComparison.OrdinalIgnoreCase)) continue;
+                // ProjectAssets is backed by on-disk/scene project objects; Amplitude's
+                // FetchAllSubAssetsOfType runs a threaded read on it that logs "Do not use
+                // ReadObjectThreaded on scene objects!". Project assets are already covered by
+                // LoadProjectOfType, so skip that provider (redundant here and only warns).
+                if (provider.GetType().Name == "ProjectAssets") continue;
 
                 try
                 {
